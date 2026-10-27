@@ -93,6 +93,19 @@ export async function startTui(options) {
         const answer = await read(`${theme.warning('Allow?')} [y/N] `);
         return !controller?.signal.aborted && /^(y|yes)$/i.test((answer ?? '').trim());
     };
+    const suspendUi = async (action) => {
+        if (!interactive)
+            return action();
+        rl.close();
+        try {
+            return await action();
+        }
+        finally {
+            closed = false;
+            rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+            attach();
+        }
+    };
     if (interactive) {
         const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
         write(`\n${theme.brand('  T BOT')} ${theme.muted(`${symbols.bullet} Your terminal assistant`)}\n`);
@@ -122,7 +135,7 @@ export async function startTui(options) {
                 if (command === '/exit' || command === '/quit')
                     break;
                 if (command === '/help') {
-                    write('\n  /help       Show commands\n  /clear      Clear conversation\n  /config     Configure provider and model\n  /provider   Provider information\n  /model      Model information\n  /sessions   List sessions\n  /resume     Resume a session\n  /exit       Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+                    write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
                     continue;
                 }
                 if (command === '/clear') {
@@ -132,22 +145,30 @@ export async function startTui(options) {
                     write(`${theme.muted('Conversation cleared.')}\n`);
                     continue;
                 }
+                if ((command === '/goal' || command === '/plan' || command === '/subagents') && options.onWorkflow) {
+                    controller = new AbortController();
+                    try {
+                        await options.onWorkflow(command, input.slice(command.length).trim(), emit, approve, controller.signal, suspendUi);
+                    }
+                    catch (error) {
+                        finishStream();
+                        write(`${theme.error(controller.signal.aborted ? 'Cancelled.' : `Error: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`);
+                    }
+                    finally {
+                        controller = undefined;
+                        finishStream();
+                    }
+                    if (interactive)
+                        write('\n');
+                    continue;
+                }
                 let result;
                 const menu = interactive && (command === '/provider' || command === '/model' || command === '/config');
-                if (menu)
-                    rl.close();
                 try {
-                    result = await options.onCommand?.(input);
+                    result = menu ? await suspendUi(async () => options.onCommand?.(input)) : await options.onCommand?.(input);
                 }
                 catch (error) {
                     result = `Error: ${error instanceof Error ? error.message : String(error)}`;
-                }
-                finally {
-                    if (menu) {
-                        closed = false;
-                        rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
-                        attach();
-                    }
                 }
                 write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);
                 continue;

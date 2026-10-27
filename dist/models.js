@@ -17,7 +17,8 @@ export function fallbackModels(provider) {
     return (FALLBACK[provider] ?? []).map(id => ({ id, label: id }));
 }
 /** Read the official model catalog without exposing the key in URLs or errors. */
-export async function discoverModels(provider, apiKey) {
+export async function discoverModels(provider, apiKey, signal) {
+    signal?.throwIfAborted();
     const fallback = fallbackModels(provider);
     const urls = {
         openai: 'https://api.openai.com/v1/models',
@@ -40,7 +41,7 @@ export async function discoverModels(provider, apiKey) {
             headers['x-goog-api-key'] = apiKey;
         else if (apiKey && !['ollama', 'lmstudio'].includes(provider))
             headers.authorization = `Bearer ${apiKey}`;
-        const response = await fetch(url, { headers, signal: AbortSignal.timeout(8000), redirect: 'error' });
+        const response = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), redirect: 'error' });
         if (!response.ok)
             return fallback;
         const data = await response.json();
@@ -91,6 +92,7 @@ export async function discoverModels(provider, apiKey) {
         return models.length ? models : fallback;
     }
     catch {
+        signal?.throwIfAborted();
         return fallback;
     }
 }

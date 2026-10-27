@@ -9,6 +9,7 @@ export interface TuiOptions {
   history: Message[];
   onSubmit: (message: string, emit: (event: AgentEvent) => void, approve: (request: ApprovalRequest) => Promise<boolean>, signal: AbortSignal) => Promise<Message[]>;
   onCommand?: (command: string) => Promise<string | undefined>;
+  onWorkflow?: (command: string, input: string, emit: (event: AgentEvent) => void, approve: (request: ApprovalRequest) => Promise<boolean>, signal: AbortSignal, suspendUi: <T>(action: () => Promise<T>) => Promise<T>) => Promise<void>;
 }
 
 // Do not allow control sequences from a tool or provider to operate the terminal.
@@ -63,6 +64,16 @@ export async function startTui(options: TuiOptions): Promise<void> {
     const answer = await read(`${theme.warning('Allow?')} [y/N] `);
     return !controller?.signal.aborted && /^(y|yes)$/i.test((answer ?? '').trim());
   };
+  const suspendUi = async <T>(action: () => Promise<T>): Promise<T> => {
+    if (!interactive) return action();
+    rl.close();
+    try { return await action(); }
+    finally {
+      closed = false;
+      rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+      attach();
+    }
+  };
 
   if (interactive) {
     const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
@@ -89,22 +100,22 @@ export async function startTui(options: TuiOptions): Promise<void> {
         const command = input.split(/\s+/, 1)[0]?.toLowerCase();
         if (command === '/exit' || command === '/quit') break;
         if (command === '/help') {
-          write('\n  /help       Show commands\n  /clear      Clear conversation\n  /config     Configure provider and model\n  /provider   Provider information\n  /model      Model information\n  /sessions   List sessions\n  /resume     Resume a session\n  /exit       Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
           continue;
         }
         if (command === '/clear') { await options.onCommand?.(input); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
+        if ((command === '/goal' || command === '/plan' || command === '/subagents') && options.onWorkflow) {
+          controller = new AbortController();
+          try { await options.onWorkflow(command, input.slice(command.length).trim(), emit, approve, controller.signal, suspendUi); }
+          catch (error) { finishStream(); write(`${theme.error(controller.signal.aborted ? 'Cancelled.' : `Error: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`); }
+          finally { controller = undefined; finishStream(); }
+          if (interactive) write('\n');
+          continue;
+        }
         let result: string | undefined;
         const menu = interactive && (command === '/provider' || command === '/model' || command === '/config');
-        if (menu) rl.close();
-        try { result = await options.onCommand?.(input); }
+        try { result = menu ? await suspendUi(async () => options.onCommand?.(input)) : await options.onCommand?.(input); }
         catch (error) { result = `Error: ${error instanceof Error ? error.message : String(error)}`; }
-        finally {
-          if (menu) {
-            closed = false;
-            rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
-            attach();
-          }
-        }
         write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);
         continue;
       }

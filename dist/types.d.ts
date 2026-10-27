@@ -34,6 +34,7 @@ export type ProviderEvent = {
 } | {
     type: 'error';
     error: string;
+    code?: 'authentication';
 };
 export interface Provider {
     id: string;
@@ -64,6 +65,7 @@ export type AgentEvent = {
 } | {
     type: 'error';
     error: string;
+    code?: 'authentication';
 } | {
     type: 'status';
     message: string;

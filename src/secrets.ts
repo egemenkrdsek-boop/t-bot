@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { configDirectory } from './config.js';
 
 export interface SecretStorageStatus { method: 'dpapi' | 'file'; warning?: string }
+export type ApiKeySource = 'saved' | 'provider-env' | 'generic-env' | 'missing';
+const normalizeKey = (key: string): string => key.replace(/^[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+|[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+$/g, '');
 const secretDir = () => join(configDirectory(), 'secrets');
 function secretPath(id: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid provider ID');
@@ -39,7 +41,8 @@ async function dpapi(input: string, decrypt: boolean): Promise<string> {
 }
 export async function setApiKey(id: string, key: string): Promise<SecretStorageStatus> {
   const target = secretPath(id);
-  if (!key.trim()) throw new Error('API key must not be empty');
+  key = normalizeKey(key);
+  if (!key) throw new Error('API key must not be empty');
   await secureDirectory();
   let method: 'dpapi' | 'file' = 'file';
   let value = key;
@@ -52,19 +55,30 @@ export async function setApiKey(id: string, key: string): Promise<SecretStorageS
   finally { await unlink(temp).catch(() => undefined); }
   return method === 'dpapi' ? { method } : { method, warning: 'API key is stored in a user-restricted file without encryption.' };
 }
-export async function getApiKey(id: string): Promise<string | undefined> {
+async function readSavedKey(id: string): Promise<string | undefined> {
   const path = secretPath(id);
-  const envKey = process.env[`${id.toUpperCase().replace(/-/g, '_')}_API_KEY`] || process.env.TBOT_API_KEY;
-  if (envKey) return envKey;
   let raw: string;
   try { raw = await readFile(path, 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
   const entry: unknown = JSON.parse(raw);
   if (!entry || typeof entry !== 'object' || !('method' in entry) || !('value' in entry) || typeof entry.value !== 'string') throw new Error('Invalid secret storage format');
-  if (entry.method === 'file') return entry.value;
-  if (entry.method === 'dpapi' && process.platform === 'win32') return Buffer.from(await dpapi(entry.value, true), 'base64').toString('utf8');
-  throw new Error('Cannot decrypt the stored API key on this platform');
+  let value: string;
+  if (entry.method === 'file') value = entry.value;
+  else if (entry.method === 'dpapi' && process.platform === 'win32') value = Buffer.from(await dpapi(entry.value, true), 'base64').toString('utf8');
+  else throw new Error('Cannot decrypt the stored API key on this platform');
+  return normalizeKey(value) || undefined;
 }
+async function resolveApiKey(id: string): Promise<{ key?: string; source: ApiKeySource }> {
+  // Explicitly saved provider credentials win over environment fallbacks.
+  const saved = await readSavedKey(id);
+  if (saved) return { key: saved, source: 'saved' };
+  const providerKey = normalizeKey(process.env[`${id.toUpperCase().replace(/-/g, '_')}_API_KEY`] || '');
+  if (providerKey) return { key: providerKey, source: 'provider-env' };
+  const genericKey = normalizeKey(process.env.TBOT_API_KEY || '');
+  return genericKey ? { key: genericKey, source: 'generic-env' } : { source: 'missing' };
+}
+export async function getApiKey(id: string): Promise<string | undefined> { return (await resolveApiKey(id)).key; }
+export async function getApiKeySource(id: string): Promise<ApiKeySource> { return (await resolveApiKey(id)).source; }
 export async function deleteApiKey(id: string): Promise<void> {
   try { await unlink(secretPath(id)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 }

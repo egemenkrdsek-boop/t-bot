@@ -99,8 +99,15 @@ function limitImages(messages: Message[]): Message[] {
   }).reverse();
 }
 
+export interface AgentRunOptions {
+  toolPolicy?: 'read-only';
+  maxRounds?: number;
+  maxToolCalls?: number;
+}
+const READ_ONLY_TOOLS = new Set(['file_read', 'file_list', 'file_search', 'git_status', 'git_diff', 'git_log']);
+
 /** Run one user turn, returning the conversation including any native tool calls. */
-export async function runAgent(input: AgentInput): Promise<Message[]> {
+export async function runAgent(input: AgentInput, options: AgentRunOptions = {}): Promise<Message[]> {
   const conversation: Message[] = [...input.history, { role: 'user', content: input.message }];
   const system: Message = { role: 'system', content: SYSTEM_PROMPT };
   const turn: Message[] = [{ role: 'user', content: input.message }];
@@ -110,11 +117,13 @@ export async function runAgent(input: AgentInput): Promise<Message[]> {
     return conversation;
   }
   const previous = selectHistory(input.history, initialBudget);
-  const definitions = getToolDefinitions();
+  const definitions = getToolDefinitions().filter(tool => options.toolPolicy !== 'read-only' || READ_ONLY_TOOLS.has(tool.name));
+  const maxRounds = Math.max(1, Math.min(MAX_ROUNDS, Math.floor(options.maxRounds ?? MAX_ROUNDS) || 1));
+  const maxToolCalls = Math.max(0, Math.min(MAX_TOOL_CALLS, Math.floor(options.maxToolCalls ?? MAX_TOOL_CALLS) || 0));
   let toolCount = 0;
   const seenIds = new Set<string>();
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  for (let round = 0; round < maxRounds; round++) {
     if (input.signal?.aborted) {
       input.onEvent({ type: 'status', message: 'Cancelled.' });
       return conversation;
@@ -166,7 +175,7 @@ export async function runAgent(input: AgentInput): Promise<Message[]> {
       if (input.signal?.aborted) input.onEvent({ type: 'status', message: 'Cancelled.' });
       return conversation;
     }
-    if (calls.length > MAX_CALLS_PER_ROUND || toolCount + calls.length > MAX_TOOL_CALLS ||
+    if (calls.length > MAX_CALLS_PER_ROUND || toolCount + calls.length > maxToolCalls ||
         calls.some(call => !call.id || !call.name || seenIds.has(call.id)) ||
         new Set(calls.map(call => call.id)).size !== calls.length) {
       if (content) conversation.push({ role: 'assistant', content });
@@ -174,7 +183,7 @@ export async function runAgent(input: AgentInput): Promise<Message[]> {
       return conversation;
     }
     // Do not execute actions if there is no remaining round to interpret their results.
-    if (calls.length && round === MAX_ROUNDS - 1) {
+    if (calls.length && round === maxRounds - 1) {
       if (content) conversation.push({ role: 'assistant', content });
       input.onEvent({ type: 'error', error: 'Agent iteration limit reached; final tool calls were not executed.' });
       return conversation;
@@ -190,7 +199,9 @@ export async function runAgent(input: AgentInput): Promise<Message[]> {
       input.onEvent({ type: 'tool_start', call });
       let result: string;
       try {
-        result = input.signal?.aborted ? 'Tool execution cancelled.' : await executeTool(call, {
+        result = options.toolPolicy === 'read-only' && !READ_ONLY_TOOLS.has(call.name)
+          ? 'Tool denied: this agent is restricted to read-only tools.'
+          : input.signal?.aborted ? 'Tool execution cancelled.' : await executeTool(call, {
           workspace: input.workspace, approve: input.approve, signal: input.signal,
         });
       } catch (error) {

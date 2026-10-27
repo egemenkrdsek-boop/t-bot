@@ -21,7 +21,8 @@ export function fallbackModels(provider: string): ModelOption[] {
 }
 
 /** Read the official model catalog without exposing the key in URLs or errors. */
-export async function discoverModels(provider: string, apiKey?: string): Promise<ModelOption[]> {
+export async function discoverModels(provider: string, apiKey?: string, signal?: AbortSignal): Promise<ModelOption[]> {
+  signal?.throwIfAborted();
   const fallback = fallbackModels(provider);
   const urls: Record<string, string> = {
     openai: 'https://api.openai.com/v1/models',
@@ -38,7 +39,7 @@ export async function discoverModels(provider: string, apiKey?: string): Promise
     if (provider === 'anthropic') { headers['x-api-key'] = apiKey!; headers['anthropic-version'] = '2023-06-01'; }
     else if (provider === 'gemini') headers['x-goog-api-key'] = apiKey!;
     else if (apiKey && !['ollama', 'lmstudio'].includes(provider)) headers.authorization = `Bearer ${apiKey}`;
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(8000), redirect: 'error' });
+    const response = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), redirect: 'error' });
     if (!response.ok) return fallback;
     const data: unknown = await response.json();
     if (!data || typeof data !== 'object') return fallback;
@@ -72,5 +73,5 @@ export async function discoverModels(provider: string, apiKey?: string): Promise
       if (models.length >= 100) break;
     }
     return models.length ? models : fallback;
-  } catch { return fallback; }
+  } catch { signal?.throwIfAborted(); return fallback; }
 }

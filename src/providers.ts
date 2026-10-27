@@ -78,7 +78,8 @@ export function createProvider(config: ProviderConfig): Provider {
   if (!spec) throw new Error(`Unknown provider: ${config.id}`);
   if (!config.model.trim()) throw new Error('A model is required.');
   if (spec.requiresApiKey && !config.apiKey?.trim()) throw new Error(`${spec.label} requires an API key.`);
-  const base = config.baseUrl?.trim() || spec.baseUrl;
+  // Only custom and local providers accept an override; a stale endpoint must not receive another provider's key.
+  const base = (['custom', 'ollama', 'lmstudio'].includes(spec.id) ? config.baseUrl?.trim() : undefined) || spec.baseUrl;
   if (!base) throw new Error('A custom endpoint is required.');
   safeUrl(base);
   return { id: spec.id, label: spec.label, async *stream(messages: Message[], tools: ToolDefinition[], options = {}): AsyncGenerator<ProviderEvent> {
@@ -98,6 +99,10 @@ export function createProvider(config: ProviderConfig): Provider {
         body = { model: config.model, messages: openaiMessages(messages), stream: true, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
       }
       const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' });
+      if (response.status === 401) {
+        yield { type: 'error', code: 'authentication', error: `${spec.label} kimlik doğrulamayı kabul etmedi (HTTP 401). /config üzerinden bu sağlayıcının API anahtarını kontrol edin; varsa sağlayıcıya özel ortam değişkeni veya TBOT_API_KEY kullanılan anahtarı etkileyebilir.` };
+        return;
+      }
       if (!response.ok) throw new Error(`Provider request failed (HTTP ${response.status}).`);
       const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let finished = false; let toolFinish = false;
       for await (const chunk of sse(response)) {

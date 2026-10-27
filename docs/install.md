@@ -23,3 +23,5 @@ Global kurulum, derlenmiş `dist` dosyalarını ve masaüstü aracı için `scri
 Güncellemek için depo klasöründe güncel değişiklikleri alın, ardından `npm ci`, `npm run build` ve `npm install --global .` adımlarını yeniden çalıştırın. Uygulama ayarları ve oturumları kullanıcı veri dizininde tutulur; bunları veya `.env` dosyalarını depoya eklemeyin.
 
 Sağlayıcıyı `tbot config` ile seçin. Google Gemini (`gemini`), OpenAI (`openai`), Anthropic (`anthropic`) ve OpenRouter (`openrouter`) listenin başındadır; diğer seçenekler `tbot providers` ile görülebilir. Model menüden seçilir; gerektiğinde yalnızca API anahtarını yazarsınız. Her sağlayıcının kaydedilen API anahtarı ayrıdır.
+
+Kaydedilmiş sağlayıcı anahtarı, sağlayıcıya özgü ortam değişkeninden ve ardından `TBOT_API_KEY` değerinden önce kullanılır. HTTP 401 alırsanız `/config` üzerinden anahtarı ve sağlayıcı erişimini kontrol edin. Etkileşimli iş akışları için [README](../README.md) içindeki `/goal`, `/plan` ve `/subagents` açıklamalarına bakın.

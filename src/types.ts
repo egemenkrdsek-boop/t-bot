@@ -22,7 +22,7 @@ export type ProviderEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_calls'; calls: ToolCall[] }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number }
-  | { type: 'error'; error: string };
+  | { type: 'error'; error: string; code?: 'authentication' };
 export interface Provider {
   id: string;
   label: string;
@@ -38,7 +38,7 @@ export type AgentEvent =
   | { type: 'tool_start'; call: ToolCall }
   | { type: 'tool_end'; call: ToolCall; result: string }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number }
-  | { type: 'error'; error: string }
+  | { type: 'error'; error: string; code?: 'authentication' }
   | { type: 'status'; message: string };
 export interface AgentInput {
   message: string;

@@ -4,12 +4,14 @@ import { resolve } from 'node:path';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP } from './cli.js';
 import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, type AppConfig } from './config.js';
-import { setApiKey } from './secrets.js';
+import { setApiKey, getApiKeySource } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
-import type { AgentEvent, ApprovalRequest } from './types.js';
+import { runSubagents } from './subagents.js';
+import { getGoal, startGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal, runGoal, planTask, executePlan } from './workflows.js';
+import type { AgentEvent, ApprovalRequest, Provider } from './types.js';
 
 const safe = (text: string): string => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions(): Promise<void> {
@@ -105,11 +107,19 @@ export async function main(argv: string[]): Promise<void> {
     resolved = await resolveProviderConfig(config, workspace);
   }
   let provider = createProvider(resolved);
+  let keySource = await getApiKeySource(config.provider);
+  let workerProvider: Provider | undefined;
+  let workerModel = '';
+  let pendingPlan: { request: string; plan: string } | undefined;
+  const withAuth = (emit: (event: AgentEvent) => void) => (event: AgentEvent) => {
+    emit(event);
+    if (event.type === 'error' && event.code === 'authentication') emit({ type: 'status', message: `Anahtar kaynağı: ${keySource}. /config ile sağlayıcı anahtarını yeniden girin ve sağlayıcı hesabındaki erişimi kontrol edin.` });
+  };
   const approve = getWorkspacePermission(config, workspace) === 'allow' ? async () => true : approveOnce;
   if (options.message) {
     const controller = new AbortController();
     const cancel = () => controller.abort(); process.once('SIGINT', cancel);
-    try { session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, onEvent: event => { showEvent(event); if (event.type === 'error') process.exitCode = 1; }, approve, signal: controller.signal }); await store.save(session); stdout.write('\n'); }
+    try { session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error') process.exitCode = 1; }), approve, signal: controller.signal }); await store.save(session); stdout.write('\n'); }
     finally { process.off('SIGINT', cancel); }
     return;
   }
@@ -117,15 +127,69 @@ export async function main(argv: string[]): Promise<void> {
   const { startTui } = await import('./tui.js');
   await startTui({ workspace, provider, model: config.model, history: session.messages,
     onSubmit: async (message, emit, tuiApprove, signal) => {
-      session.messages = await runAgent({ message, history: session.messages, provider, workspace, onEvent: emit, approve: getWorkspacePermission(config, workspace) === 'allow' ? async () => true : tuiApprove, signal });
+      const input = { message, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: getWorkspacePermission(config, workspace) === 'allow' ? async () => true : tuiApprove, signal };
+      session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
       await store.save(session); return session.messages;
     },
+    onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
+      const input = { message: text, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: getWorkspacePermission(config, workspace) === 'allow' ? async () => true : tuiApprove, signal };
+      if (command === '/goal') {
+        const action = text.trim().toLowerCase();
+        if (!action || action === 'status') {
+          const goal = await getGoal(workspace);
+          emit({ type: 'status', message: goal ? `Hedef: ${goal.objective} | Durum: ${goal.status} | Son çalışma: ${goal.lastRun ?? 'yok'}` : 'Kayıtlı hedef yok. /goal <hedef> ile başlayın.' });
+          return;
+        }
+        if (action === 'pause') { await pauseGoal(workspace); emit({ type: 'status', message: 'Hedef duraklatıldı.' }); return; }
+        if (action === 'cancel') { await cancelGoal(workspace); emit({ type: 'status', message: 'Hedef iptal edildi.' }); return; }
+        if (action === 'done' || action === 'complete') { await completeGoal(workspace); emit({ type: 'status', message: 'Hedef tamamlandı olarak işaretlendi.' }); return; }
+        if (action === 'resume') await resumeGoal(workspace);
+        else if (action !== 'run') await startGoal(workspace, text);
+        session.messages = await runGoal({ ...input, message: '' });
+        await store.save(session); return;
+      }
+      if (command === '/plan') {
+        if (!text.trim()) { emit({ type: 'status', message: 'Kullanım: /plan <istek> veya /plan apply' }); return; }
+        if (text.trim().toLowerCase() === 'apply') {
+          if (!pendingPlan) { emit({ type: 'status', message: 'Uygulanacak plan yok; önce /plan <istek> kullanın.' }); return; }
+          const approved = pendingPlan; pendingPlan = undefined;
+          session.messages = await executePlan({ ...input, message: approved.request }, approved.plan);
+          await store.save(session); return;
+        }
+        const planned = await planTask(input);
+        session.messages = planned;
+        await store.save(session);
+        const plan = [...planned].reverse().find(m => m.role === 'assistant')?.content ?? '';
+        pendingPlan = { request: text, plan };
+        emit({ type: 'status', message: 'Plan hazır. Uygulamak için /plan apply yazın.' });
+        return;
+      }
+      if (command === '/subagents') {
+        if (!text.trim() && workerProvider) {
+          const action = await suspendUi(() => selectOption('Alt ajanlar', [
+            { label: `Açık: ${workerModel}`, value: 'keep' }, { label: 'Modeli değiştir', value: 'change' }, { label: 'Kapat', value: 'disable' },
+          ]));
+          if (!action || action === 'keep') return;
+          if (action === 'disable') { workerProvider = undefined; workerModel = ''; emit({ type: 'status', message: 'Alt ajanlar kapatıldı.' }); return; }
+        }
+        const models = await discoverModels(config.provider, (await resolveProviderConfig(config, workspace)).apiKey, signal);
+        if (signal.aborted) return;
+        const selected = await suspendUi(() => selectOption('Alt ajan modeli seçin', models.map(m => ({ label: m.label, value: m.id }))));
+        if (!selected) { emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' }); return; }
+        workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: selected });
+        workerModel = selected;
+        emit({ type: 'status', message: `Alt ajanlar açık: ${selected}. Araştırma alt ajanları salt okunurdur.` });
+        if (text.trim()) { session.messages = await runSubagents({ ...input, workerProvider }); await store.save(session); }
+      }
+    },
     onCommand: async command => {
-      if (command === '/clear') { session.messages = []; await store.save(session); return undefined; }
+      if (command === '/clear') { session.messages = []; pendingPlan = undefined; await store.save(session); return undefined; }
       if (command === '/sessions') return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;
       if (command === '/provider' || command === '/model' || command === '/config') {
         config = await configure(config, false, true, command === '/model');
         provider = createProvider(await resolveProviderConfig(config, workspace));
+        keySource = await getApiKeySource(config.provider);
+        workerProvider = undefined; workerModel = '';
         return `Sağlayıcı: ${provider.label}; model: ${config.model}`;
       }
       if (command === '/resume') return 'Devam etmek için tbot --resume <id> kullanın.';

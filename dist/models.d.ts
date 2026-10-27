@@ -5,4 +5,4 @@ export interface ModelOption {
 }
 export declare function fallbackModels(provider: string): ModelOption[];
 /** Read the official model catalog without exposing the key in URLs or errors. */
-export declare function discoverModels(provider: string, apiKey?: string): Promise<ModelOption[]>;
+export declare function discoverModels(provider: string, apiKey?: string, signal?: AbortSignal): Promise<ModelOption[]>;
