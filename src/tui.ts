@@ -100,7 +100,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
         const command = input.split(/\s+/, 1)[0]?.toLowerCase();
         if (command === '/exit' || command === '/quit') break;
         if (command === '/help') {
-          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
           continue;
         }
         if (command === '/clear') { await options.onCommand?.(input); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
@@ -113,7 +113,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
           continue;
         }
         let result: string | undefined;
-        const menu = interactive && (command === '/provider' || command === '/model' || command === '/config');
+        const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth');
         try { result = menu ? await suspendUi(async () => options.onCommand?.(input)) : await options.onCommand?.(input); }
         catch (error) { result = `Error: ${error instanceof Error ? error.message : String(error)}`; }
         write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);

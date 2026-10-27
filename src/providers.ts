@@ -100,7 +100,7 @@ export function createProvider(config: ProviderConfig): Provider {
       }
       const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' });
       if (response.status === 401) {
-        yield { type: 'error', code: 'authentication', error: `${spec.label} kimlik doğrulamayı kabul etmedi (HTTP 401). /config üzerinden bu sağlayıcının API anahtarını kontrol edin; varsa sağlayıcıya özel ortam değişkeni veya TBOT_API_KEY kullanılan anahtarı etkileyebilir.` };
+        yield { type: 'error', code: 'authentication', error: `${spec.label} kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden bu sağlayıcının API anahtarını kontrol edin; varsa sağlayıcıya özel ortam değişkeni veya TBOT_API_KEY kullanılan anahtarı etkileyebilir.` };
         return;
       }
       if (!response.ok) throw new Error(`Provider request failed (HTTP ${response.status}).`);
@@ -134,5 +134,29 @@ export function createProvider(config: ProviderConfig): Provider {
       if (inputTokens !== undefined || outputTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens };
     } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' }; }
   } };
+}
+
+/** Validate an OpenRouter key without exposing the response body or credentials. */
+export async function validateOpenRouterKey(key: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/key', {
+      headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000),
+      redirect: 'error',
+    });
+    if (response.status === 401 || response.status === 403) throw new Error('OpenRouter anahtarı kabul edilmedi. Normal bir OpenRouter API anahtarı kullanın.');
+    if (!response.ok) throw new Error('OpenRouter anahtarı doğrulanamadı.');
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('OpenRouter anahtarı doğrulanamadı.');
+    const data = (payload as { data?: unknown }).data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('OpenRouter anahtarı doğrulanamadı.');
+    const flags = data as { is_management_key?: unknown; is_provisioning_key?: unknown };
+    if (flags.is_management_key === true || flags.is_provisioning_key === true) throw new Error('Yönetim anahtarı yerine normal bir OpenRouter API anahtarı kullanın.');
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof Error && (error.message === 'OpenRouter anahtarı kabul edilmedi. Normal bir OpenRouter API anahtarı kullanın.' || error.message === 'Yönetim anahtarı yerine normal bir OpenRouter API anahtarı kullanın.')) throw error;
+    throw new Error('OpenRouter anahtarı doğrulanamadı.');
+  }
 }
 

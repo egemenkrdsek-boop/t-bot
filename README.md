@@ -24,6 +24,8 @@ Kaydedilen API anahtarları sağlayıcı kimliğine göre ayrı tutulur. `GEMINI
 
 Ollama ve LM Studio seçenekleri yerel çalışan bir sunucu ve yüklenmiş model gerektirir. Çevrimdışı model kullanımı için bunları yerel uç noktaya yönlendirin; T Bot tek başına bir model içermez. Özel uç noktalar HTTPS veya localhost üzerinde HTTP kullanmalıdır.
 
+401 kimlik doğrulama hatasında OpenRouter hesabınızda yeni bir API anahtarı oluşturup T Bot içinde `/auth` ile girin. Önceki istek otomatik tekrar edilmez. OpenRouter için yeni anahtar kaydedilmeden önce sağlayıcının anahtar uç noktasında doğrulanır; doğrulama başarısızsa önceki anahtar korunur.
+
 ## Kullanım
 
 ```text

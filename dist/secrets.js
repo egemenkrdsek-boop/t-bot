@@ -3,7 +3,20 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
-const normalizeKey = (key) => key.replace(/^[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+|[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+$/g, '');
+export const normalizeKey = (key) => {
+    const trim = (value) => value.replace(/^[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+|[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+$/g, '');
+    const unquote = (value) => value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) ? trim(value.slice(1, -1)) : value;
+    // Accept a pasted Authorization value without sending a duplicate Bearer prefix.
+    let value = unquote(trim(key));
+    value = trim(value.replace(/^Bearer\s+/i, ''));
+    return unquote(value);
+};
+export function prepareApiKey(key) {
+    const value = normalizeKey(key);
+    if (!value || /^\*+$/.test(value) || /[\s\x00-\x1F\x7F-\x9F\u200B-\u200D\u2060\uFEFF]/u.test(value))
+        throw new Error('API key is empty or contains invalid characters');
+    return value;
+}
 const secretDir = () => join(configDirectory(), 'secrets');
 function secretPath(id) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id))
@@ -41,9 +54,7 @@ async function dpapi(input, decrypt) {
 }
 export async function setApiKey(id, key) {
     const target = secretPath(id);
-    key = normalizeKey(key);
-    if (!key)
-        throw new Error('API key must not be empty');
+    key = prepareApiKey(key);
     await secureDirectory();
     let method = 'file';
     let value = key;

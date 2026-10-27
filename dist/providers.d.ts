@@ -78,3 +78,5 @@ export declare const PROVIDER_CATALOG: readonly [{
     readonly requiresApiKey: false;
 }];
 export declare function createProvider(config: ProviderConfig): Provider;
+/** Validate an OpenRouter key without exposing the response body or credentials. */
+export declare function validateOpenRouterKey(key: string, signal?: AbortSignal): Promise<void>;

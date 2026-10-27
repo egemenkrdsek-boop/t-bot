@@ -4,8 +4,8 @@ import { resolve } from 'node:path';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP } from './cli.js';
 import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, type AppConfig } from './config.js';
-import { setApiKey, getApiKeySource } from './secrets.js';
-import { createProvider, PROVIDER_CATALOG } from './providers.js';
+import { setApiKey, getApiKeySource, prepareApiKey } from './secrets.js';
+import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
@@ -46,6 +46,7 @@ async function configure(config: AppConfig, onboarding = false, presetProvider =
     if (replace) {
       const key = await inputSecret(`${spec.label} API anahtarı`);
       if (!key?.trim()) throw new Error('Anahtar girilmedi; yapılandırma iptal edildi.');
+      if (id === 'openrouter') await validateOpenRouterKey(prepareApiKey(key));
       const result = await setApiKey(id, key);
       if (result.warning) console.log(safe(result.warning));
       apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
@@ -113,7 +114,7 @@ export async function main(argv: string[]): Promise<void> {
   let pendingPlan: { request: string; plan: string } | undefined;
   const withAuth = (emit: (event: AgentEvent) => void) => (event: AgentEvent) => {
     emit(event);
-    if (event.type === 'error' && event.code === 'authentication') emit({ type: 'status', message: `Anahtar kaynağı: ${keySource}. /config ile sağlayıcı anahtarını yeniden girin ve sağlayıcı hesabındaki erişimi kontrol edin.` });
+    if (event.type === 'error' && event.code === 'authentication') emit({ type: 'status', message: `Anahtar kaynağı: ${keySource}. /auth ile yeni anahtar girin ve sağlayıcı hesabındaki erişimi kontrol edin.` });
   };
   const approve = getWorkspacePermission(config, workspace) === 'allow' ? async () => true : approveOnce;
   if (options.message) {
@@ -185,6 +186,19 @@ export async function main(argv: string[]): Promise<void> {
     onCommand: async command => {
       if (command === '/clear') { session.messages = []; pendingPlan = undefined; await store.save(session); return undefined; }
       if (command === '/sessions') return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;
+      if (command === '/auth') {
+        const spec = PROVIDER_CATALOG.find(p => p.id === config.provider);
+        if (!spec?.requiresApiKey) return 'Bu sağlayıcı için API anahtarı gerekli değil.';
+        const key = await inputSecret(`${spec.label} için yeni API anahtarı`);
+        if (!key?.trim()) return 'Anahtar değiştirilmedi.';
+        if (/^\*+$/.test(key.trim())) return 'Maskelenmiş yıldızlar anahtar değildir; sağlayıcıdan anahtarın kendisini kopyalayın.';
+        if (spec.id === 'openrouter') await validateOpenRouterKey(prepareApiKey(key));
+        const status = await setApiKey(spec.id, key);
+        provider = createProvider(await resolveProviderConfig(config, workspace));
+        keySource = await getApiKeySource(config.provider);
+        workerProvider = undefined; workerModel = '';
+        return `Yeni anahtar kaydedildi. Önceki istek yeniden çalıştırılmadı; devam etmek için isteğinizi tekrar gönderin.${status.warning ? ` ${status.warning}` : ''}`;
+      }
       if (command === '/provider' || command === '/model' || command === '/config') {
         config = await configure(config, false, true, command === '/model');
         provider = createProvider(await resolveProviderConfig(config, workspace));
