@@ -28,8 +28,10 @@ Kaydedilmiş sağlayıcı anahtarı, sağlayıcıya özgü ortam değişkeninden
 
 ## MCP bağlantıları ve terminal görünümü
 
-Etkileşimli oturumda `/mcp` menüsüyle Vercel veya Supabase bağlantısını yapılandırın. Token maskeli girilir ve API anahtarlarıyla aynı mekanizmada saklanır; token ve sağlayıcı yetkilerini siz sağlarsınız. Kayıtlı token, ilgili `VERCEL_TOKEN` veya `SUPABASE_ACCESS_TOKEN` ortam değişkeninden önceliklidir. Yerel bağlantıyı kaldırmak tokenı sağlayıcıda iptal etmez.
+Etkileşimli oturumda `/mcp` menüsünden Vercel, Supabase veya GitHub bağlantısını kurun, yenileyin veya yerel kaydını kaldırın. Token maskeli girilir ve API anahtarlarıyla aynı mekanizmada saklanır; tokenı ve sağlayıcı yetkilerini siz sağlarsınız. Kayıtlı token ilgili ortam değişkeninden önce kullanılır: `VERCEL_TOKEN`, `SUPABASE_ACCESS_TOKEN`, GitHub için `GITHUB_PERSONAL_ACCESS_TOKEN`, ardından `GITHUB_TOKEN`. Yerel bağlantıyı kaldırmak tokenı sağlayıcıda iptal etmez.
 
-Vercel seçeneği, Vercel API tokenı kullanan T Bot yerel MCP adaptörüdür; yalnızca `list_projects`, `get_project` ve `list_deployments` salt okunur araçlarını sunar. Resmi hosted OAuth MCP değildir. Supabase seçeneği resmi uzak MCP sunucusuna PAT ile bağlanır; varsayılan salt okunurdur, istenirse sağlayıcı yetkileri dahilinde yazma modu seçilebilir. Her MCP araç çağrısı onay gerektirir; YOLO açıksa onaylar otomatik verilir. Salt okunur alt ajanlar MCP araçlarına erişmez. Gerçek servis bağlantıları bu sürüm için test edilmedi.
+Vercel seçeneği T Bot'un Vercel API tokenı kullanan yerel MCP adaptörüdür; proje ve dağıtımları listeleme, proje bilgisi alma, proje oluşturma ve dağıtım oluşturma araçları sunar. Dağıtım varsayılan olarak önizlemedir; üretim hedefi açıkça seçilir. Adaptör resmi hosted OAuth MCP değildir. Supabase seçeneği resmi uzak MCP sunucusuna PAT ile bağlanır; hesap yetkileri dahilinde proje oluşturma ve Edge Function dağıtma araçları sunulabilir. GitHub seçeneği resmi uzak MCP sunucusuna PAT ile bağlanır; araçlar ve yazma erişimi seçili araçlar ve token izinlerine bağlıdır.
+
+Her MCP araç çağrısı onay gerektirir; YOLO açıksa onaylar otomatik verilir. Salt okunur alt ajanlar MCP araçlarına erişmez. Gerçek servis bağlantıları veya dağıtımlar bu özellikler için test edilmedi.
 
 Başlangıçtaki logo ve piksel bot animasyonunu kapatmak için `TBOT_NO_ANIMATION` ortam değişkenini tanımlayın. `NO_COLOR`, renkleri kaldırarak piksel görünümünü tek renkli yapar.

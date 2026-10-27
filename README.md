@@ -53,12 +53,13 @@ Etkileşimli oturumda `/yolo` menüsünden veya `/yolo on` ve `/yolo off` komutl
 
 ## MCP bağlantıları
 
-Etkileşimli oturumda `/mcp` ile bağlantı kurabilir veya yerel bağlantı kaydını kaldırabilirsiniz. Token girişi maskelenir ve tokenlar API anahtarlarıyla aynı saklama mekanizmasını kullanır. Erişim tokenını ve sağlayıcı tarafındaki yetkileri kullanıcı sağlar; yerel kaydı kaldırmak sağlayıcıdaki tokenı iptal etmez.
+Etkileşimli oturumda `/mcp` menüsünden Vercel, Supabase veya GitHub bağlantısını kurabilir, yenileyebilir veya yerel kaydını kaldırabilirsiniz. Token girişi maskelenir ve tokenlar API anahtarlarıyla aynı saklama mekanizmasını kullanır. Sağlayıcı tokenını ve hesap yetkilerini kullanıcı sağlar; yerel kaydı kaldırmak tokenı sağlayıcıda iptal etmez. Kullanılabilir işlemler hesap, token ve servis yetkilerine bağlıdır.
 
-- **Vercel:** T Bot'un yerel MCP adaptörü Vercel API tokenı kullanır; `list_projects`, `get_project` ve `list_deployments` araçlarıyla salt okunur erişim sunar. Bu adaptör, Vercel'in resmi hosted OAuth MCP sunucusu değildir ve Supabase PAT kullanmaz.
-- **Supabase:** Resmi uzak Supabase MCP sunucusuna kişisel erişim tokenı (PAT) ile bağlanır. Varsayılan salt okunur erişimdir; kullanıcı sağlayıcı yetkileri kapsamında yazma modunu seçebilir.
+- **Vercel:** T Bot'un yerel MCP adaptörü Vercel API tokenıyla `list_projects`, `get_project`, `list_deployments`, `create_project` ve `create_deployment` araçlarını sunar. Dağıtım için açıkça bir GitHub depo kimliği ve ref veya dosyalar sağlanır. Varsayılan dağıtım önizlemedir; üretim hedefi açıkça seçilir. Dağıtım yanıtı derlemenin devam ettiğini gösterebilir. Adaptör, Vercel'in resmi hosted OAuth MCP sunucusu değildir.
+- **Supabase:** Resmi uzak Supabase MCP sunucusuna kişisel erişim tokenı (PAT) ile bağlanır. Hesap yetkileri dahilinde proje oluşturma ve Edge Function dağıtma dahil sunucunun sunduğu araçlar kullanılabilir. Edge Function dağıtımı frontend barındırma anlamına gelmez.
+- **GitHub:** Resmi uzak GitHub MCP sunucusuna kişisel erişim tokenıyla bağlanır. Sunulan araçlar ve yazma işlemleri seçili araçlar ile token ve depo izinlerine bağlıdır.
 
-Her MCP araç çağrısı onay ister; YOLO açıksa onay otomatik verilir. Alt ajanların salt okunur araç listesine MCP araçları dahil edilmez. Gerçek servis bağlantıları bu sürüm için test edilmedi.
+Her MCP araç çağrısı onay ister; YOLO açıksa onay otomatik verilir. Alt ajanların salt okunur araç listesine MCP araçları dahil edilmez. Bu özellikler için gerçek servis bağlantısı veya dağıtım testi yapılmadı.
 
 ## Terminal görünümü
 

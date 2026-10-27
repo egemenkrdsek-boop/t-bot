@@ -4,6 +4,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 export declare function createVercelAdapter(token: string, options: {
     team?: string;
     project?: string;
+    readOnly?: boolean;
     signal?: AbortSignal;
 }): Promise<{
     clientTransport: InMemoryTransport;

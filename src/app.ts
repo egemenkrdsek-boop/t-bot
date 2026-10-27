@@ -129,7 +129,7 @@ export async function main(argv: string[]): Promise<void> {
   const hydrateMcp = async (signal?: AbortSignal, emit?: (event: AgentEvent) => void) => {
     if (mcpHydrated) return;
     const saved = await loadConnections();
-    for (const service of ['supabase', 'vercel'] as const) {
+    for (const service of ['supabase', 'vercel', 'github'] as const) {
       if (!saved[service].enabled || mcpTools.some(c => c.service === service)) continue;
       const token = await getMcpToken(service);
       if (!token) { emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` }); continue; }
@@ -169,23 +169,27 @@ export async function main(argv: string[]): Promise<void> {
           if (!entered?.trim()) return 'Token girilmedi; bağlantı değiştirilmedi.';
           newToken = prepareApiKey(entered); token = newToken;
         }
-        let readOnly = true;
-        if (service === 'supabase') {
-          const mode = await suspendUi(() => selectOption('Supabase MCP erişimi', [{ label: 'Salt okunur', value: 'read' }, { label: 'Sağlayıcı yetkileriyle yazma (araç onayı gerekir)', value: 'write' }]));
-          if (!mode) return 'MCP seçimi iptal edildi.';
-          readOnly = mode === 'read';
+        const readOnly = false;
+        let project = saved[service].project;
+        if (service === 'supabase' && project) {
+          const scope = await suspendUi(() => selectOption('Supabase kapsamı', [
+            { label: 'Hesap kapsamı (proje oluşturma dahil)', value: 'account' },
+            { label: 'Mevcut proje kapsamını koru', value: 'project' },
+          ]));
+          if (!scope) return 'MCP seçimi iptal edildi.';
+          if (scope === 'account') project = undefined;
         }
-        const connection = await connectMcp(service, token, { ...saved[service], readOnly, signal });
+        const connection = await connectMcp(service, token, { ...saved[service], project, readOnly, signal });
         try {
           signal.throwIfAborted();
           if (newToken) { const result = await setMcpToken(service, newToken); if (result.warning) console.log(safe(result.warning)); }
           signal.throwIfAborted();
-          await saveConnection(service, { enabled: true, readOnly });
+          await saveConnection(service, { enabled: true, readOnly, ...(service === 'supabase' ? { project: project ?? '' } : {}) });
         } catch (error) { await connection.close(); throw error; }
         const old = mcpTools.findIndex(c => c.service === service);
         if (old >= 0) { const [previous] = mcpTools.splice(old, 1); await previous.close(); }
         mcpTools.push(connection);
-        return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü; salt okunur)' : readOnly ? ' (salt okunur)' : ''}.`;
+        return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü)' : ''}. Araç işlemleri onay politikasına uyar.`;
   };
   let pendingPlan: { request: string; plan: string } | undefined;
   const withAuth = (emit: (event: AgentEvent) => void) => (event: AgentEvent) => {

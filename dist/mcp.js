@@ -15,7 +15,7 @@ export async function connectMcp(service, token, options = {}) {
             const url = new URL('https://mcp.supabase.com/mcp');
             if (options.project)
                 url.searchParams.set('project_ref', options.project);
-            if (options.readOnly)
+            if (options.readOnly !== false)
                 url.searchParams.set('read_only', 'true');
             const transport = new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' }, fetch: (input, init) => {
                     const target = new URL(typeof input === 'string' ? input : input.href);
@@ -34,8 +34,33 @@ export async function connectMcp(service, token, options = {}) {
                 signal.removeEventListener('abort', abort);
             }
         }
+        else if (service === 'github') {
+            const url = new URL('https://api.githubcopilot.com/mcp/');
+            const headers = {
+                Authorization: `Bearer ${token}`,
+                'X-MCP-Tools': 'get_me,search_repositories,get_file_contents,list_branches,create_repository,create_branch,create_or_update_file,push_files,list_pull_requests,pull_request_read,create_pull_request,update_pull_request',
+            };
+            if (options.readOnly !== false)
+                headers['X-MCP-Readonly'] = 'true';
+            const transport = new StreamableHTTPClientTransport(url, { requestInit: { headers, redirect: 'error' }, fetch: (input, init) => {
+                    const target = new URL(typeof input === 'string' ? input : input.href);
+                    if (target.origin !== 'https://api.githubcopilot.com')
+                        throw new Error('Unexpected MCP origin.');
+                    return fetch(input, { ...init, redirect: 'error' });
+                } });
+            const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(TIMEOUT)]) : AbortSignal.timeout(TIMEOUT);
+            const abort = () => { void client.close(); };
+            signal.addEventListener('abort', abort, { once: true });
+            try {
+                await client.connect(transport);
+                signal.throwIfAborted();
+            }
+            finally {
+                signal.removeEventListener('abort', abort);
+            }
+        }
         else if (service === 'vercel') {
-            adapter = await createVercelAdapter(token, options);
+            adapter = await createVercelAdapter(token, { ...options, readOnly: options.readOnly !== false });
             await client.connect(adapter.clientTransport);
         }
         else
@@ -49,9 +74,11 @@ export async function connectMcp(service, token, options = {}) {
             const page = await client.listTools(cursor ? { cursor } : undefined, { signal: options.signal, timeout: TIMEOUT });
             all.push(...page.tools);
             cursor = page.nextCursor;
-            if (all.length > 50)
+            if (all.length > 500)
                 throw new Error('MCP tool limit exceeded.');
         } while (cursor);
+        if (!all.length)
+            throw new Error('MCP server returned no tools.');
         const map = new Map();
         const definitions = all.map(tool => {
             const hash = createHash('sha256').update(tool.name).digest('hex').slice(0, 12);

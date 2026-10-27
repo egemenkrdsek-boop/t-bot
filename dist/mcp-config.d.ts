@@ -1,5 +1,5 @@
 import { type SecretStorageStatus } from './secrets.js';
-export type McpService = 'vercel' | 'supabase';
+export type McpService = 'vercel' | 'supabase' | 'github';
 export interface ConnectionConfig {
     enabled: boolean;
     readOnly: boolean;
