@@ -180,9 +180,11 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
             }
             continue;
         }
-        // 5. Directly connected remote MCP tools (mcp__*)
-        if (name.startsWith('mcp__')) {
-            const serviceName = name.split('__')[1]?.toLowerCase();
+        // 5. Directly connected remote MCP tools (mcp_* or mcp__*)
+        if (name.startsWith('mcp_') || name.startsWith('mcp__')) {
+            const serviceName = name.startsWith('mcp__')
+                ? name.split('__')[1]?.toLowerCase()
+                : name.split('_')[1]?.toLowerCase();
             if (needsMcp || (serviceName && combinedContext.includes(serviceName))) {
                 keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
             }
@@ -240,8 +242,8 @@ function extractStructuralEvidence(content) {
 }
 /**
  * Compresses conversation history to fit budget while preserving:
- * - Full output of latest tool batch (MAX_TOOL_RESULT_CHARS = 12_000)
- * - Structural evidence of older tool outputs
+ * - Full output of the last 3 tool batches when under budget (MAX_TOOL_RESULT_CHARS = 12_000)
+ * - Structural evidence of older tool outputs (bIdx < batches.length - 3) or when budget exceeds 85%
  * - Images only in the latest 2 messages
  * - Initial user goal summary when dropping overflow turns
  */
@@ -249,27 +251,43 @@ export function compressConversationHistory(messages, maxTokenBudget = 28_000) {
     const initialTokens = estimateMessagesTokens(messages);
     if (messages.length === 0)
         return { messages: [], savedTokens: 0 };
-    // 1. Identify the last tool batch (last round of assistant toolCalls and their tool results)
-    let lastAssistantToolIndex = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'assistant' && messages[i].toolCalls?.length) {
-            lastAssistantToolIndex = i;
-            break;
+    // 1. Identify tool batches (each assistant toolCalls round followed by its tool results)
+    const batches = [];
+    let currentBatch = null;
+    for (let i = 0; i < messages.length; i++) {
+        const m = messages[i];
+        if (m.role === 'assistant' && m.toolCalls?.length) {
+            currentBatch = { assistantIndex: i, toolIndices: [] };
+            batches.push(currentBatch);
+        }
+        else if (m.role === 'tool') {
+            if (!currentBatch) {
+                currentBatch = { assistantIndex: -1, toolIndices: [] };
+                batches.push(currentBatch);
+            }
+            currentBatch.toolIndices.push(i);
         }
     }
+    const toolBatchMap = new Map();
+    batches.forEach((batch, bIdx) => {
+        for (const toolIdx of batch.toolIndices) {
+            toolBatchMap.set(toolIdx, bIdx);
+        }
+    });
     // 2. Strip images from all but the last 2 messages
     const imageCutoffIndex = Math.max(0, messages.length - 2);
-    // 3. Compress older tool messages into structural evidence summaries,
-    // and preserve the last tool batch up to MAX_TOOL_RESULT_CHARS
+    // 3. Compress older tool batches into structural evidence summaries,
+    // and preserve recent 3 tool batches up to MAX_TOOL_RESULT_CHARS
     let compressed = messages.map((m, idx) => {
-        let msg = { ...m };
+        const msg = { ...m };
         // Image pruning: keep only in last 2 messages
         if (idx < imageCutoffIndex && msg.images?.length) {
             msg.images = undefined;
         }
         if (msg.role === 'tool') {
-            const isLastBatch = lastAssistantToolIndex >= 0 && idx > lastAssistantToolIndex;
-            if (isLastBatch) {
+            const bIdx = toolBatchMap.get(idx) ?? -1;
+            const isRecentBatch = bIdx >= batches.length - 3;
+            if (isRecentBatch) {
                 // Keep raw output up to MAX_TOOL_RESULT_CHARS
                 if (msg.content.length > MAX_TOOL_RESULT_CHARS) {
                     const half = Math.floor(MAX_TOOL_RESULT_CHARS / 2);
@@ -283,8 +301,25 @@ export function compressConversationHistory(messages, maxTokenBudget = 28_000) {
         }
         return msg;
     });
-    // 4. If total tokens still exceed maxTokenBudget, drop older turns while preserving initial user goal
     let currentTokens = estimateMessagesTokens(compressed);
+    // 4. If total tokens exceed maxTokenBudget * 0.85, summarize earlier tool batches in the recent window
+    if (currentTokens > maxTokenBudget * 0.85 && batches.length > 1) {
+        for (let bIdx = Math.max(0, batches.length - 3); bIdx < batches.length - 1; bIdx++) {
+            const batch = batches[bIdx];
+            if (!batch)
+                continue;
+            for (const toolIdx of batch.toolIndices) {
+                if (compressed[toolIdx] && compressed[toolIdx].role === 'tool') {
+                    compressed[toolIdx].content = extractStructuralEvidence(compressed[toolIdx].content);
+                }
+            }
+            currentTokens = estimateMessagesTokens(compressed);
+            if (currentTokens <= maxTokenBudget * 0.85) {
+                break;
+            }
+        }
+    }
+    // 5. If total tokens still exceed maxTokenBudget, drop older turns while preserving initial user goal
     if (currentTokens > maxTokenBudget) {
         const firstUserMsg = compressed.find(m => m.role === 'user');
         const initialUserGoal = firstUserMsg ? firstUserMsg.content.slice(0, 600) : '';

@@ -24,8 +24,9 @@ import { closeBrowser } from './tools/browser.js';
 import { stopAllBackgroundProcesses } from './tools/shell.js';
 import { startTelegramBotBridge, stopTelegramBotBridge, getTelegramBotStatus } from './bot.js';
 import { globalTokenTracker } from './token-optimizer.js';
+import { globalGroundingLedger } from './grounding.js';
 import { rememberFact, recallFacts, forgetFact } from './memory.js';
-import { reclaimMemory, getMemoryStats } from './memory-guard.js';
+import { reclaimMemory, getMemoryStats, startAutoMemoryGuard, stopAutoMemoryGuard } from './memory-guard.js';
 const safe = (text) => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions() {
     const sessions = await new SessionStore(configDirectory()).list();
@@ -43,7 +44,7 @@ async function configure(config, onboarding = false, presetProvider = false, mod
     let id = config.provider;
     if (!modelOnly) {
         const ordered = presetProvider ? [...choices].sort((a, b) => Number(b.id === config.provider) - Number(a.id === config.provider)) : choices;
-        const selected = await selectOption('Sağlayıcı seçin', ordered.map(p => ({ label: p.label, value: p.id })));
+        const selected = await selectOption('Sağlayıcı Seçin', ordered.map(p => ({ label: p.label, value: p.id })));
         if (!selected)
             throw new Error('İptal edildi.');
         id = selected;
@@ -64,16 +65,16 @@ async function configure(config, onboarding = false, presetProvider = false, mod
     if (spec.requiresApiKey && (!apiKey?.trim() || (!onboarding && !modelOnly))) {
         let replace = !apiKey?.trim();
         if (!replace) {
-            const action = await selectOption(`${spec.label} anahtarı`, [
-                { label: 'Kayıtlı anahtarı kullan', value: 'keep' },
-                { label: 'Yeni anahtar gir', value: 'replace' },
+            const action = await selectOption(`${spec.label} Anahtarı`, [
+                { label: 'Kayıtlı Anahtarı Kullan', value: 'keep' },
+                { label: 'Yeni Anahtar Gir', value: 'replace' },
             ]);
             if (!action)
                 throw new Error('İptal edildi.');
             replace = action === 'replace';
         }
         if (replace) {
-            const key = await inputSecret(`${spec.label} API anahtarı`);
+            const key = await inputSecret(`${spec.label} API Anahtarı`);
             if (!key?.trim())
                 throw new Error('Anahtar girilmedi; yapılandırma iptal edildi.');
             if (id === 'openrouter')
@@ -87,10 +88,10 @@ async function configure(config, onboarding = false, presetProvider = false, mod
     const models = await discoverModels(id, apiKey);
     const options = models.map(model => ({ label: model.label, value: model.id }));
     if (modelOnly && id === config.provider && config.model && !options.some(model => model.value === config.model))
-        options.unshift({ label: `${config.model} (mevcut)`, value: config.model });
+        options.unshift({ label: `${config.model} (Mevcut)`, value: config.model });
     if (!options.length)
         throw new Error(`${spec.label} için model listesi alınamadı. Yerel sunucunun açık ve modelin yüklü olduğunu kontrol edin veya başka bir sağlayıcı seçin.`);
-    const model = await selectOption('Model seçin', options);
+    const model = await selectOption('Model Seçin', options);
     if (!model)
         throw new Error('Model seçimi iptal edildi veya model listesi boş.');
     if (id !== config.provider)
@@ -118,7 +119,7 @@ async function approveOnce(request) {
     }
     const rl = createInterface({ input: stdin, output: stdout });
     try {
-        return /^(e|evet|y|yes)$/i.test((await rl.question(`\n${safe(request.description)}\n${safe(JSON.stringify(request.arguments))}\nİzin verilsin mi? [e/H] `)).trim());
+        return /^(e|evet|y|yes)$/i.test((await rl.question(`\n${safe(request.description)}\n${safe(JSON.stringify(request.arguments))}\nİzin Verilsin mi? [E/H] `)).trim());
     }
     finally {
         rl.close();
@@ -150,7 +151,7 @@ export async function main(argv) {
     if (options.command === 'doctor') {
         const config = await loadConfig();
         const resolved = await resolveProviderConfig(config);
-        console.log(safe(`Node ${process.version}\nPlatform ${process.platform}\nÇalışma dizini ${process.cwd()}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI anahtarı ${resolved.apiKey ? 'mevcut' : 'ayarlı değil'}\nYapılandırma ${configDirectory()}`));
+        console.log(safe(`Node ${process.version}\nPlatform ${process.platform}\nÇalışma Dizini ${process.cwd()}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI Anahtarı ${resolved.apiKey ? 'Mevcut' : 'Ayarlı Değil'}\nYapılandırma ${configDirectory()}`));
         return;
     }
     let config = await loadConfig();
@@ -198,6 +199,7 @@ export async function main(argv) {
     let mcpHydrated = false;
     const closeMcp = async () => { await Promise.allSettled(mcpTools.splice(0).map(c => c.close())); };
     const cleanupAllResources = async () => {
+        stopAutoMemoryGuard();
         stopTelegramBotBridge();
         stopAllBackgroundProcesses();
         await closeBrowser().catch(() => undefined);
@@ -228,14 +230,14 @@ export async function main(argv) {
         mcpHydrated = true;
     };
     const configureMcp = async (suspendUi, signal) => {
-        const service = await suspendUi(() => selectOption('MCP bağlantısı', MCP_PRESETS.map(p => ({ label: p.label, value: p.id, description: p.description }))));
+        const service = await suspendUi(() => selectOption('MCP Bağlantısı', MCP_PRESETS.map(p => ({ label: p.label, value: p.id, description: p.description }))));
         if (!service)
             return 'MCP seçimi iptal edildi.';
         const saved = await loadConnections();
         signal.throwIfAborted();
         const action = await suspendUi(() => selectOption(`${service} MCP`, [
-            { label: saved[service].enabled ? 'Bağlantıyı yenile veya tokenı değiştir' : 'Token ile bağlan', value: 'connect' },
-            ...(saved[service].enabled ? [{ label: 'Bağlantıyı kaldır', value: 'remove' }] : []),
+            { label: saved[service].enabled ? 'Bağlantıyı Yenile veya Tokenı Değiştir' : 'Token ile Bağlan', value: 'connect' },
+            ...(saved[service].enabled ? [{ label: 'Bağlantıyı Kaldır', value: 'remove' }] : []),
         ]));
         if (!action)
             return 'MCP seçimi iptal edildi.';
@@ -252,7 +254,7 @@ export async function main(argv) {
         let token = await getMcpToken(service);
         signal.throwIfAborted();
         if (token) {
-            const use = await suspendUi(() => selectOption('Token seçimi', [{ label: 'Kayıtlı tokenı kullan', value: 'existing' }, { label: 'Yeni token gir', value: 'new' }]));
+            const use = await suspendUi(() => selectOption('Token Seçimi', [{ label: 'Kayıtlı Tokenı Kullan', value: 'existing' }, { label: 'Yeni Token Gir', value: 'new' }]));
             if (!use)
                 return 'MCP seçimi iptal edildi.';
             if (use === 'new')
@@ -260,7 +262,7 @@ export async function main(argv) {
         }
         let newToken;
         if (!token) {
-            const entered = await suspendUi(() => inputSecret(`${service} erişim tokenı`));
+            const entered = await suspendUi(() => inputSecret(`${service} Erişim Tokenı`));
             if (!entered?.trim())
                 return 'Token girilmedi; bağlantı değiştirilmedi.';
             newToken = prepareApiKey(entered);
@@ -269,9 +271,9 @@ export async function main(argv) {
         const readOnly = false;
         let project = saved[service].project;
         if (service === 'supabase' && project) {
-            const scope = await suspendUi(() => selectOption('Supabase kapsamı', [
-                { label: 'Hesap kapsamı (proje oluşturma dahil)', value: 'account' },
-                { label: 'Mevcut proje kapsamını koru', value: 'project' },
+            const scope = await suspendUi(() => selectOption('Supabase Kapsamı', [
+                { label: 'Hesap Kapsamı (Proje Oluşturma Dahil)', value: 'account' },
+                { label: 'Mevcut Proje Kapsamını Koru', value: 'project' },
             ]));
             if (!scope)
                 return 'MCP seçimi iptal edildi.';
@@ -320,7 +322,7 @@ export async function main(argv) {
     };
     const modeStatus = () => {
         const mapping = describeEffort(config.provider, config.model, selectedEffort);
-        return `Effort: ${selectedEffort}${mapping.effective && mapping.effective !== selectedEffort ? ` → ${mapping.effective}` : mapping.supported ? '' : ' (varsayılan)'}${ultracode ? ' · Ultracode' : ''}`;
+        return `Effort: ${selectedEffort}${mapping.effective && mapping.effective !== selectedEffort ? ` → ${mapping.effective}` : mapping.supported ? '' : ' (Varsayılan)'}${ultracode ? ' · Ultracode' : ''}`;
     };
     const withAuth = (emit) => (event) => {
         emit(event);
@@ -351,6 +353,7 @@ export async function main(argv) {
             workspace,
             getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
             activeSkills: BUILTIN_SKILLS.map(s => s.id),
+            mcpTools,
             onLog: (text) => {
                 if (!stdin.isTTY)
                     console.error(text);
@@ -373,6 +376,7 @@ export async function main(argv) {
                     workspace,
                     getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
                     activeSkills: BUILTIN_SKILLS.map(s => s.id),
+                    mcpTools,
                     onLog: (msg) => { if (!stdin.isTTY)
                         console.error(msg); }
                 });
@@ -421,6 +425,7 @@ export async function main(argv) {
     }
     if (!stdin.isTTY || !stdout.isTTY)
         throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
+    startAutoMemoryGuard(() => session);
     const { startTui } = await import('./tui.js');
     try {
         await startTui({
@@ -477,13 +482,13 @@ export async function main(argv) {
                         emit({ type: 'error', error: 'Görsel üretimi/düzenlemesi için OpenAI, Gemini veya OpenRouter API anahtarı yapılandırın.' });
                         return;
                     }
-                    const imageId = await suspendUi(() => selectOption('Görsel sağlayıcısı', usable.map(item => ({ label: item.id === 'openai' ? 'OpenAI' : item.id === 'gemini' ? 'Gemini' : 'OpenRouter', value: item.id }))));
+                    const imageId = await suspendUi(() => selectOption('Görsel Sağlayıcısı', usable.map(item => ({ label: item.id === 'openai' ? 'OpenAI' : item.id === 'gemini' ? 'Gemini' : 'OpenRouter', value: item.id }))));
                     if (imageId !== 'openai' && imageId !== 'gemini' && imageId !== 'openrouter')
                         return;
                     const chosenKey = usable.find(item => item.id === imageId)?.apiKey;
                     if (!chosenKey)
                         return;
-                    const imageModel = await suspendUi(() => selectOption('Görsel modeli', IMAGE_MODELS[imageId].choices.map(model => ({ label: model, value: model }))));
+                    const imageModel = await suspendUi(() => selectOption('Görsel Modeli', IMAGE_MODELS[imageId].choices.map(model => ({ label: model, value: model }))));
                     if (!imageModel || signal.aborted)
                         return;
                     emit({ type: 'status', message: `${imageId} / ${imageModel}: görsel işlemi hazırlanıyor...` });
@@ -558,8 +563,8 @@ export async function main(argv) {
                 }
                 if (command === '/subagents') {
                     if (!text.trim() && workerProvider) {
-                        const action = await suspendUi(() => selectOption('Alt ajanlar', [
-                            { label: `Açık: ${workerModel}`, value: 'keep' }, { label: 'Modeli değiştir', value: 'change' }, { label: 'Kapat', value: 'disable' },
+                        const action = await suspendUi(() => selectOption('Alt Ajanlar', [
+                            { label: `Açık: ${workerModel}`, value: 'keep' }, { label: 'Modeli Değiştir', value: 'change' }, { label: 'Kapat', value: 'disable' },
                         ]));
                         if (!action || action === 'keep')
                             return;
@@ -573,7 +578,7 @@ export async function main(argv) {
                     const models = await discoverModels(config.provider, (await resolveProviderConfig(config, workspace)).apiKey, signal);
                     if (signal.aborted)
                         return;
-                    const selected = await suspendUi(() => selectOption('Alt ajan modeli seçin', models.map(m => ({ label: m.label, value: m.id }))));
+                    const selected = await suspendUi(() => selectOption('Alt Ajan Modeli Seçin', models.map(m => ({ label: m.label, value: m.id }))));
                     if (!selected) {
                         emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' });
                         return;
@@ -594,7 +599,7 @@ export async function main(argv) {
                 if (name === '/tokens') {
                     const report = globalTokenTracker.getReport();
                     return [
-                        '💎 Canlı Token Tasarrufu & Oturum Raporu',
+                        '[TOKEN] Canlı Token Tasarrufu ve Oturum Raporu',
                         '────────────────────────────────────────────────',
                         `  Toplam Ham Token     : ${report.totalRawTokens.toLocaleString()}`,
                         `  Gönderilen Girdi     : ${report.totalSentInputTokens.toLocaleString()}`,
@@ -612,13 +617,13 @@ export async function main(argv) {
                     const mem = getMemoryStats();
                     const ratioStr = mem.heapTotalMB > 0 ? ` (%${((mem.heapUsedMB / mem.heapTotalMB) * 100).toFixed(1)})` : '';
                     const lines = [
-                        '💾 Bellek & RAM Koruma Durumu',
+                        '[BELLEK] Bellek ve RAM Koruma Durumu',
                         '────────────────────────────────────────────────',
                         `  Heap Kullanımı : ${mem.heapUsedMB} MB / ${mem.heapTotalMB} MB${ratioStr}`,
                         `  RSS Fiziksel   : ${mem.rssMB} MB`,
                         `  Bellek Baskısı : ${mem.pressure.toUpperCase()}`,
                         '',
-                        `🧠 Kayıtlı Proje/Genel Hafıza Maddeleri (${facts.length}):`,
+                        `[HAFIZA] Kayıtlı Proje/Genel Hafıza Maddeleri (${facts.length}):`,
                         '────────────────────────────────────────────────',
                     ];
                     if (!facts.length) {
@@ -650,19 +655,19 @@ export async function main(argv) {
                     if (!key || !val)
                         return 'Hata: Anahtar ve değer boş olamaz.';
                     await rememberFact(workspace, key, val, 'project');
-                    return `✓ Kalıcı proje hafızasına kaydedildi: [${key}] = ${val}`;
+                    return `[OK] Kalıcı Proje Hafızasına Kaydedildi: [${key}] = ${val}`;
                 }
                 if (name === '/forget') {
                     const key = command.replace(/^\/forget\s*/i, '').trim();
                     if (!key)
                         return 'Kullanım: /forget <anahtar>';
                     const removed = await forgetFact(workspace, key);
-                    return removed ? `✓ Hafızadan silindi: ${key}` : `Hafızada "${key}" anahtarı bulunamadı.`;
+                    return removed ? `[OK] Hafızadan Silindi: ${key}` : `Hafızada "${key}" anahtarı bulunamadı.`;
                 }
                 if (name === '/gc') {
                     const result = await reclaimMemory(session, true);
                     return [
-                        '✓ Bellek koruyucusu çalıştırıldı (Garbage Collection & Message Compaction)',
+                        '[OK] Bellek Koruyucusu Çalıştırıldı (Garbage Collection ve Message Compaction)',
                         '────────────────────────────────────────────────',
                         `  Boşaltılan RAM : ${result.freedMB} MB`,
                         `  Mevcut Heap    : ${result.afterMB} MB`,
@@ -674,9 +679,9 @@ export async function main(argv) {
                     const sub = argument?.toLowerCase();
                     if (!sub || sub === 'status') {
                         const st = getTelegramBotStatus();
-                        const allowedList = st.allowedChats && st.allowedChats.length > 0 ? st.allowedChats.join(', ') : 'Tüm yetkili sohbetler / henüz kısıtlanmadı';
+                        const allowedList = st.allowedChats && st.allowedChats.length > 0 ? st.allowedChats.join(', ') : 'Tüm Yetkili Sohbetler / Henüz Kısıtlanmadı';
                         return [
-                            '🤖 Telegram Bot Köprüsü Durumu',
+                            '[BOT] Telegram Bot Köprüsü Durumu',
                             '────────────────────────────────────────────────',
                             `  Durum         : ${st.running ? 'EVET (Aktif / Çalışıyor)' : 'HAYIR (Pasif / Durduruldu)'}`,
                             `  Kullanıcı Adı : ${st.username ? `@${st.username}` : 'Bilinmiyor / Başlatılmadı'}`,
@@ -714,7 +719,7 @@ export async function main(argv) {
                             allowed.push(chatId);
                             config.telegramAllowedChatIds = allowed;
                             await saveConfig(config);
-                            return `✓ Chat ID ${chatId} izinli Telegram sohbetleri listesine eklendi.`;
+                            return `[OK] Chat ID ${chatId} İzinli Telegram Sohbetleri Listesine Eklendi.`;
                         }
                         return `Chat ID ${chatId} zaten izin listesinde.`;
                     }
@@ -730,7 +735,7 @@ export async function main(argv) {
                 if (name === '/effort') {
                     if (extra || (argument && !EFFORT_LEVELS.includes(argument)))
                         return 'Kullanım: /effort veya /effort low|medium|high|xhigh|max';
-                    const choice = argument || await selectOption('Düşünme düzeyi', EFFORT_LEVELS.map(level => ({ label: level === 'xhigh' ? 'XHigh' : level[0].toUpperCase() + level.slice(1), value: level, description: describeEffort(config.provider, config.model, level).message })));
+                    const choice = argument || await selectOption('Düşünme Düzeyi', EFFORT_LEVELS.map(level => ({ label: level === 'xhigh' ? 'XHigh' : level[0].toUpperCase() + level.slice(1), value: level, description: describeEffort(config.provider, config.model, level).message })));
                     if (!choice)
                         return 'Düşünme düzeyi değiştirilmedi.';
                     selectedEffort = choice;
@@ -746,7 +751,7 @@ export async function main(argv) {
                         return 'Kullanım: /ultracode, /ultracode on veya /ultracode off';
                     let choice = argument;
                     if (!choice)
-                        choice = await selectOption('Ultracode modu', [{ label: 'Kapalı', value: 'off' }, { label: 'Açık', value: 'on' }]);
+                        choice = await selectOption('Ultracode Modu', [{ label: 'Kapalı', value: 'off' }, { label: 'Açık', value: 'on' }]);
                     if (!choice)
                         return 'Ultracode modu değiştirilmedi.';
                     ultracode = choice === 'on';
@@ -771,10 +776,10 @@ export async function main(argv) {
                         return 'Kullanım: /yolo, /yolo on, /yolo off, /yolo always veya /yolo workspace';
                     let choice = argument;
                     if (!choice) {
-                        choice = await selectOption('YOLO modu', [
-                            { label: 'Kapalı — araç işlemlerinde onay iste', value: 'off' },
-                            { label: 'Açık — araç onaylarını bu oturumda otomatik ver', value: 'on' },
-                            { label: 'Her Zaman (Kalıcı) — bu çalışma alanı için her zaman otomatik izin ver', value: 'always' },
+                        choice = await selectOption('YOLO Modu', [
+                            { label: 'Kapalı — Araç İşlemlerinde Onay İste', value: 'off' },
+                            { label: 'Açık — Araç Onaylarını Bu Oturumda Otomatik Ver', value: 'on' },
+                            { label: 'Her Zaman (Kalıcı) — Bu Çalışma Alanı için Her Zaman Otomatik İzin Ver', value: 'always' },
                         ]);
                         if (!choice)
                             return 'YOLO modu değiştirilmedi.';
@@ -802,6 +807,7 @@ export async function main(argv) {
                 if (command === '/clear') {
                     session.messages = [];
                     pendingPlan = undefined;
+                    globalGroundingLedger.clear();
                     await store.save(session);
                     return undefined;
                 }

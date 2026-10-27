@@ -22,7 +22,7 @@ export declare const cancelGoal: (workspace: string) => Promise<Goal>;
 export declare const completeGoal: (workspace: string) => Promise<Goal>;
 /** Çok Adımlı Otonom Hedef Döngüsü (Autonomous Goal Loop) */
 export declare function runGoal(input: AgentInput, runner?: (input: AgentInput) => Promise<Message[]>, options?: RunGoalOptions): Promise<Message[]>;
-/** Planning is a provider-only call: no tools are exposed or executed. */
+/** Planlama yalnızca sağlayıcı düzeyinde bir çağrıdır: Araçlar sunulmaz ve yürütülmez. */
 export declare function planTask(input: AgentInput): Promise<Message[]>;
-/** Call only after the user explicitly chooses to execute the displayed plan. */
+/** Yalnızca kullanıcı görüntülenen planı açıkça onayladıktan sonra çağrılmalıdır. */
 export declare function executePlan(input: AgentInput, plan: string, runner?: (input: AgentInput) => Promise<Message[]>): Promise<Message[]>;

@@ -1,6 +1,6 @@
 # ==============================================================================
-# T Bot 2.0 - Windows Uzaktan Tek Komutla Kurulum Betigi
-# Kullanim: irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
+# T Bot 2.0 - Windows Uzaktan Tek Komutla Kurulum Betiği
+# Kullanım: irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
 # ==============================================================================
 
 [CmdletBinding()]
@@ -39,11 +39,11 @@ function Show-ErrorAndExit {
 Show-Header
 
 # ------------------------------------------------------------------------------
-# ADIM 1: Sistem Gereksinimleri Kontrolu (Node.js >= 20.3, npm, git)
+# Adım 1: Sistem Gereksinimleri Kontrolü (Node.js >= 20.3, npm, git)
 # ------------------------------------------------------------------------------
 Write-Host "[1/3] Sistem gereksinimleri kontrol ediliyor..." -ForegroundColor Cyan
 
-# Node.js Kontrolu
+# Node.js Kontrolü
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCmd) {
     Show-ErrorAndExit `
@@ -64,20 +64,20 @@ try {
     }
     Write-Host "  [OK] Node.js: $nodeVerRaw" -ForegroundColor Green
 } catch {
-    Write-Host "  [!] Node.js surumu dogrulanamadi, kuruluma devam ediliyor." -ForegroundColor Yellow
+    Write-Host "  [BİLGİ] Node.js sürümü doğrulanamadı, kuruluma devam ediliyor." -ForegroundColor Yellow
 }
 
-# npm Kontrolu
+# npm Kontrolü
 $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
 if (-not $npmCmd) {
     Show-ErrorAndExit `
-        -Message "npm paket yoneticisi sisteminizde bulunamadi." `
-        -Resolution "Node.js kurulumunuzun eksiksiz oldugundan emin olun (npm Node.js ile birlikte gelir)."
+        -Message "npm paket yöneticisi sisteminizde bulunamadı." `
+        -Resolution "Node.js kurulumunuzun eksiksiz olduğundan emin olun (npm Node.js ile birlikte gelir)."
 }
 $npmVer = (npm -v).Trim()
 Write-Host "  [OK] npm: v$npmVer" -ForegroundColor Green
 
-# Git Kontrolu
+# Git Kontrolü
 $gitCmd = Get-Command git -ErrorAction SilentlyContinue
 if (-not $gitCmd) {
     Show-ErrorAndExit `
@@ -90,7 +90,7 @@ Write-Host "  [OK] Git: $gitVer" -ForegroundColor Green
 Write-Host ""
 
 # ------------------------------------------------------------------------------
-# ADIM 2: T Bot 2.0 Global Kurulumu
+# Adım 2: T Bot 2.0 Global Kurulumu
 # ------------------------------------------------------------------------------
 Write-Host "[2/3] T Bot 2.0 paketi kuruluyor..." -ForegroundColor Cyan
 
@@ -126,7 +126,7 @@ Write-Host "  [OK] Paket basariyla yuklendi." -ForegroundColor Green
 Write-Host ""
 
 # ------------------------------------------------------------------------------
-# ADIM 3: Dogrulama (tbot --help) ve PATH Senkronizasyonu
+# Adım 3: Doğrulama (tbot --help) ve PATH Senkronizasyonu
 # ------------------------------------------------------------------------------
 Write-Host "[3/3] Kurulum dogrulaniyor..." -ForegroundColor Cyan
 
@@ -164,19 +164,17 @@ if ($tbotCmd) {
         # Dogrulama hatasi
     }
 } else {
-    Write-Host "  [!] 'tbot' komutu mevcut oturumda aninda bulunamadi." -ForegroundColor Yellow
-    Write-Host "  npm global ikili dizini PATH degiskeninize yeni eklenmis olabilir." -ForegroundColor DarkGray
-    Write-Host "  Lutfen terminalinizi kapatip yeniden acin veya PATH'inizi tazeleyin." -ForegroundColor DarkGray
+    Write-Host "  [BİLGİ] 'tbot' komutu mevcut oturumda anında bulunamadı." -ForegroundColor Yellow
+    Write-Host "  npm global ikili dizini PATH değişkeninize yeni eklenmiş olabilir." -ForegroundColor DarkGray
+    Write-Host "  Lütfen terminalinizi kapatıp yeniden açın veya PATH'inizi tazeleyin." -ForegroundColor DarkGray
 }
 
-$checkSymbol = [char]0x2713
-
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "$checkSymbol T Bot 2.0 basariyla kuruldu! Baslatmak icin terminale 'tbot' yazin." -ForegroundColor Green
+Write-Host "[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın." -ForegroundColor Green
 Write-Host "========================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Hizli Baslangic Ipuclari:" -ForegroundColor White
+Write-Host "  Hızlı Başlangıç İpuçları:" -ForegroundColor White
 Write-Host "    tbot                  Etkilesimli Siber-Minimalist TUI oturumu baslatir" -ForegroundColor Cyan
 Write-Host "    tbot config           Saglayici (Gemini, OpenAI, Anthropic, OpenRouter) ayarla" -ForegroundColor Cyan
 Write-Host "    tbot doctor           Ortam ve sistem sagligini denetle" -ForegroundColor Cyan

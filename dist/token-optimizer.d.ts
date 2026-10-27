@@ -22,8 +22,8 @@ export declare function pruneToolDefinitions(tools: ToolDefinition[], userQuery:
 };
 /**
  * Compresses conversation history to fit budget while preserving:
- * - Full output of latest tool batch (MAX_TOOL_RESULT_CHARS = 12_000)
- * - Structural evidence of older tool outputs
+ * - Full output of the last 3 tool batches when under budget (MAX_TOOL_RESULT_CHARS = 12_000)
+ * - Structural evidence of older tool outputs (bIdx < batches.length - 3) or when budget exceeds 85%
  * - Images only in the latest 2 messages
  * - Initial user goal summary when dropping overflow turns
  */

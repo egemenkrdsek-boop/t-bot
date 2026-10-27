@@ -80,7 +80,7 @@ async function withGoalLock<T>(workspace: string, action: () => Promise<T>): Pro
       await unlink(path).catch(() => undefined);
     }
   }
-  throw new Error('Goal is locked by another process. If no T Bot process is running, remove .tbot/goal.lock and retry.');
+  throw new Error('Hedef başka bir işlem tarafından kilitlenmiş. Çalışan başka bir T Bot işlemi yoksa .tbot/goal.lock dosyasını silip tekrar deneyin.');
 }
 
 export async function getGoal(workspace: string): Promise<Goal | undefined> {
@@ -88,11 +88,11 @@ export async function getGoal(workspace: string): Promise<Goal | undefined> {
   try { raw = await readFile(goalPath(workspace), 'utf8'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
   const value: unknown = JSON.parse(raw);
-  if (!value || typeof value !== 'object') throw new Error('Invalid saved goal.');
+  if (!value || typeof value !== 'object') throw new Error('Kayıtlı hedef geçersiz.');
   const goal = value as Goal;
   if (typeof goal.id !== 'string' || typeof goal.objective !== 'string' ||
       !['active', 'paused', 'completed', 'cancelled'].includes(goal.status) ||
-      typeof goal.createdAt !== 'string' || typeof goal.updatedAt !== 'string') throw new Error('Invalid saved goal.');
+      typeof goal.createdAt !== 'string' || typeof goal.updatedAt !== 'string') throw new Error('Kayıtlı hedef geçersiz.');
   return goal;
 }
 
@@ -106,10 +106,10 @@ async function saveGoal(workspace: string, goal: Goal): Promise<void> {
 
 export async function startGoal(workspace: string, objective: string): Promise<Goal> {
   objective = objective.trim();
-  if (!objective) throw new Error('Goal objective cannot be empty.');
+  if (!objective) throw new Error('Hedef açıklaması boş olamaz.');
   return withGoalLock(workspace, async () => {
     const existing = await getGoal(workspace);
-    if (existing && (existing.status === 'active' || existing.status === 'paused')) throw new Error('A goal already exists; complete or cancel it before starting another.');
+    if (existing && (existing.status === 'active' || existing.status === 'paused')) throw new Error('Zaten mevcut bir hedef var; yeni bir hedef başlatmadan önce mevcudu tamamlayın veya iptal edin.');
     const now = new Date().toISOString();
     const goal: Goal = { id: randomUUID(), objective, status: 'active', createdAt: now, updatedAt: now, revision: randomUUID(), notes: [] };
     await saveGoal(workspace, goal);
@@ -120,7 +120,7 @@ export async function startGoal(workspace: string, objective: string): Promise<G
 async function changeGoal(workspace: string, status: Goal['status'], allowed: Goal['status'][]): Promise<Goal> {
   return withGoalLock(workspace, async () => {
     const goal = await getGoal(workspace);
-    if (!goal || !allowed.includes(goal.status)) throw new Error('No goal is available for this action.');
+    if (!goal || !allowed.includes(goal.status)) throw new Error('Bu işlem için uygun bir hedef bulunamadı.');
     const updated: Goal = { ...goal, status, updatedAt: new Date().toISOString(), revision: randomUUID() };
     await saveGoal(workspace, updated);
     return updated;
@@ -138,13 +138,13 @@ export async function runGoal(
   options: RunGoalOptions = {}
 ): Promise<Message[]> {
   const initialGoal = await getGoal(input.workspace);
-  if (!initialGoal || initialGoal.status !== 'active') throw new Error('No active goal. Start or resume a goal first.');
+  if (!initialGoal || initialGoal.status !== 'active') throw new Error('Aktif bir hedef bulunamadı. Önce bir hedef başlatın veya devam ettirin.');
 
   const maxSteps = options.maxAutonomousSteps ?? 4;
   let conversation: Message[] = [...input.history];
   let currentGoal = initialGoal;
 
-  for (let step = 0; step < maxSteps; step++) {
+  for (let step = 1; step <= maxSteps; step++) {
     if (input.signal?.aborted) break;
 
     const fresh = await getGoal(input.workspace);
@@ -157,7 +157,7 @@ export async function runGoal(
     const prevProgress = currentGoal.lastResult ? `\nÖnceki İlerleme:\n${currentGoal.lastResult}\n` : '';
     const userInstruction = input.message.trim() ? `\nMevcut Talimat: ${input.message.trim()}\n` : '';
 
-    const message = `[Otonom Hedef Döngüsü - Adım ${step + 1}/${maxSteps}]
+    const message = `[Otonom Hedef Döngüsü - Adım ${step}/${maxSteps}]
 Mevcut Hedef: ${currentGoal.objective}
 Hedef Durumu: ${currentGoal.status}
 Tamamlanan Notlar:
@@ -168,7 +168,7 @@ Yönergeler:
 2. Ne yapıldığını, neyin kaldığını ve engelleri açıkça raporla. Kanıt olmadan tamamlandığını öne sürme.
 3. ÖNEMLİ: Eğer hedef tamamen gerçekleştirildi, doğrulandı ve bittiyse yanıtının sonuna mutlaka [GOAL_COMPLETE] veya [HEDEF_TAMAMLANDI] yaz!`;
 
-    input.onEvent({ type: 'status', message: `Otonom Hedef: Adım ${step + 1}/${maxSteps} yürütülüyor...` });
+    input.onEvent({ type: 'status', message: `Otonom Hedef [Adım ${step}/${maxSteps}] · ${currentGoal.objective}` });
 
     let stepFailed = false;
     const stepResult = await runner({
@@ -197,7 +197,7 @@ Yönergeler:
             .trim()
             .slice(0, 1000);
           if (cleanSummary) {
-            nextNotes.push(`[Adım ${step + 1}] ${cleanSummary}`);
+            nextNotes.push(`[Adım ${step}] ${cleanSummary}`);
           }
         }
         const updatedGoal: Goal = {
@@ -215,10 +215,10 @@ Yönergeler:
     });
 
     // Her adım sonunda await reclaimMemory(options.session) çağırarak RAM'i temizle
-    await reclaimMemory(options.session ?? (input as any).session).catch(() => undefined);
+    await reclaimMemory(options.session ?? (input as any).session, true).catch(() => undefined);
 
     if (isCompleted) {
-      input.onEvent({ type: 'status', message: 'Otonom Hedef: Hedef başarıyla tamamlandı ([GOAL_COMPLETE]).' });
+      input.onEvent({ type: 'status', message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])' });
       break;
     }
 
@@ -230,10 +230,10 @@ Yönergeler:
   return conversation;
 }
 
-/** Planning is a provider-only call: no tools are exposed or executed. */
+/** Planlama yalnızca sağlayıcı düzeyinde bir çağrıdır: Araçlar sunulmaz ve yürütülmez. */
 export async function planTask(input: AgentInput): Promise<Message[]> {
   const user: Message = { role: 'user', content: input.message };
-  const prompt: Message = { role: 'system', content: 'Create a concrete, ordered, actionable plan for the user request. Include relevant checks, assumptions, and uncertainties. Do not claim to have inspected files or performed actions. This is planning only; execution requires a separate user choice.' };
+  const prompt: Message = { role: 'system', content: 'Kullanıcı isteği için somut, sıralı ve uygulanabilir bir plan oluştur. İlgili kontrolleri, varsayımları ve belirsizlikleri dahil et. Dosyaları incelediğini veya eylem gerçekleştirdiğini iddia etme. Bu yalnızca bir planlama adımıdır; yürütme kullanıcının ayrı bir onayını gerektirir.' };
   let content = '';
   let responseItems: Record<string, unknown>[] | undefined;
   let reported = false;
@@ -243,23 +243,23 @@ export async function planTask(input: AgentInput): Promise<Message[]> {
       if (event.type === 'text') {
         content += event.text;
         input.onEvent(event);
-        if (content.length > 40_000) throw new Error('Plan exceeds the response limit.');
+        if (content.length > 40_000) throw new Error('Plan yanıt sınırını aştı.');
       } else if (event.type === 'response_items') responseItems = event.responseItems;
       else if (event.type === 'usage') input.onEvent(event);
       else if (event.type === 'error') { input.onEvent(event); reported = true; throw new Error(event.error); }
-      else if (event.type === 'tool_calls') throw new Error('Planning cannot execute tool calls.');
+      else if (event.type === 'tool_calls') throw new Error('Planlama aşamasında araç çağrıları yürütülemez.');
     }
     input.signal?.throwIfAborted();
-    if (!content.trim()) throw new Error('Provider returned an empty plan.');
+    if (!content.trim()) throw new Error('Sağlayıcı boş bir plan döndürdü.');
     return [...input.history, user, { role: 'assistant', content, ...(responseItems ? { responseItems } : {}) }];
   } catch (error) {
-    if (!reported) input.onEvent({ type: 'error', error: input.signal?.aborted ? 'Planning cancelled.' : error instanceof Error ? error.message : String(error) });
+    if (!reported) input.onEvent({ type: 'error', error: input.signal?.aborted ? 'Planlama İptal Edildi.' : error instanceof Error ? error.message : String(error) });
     throw error;
   }
 }
 
-/** Call only after the user explicitly chooses to execute the displayed plan. */
+/** Yalnızca kullanıcı görüntülenen planı açıkça onayladıktan sonra çağrılmalıdır. */
 export function executePlan(input: AgentInput, plan: string, runner: (input: AgentInput) => Promise<Message[]> = runAgent): Promise<Message[]> {
-  if (!plan.trim()) throw new Error('There is no plan to execute.');
-  return runner({ ...input, message: `Execute the following user-approved plan for this request: ${input.message}\n\n${plan}\n\nUse normal tool approvals and adapt if the evidence requires it.` });
+  if (!plan.trim()) throw new Error('Yürütülecek bir plan bulunmuyor.');
+  return runner({ ...input, message: `Bu istek için kullanıcı tarafından onaylanan aşağıdaki planı yürüt: ${input.message}\n\n${plan}\n\nNormal araç onaylarını kullan ve kanıtlar gerektiriyorsa plana uyum sağla.` });
 }

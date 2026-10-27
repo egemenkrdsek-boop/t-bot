@@ -45,14 +45,33 @@ export async function handleComputerTool(name: string, args: Record<string, unkn
     request = { ...args, screenshotPath: join(directory, `screenshot-${randomUUID()}.png`) };
   }
   const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
+  const TIMEOUT_MS = 15_000;
   return await new Promise<string>((resolve, reject) => {
+    let settled = false;
     const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-File', script], { windowsHide: true, signal: context.signal, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = ''; let stderr = '';
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch {}
+      reject(new Error('Masaüstü kontrol komutu zaman aşımına uğradı (15sn).'));
+    }, TIMEOUT_MS);
+
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve(stdout.trim()) : reject(new Error(`Computer action failed: ${stderr.trim() || `exit ${code}`}`)));
+    child.on('error', err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      code === 0 ? resolve(stdout.trim()) : reject(new Error(`Computer action failed: ${stderr.trim() || `exit ${code}`}`));
+    });
     child.stdin.end(JSON.stringify(request));
   });
 }

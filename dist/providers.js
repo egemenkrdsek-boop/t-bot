@@ -22,23 +22,23 @@ function safeUrl(value) {
         url = new URL(value);
     }
     catch {
-        throw new Error('Provider endpoint is invalid. Configure a valid HTTPS URL or localhost URL.');
+        throw new Error('Sağlayıcı uç noktası geçersiz. Geçerli bir HTTPS veya localhost URL\'si yapılandırın.');
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash)
-        throw new Error('Endpoint must use HTTPS, or HTTP on localhost, and must not contain credentials, query or fragment.');
+        throw new Error('Uç nokta HTTPS (veya localhost üzerinde HTTP) kullanmalı; kimlik bilgisi, sorgu parametresi veya parça içermemelidir.');
     return url;
 }
 function endpoint(base, path) { const url = safeUrl(base); url.pathname = `${url.pathname.replace(/\/$/, '')}/${path}`; return url.toString(); }
 function objectArgs(raw) {
     const value = JSON.parse(raw || '{}');
     if (!value || typeof value !== 'object' || Array.isArray(value))
-        throw new Error('Tool arguments must be a JSON object.');
+        throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
     return value;
 }
 async function* sse(response) {
     if (!response.body)
-        throw new Error('Provider returned an empty response stream.');
+        throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -58,7 +58,7 @@ async function* sse(response) {
                 buffer = buffer.slice(match.index + match[0].length);
                 frameSize += line.length + match[0].length;
                 if (frameSize > 4_000_000)
-                    throw new Error('Provider stream frame is too large.');
+                    throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
                 if (!line) {
                     if (data.length)
                         yield parse(data.join('\n'));
@@ -69,7 +69,7 @@ async function* sse(response) {
                     data.push(line.slice(5).replace(/^ /, ''));
             }
             if (frameSize + buffer.length > 4_000_000)
-                throw new Error('Provider stream frame is too large.');
+                throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
             // An unterminated SSE event is discarded on EOF, per the event-stream protocol.
             if (done)
                 break;
@@ -106,15 +106,15 @@ function geminiImages(m) { return (m.images ?? []).map(image => ({ inlineData: {
 export function createProvider(config) {
     const spec = PROVIDER_CATALOG.find(p => p.id === config.id);
     if (!spec)
-        throw new Error(`Unknown provider: ${config.id}`);
+        throw new Error(`Bilinmeyen sağlayıcı: ${config.id}`);
     if (!config.model.trim())
-        throw new Error('A model is required.');
+        throw new Error('Bir model belirtilmelidir.');
     if (spec.requiresApiKey && !config.apiKey?.trim())
-        throw new Error(`${spec.label} requires an API key.`);
+        throw new Error(`${spec.label} için bir API anahtarı gereklidir.`);
     // Only custom and local providers accept an override; a stale endpoint must not receive another provider's key.
     const base = (['custom', 'ollama', 'lmstudio'].includes(spec.id) ? config.baseUrl?.trim() : undefined) || spec.baseUrl;
     if (!base)
-        throw new Error('A custom endpoint is required.');
+        throw new Error('Özel bir uç nokta gereklidir.');
     safeUrl(base);
     if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model))
         return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey, effort: config.effort, timeoutMs: config.timeoutMs });
@@ -167,7 +167,7 @@ export function createProvider(config) {
                     });
                     body = {
                         model: config.model,
-                        max_tokens: 4096,
+                        max_tokens: 8192,
                         stream: true,
                         ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
                         messages: anthropicMessages,
@@ -210,7 +210,7 @@ export function createProvider(config) {
                     return;
                 }
                 if (!response.ok)
-                    throw new Error(`Provider request failed (HTTP ${response.status}).`);
+                    throw new Error(`Sağlayıcı isteği başarısız oldu (HTTP ${response.status}).`);
                 const pending = new Map();
                 const complete = [];
                 let inputTokens;
@@ -220,7 +220,7 @@ export function createProvider(config) {
                 let toolFinish = false;
                 for await (const chunk of sse(response)) {
                     if (chunk.error || chunk.type === 'error')
-                        throw new Error('Provider reported a stream error.');
+                        throw new Error('Sağlayıcı bir akış hatası bildirdi.');
                     if (spec.id === 'anthropic') {
                         if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use')
                             pending.set(chunk.index, { id: chunk.content_block.id, name: chunk.content_block.name, args: '' });
@@ -235,8 +235,14 @@ export function createProvider(config) {
                         }
                         if (chunk.type === 'message_stop')
                             finished = true;
-                        if (chunk.type === 'message_delta' && chunk.delta?.stop_reason === 'tool_use')
-                            toolFinish = true;
+                        if (chunk.type === 'message_delta') {
+                            if (chunk.delta?.stop_reason === 'tool_use')
+                                toolFinish = true;
+                            else if (chunk.delta?.stop_reason === 'max_tokens' && pending.size === 0) {
+                                finished = true;
+                                toolFinish = true;
+                            }
+                        }
                         if (chunk.type === 'message_start') {
                             inputTokens = chunk.message?.usage?.input_tokens;
                             const cacheRead = chunk.message?.usage?.cache_read_input_tokens;
@@ -257,9 +263,9 @@ export function createProvider(config) {
                             if (part.functionCall) {
                                 const args = part.functionCall.args ?? {};
                                 if (!args || typeof args !== 'object' || Array.isArray(args))
-                                    throw new Error('Tool arguments must be a JSON object.');
+                                    throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
                                 if (typeof part.functionCall.name !== 'string' || !part.functionCall.name)
-                                    throw new Error('Incomplete tool call received.');
+                                    throw new Error('Eksik araç çağrısı alındı.');
                                 complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) });
                             }
                         }
@@ -296,12 +302,12 @@ export function createProvider(config) {
                     }
                 }
                 if ((pending.size || complete.length) && (!finished || !toolFinish))
-                    throw new Error('Incomplete provider stream; tool calls were discarded.');
+                    throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
                 if (!finished)
-                    throw new Error('Incomplete provider stream.');
+                    throw new Error('Tamamlanmamış sağlayıcı akışı.');
                 for (const call of pending.values()) {
                     if (!call.id || !call.name)
-                        throw new Error('Incomplete tool call received.');
+                        throw new Error('Eksik araç çağrısı alındı.');
                     complete.push({ id: call.id, name: call.name, arguments: objectArgs(call.args) });
                 }
                 if (complete.length)
@@ -310,7 +316,7 @@ export function createProvider(config) {
                     yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) };
             }
             catch (error) {
-                yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' };
+                yield { type: 'error', error: options.signal?.aborted ? 'İstek iptal edildi.' : signal.aborted ? 'Sağlayıcı İsteği Zaman Aşımına Uğradı.' : error instanceof Error && /^(Sağlayıcı|Tamamlanmamış|Eksik|Araç|Bilinmeyen|Bir model|Özel bir|Uç nokta|Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Sağlayıcı isteği başarısız oldu veya geçersiz veri döndürdü.' };
             }
         } };
 }

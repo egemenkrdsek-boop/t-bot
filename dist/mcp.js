@@ -136,10 +136,10 @@ export async function connectMcp(service, token, options = {}) {
         if (!all.length)
             throw new Error('MCP server returned no tools.');
         const map = new Map();
-        const safeService = serviceName.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 30) || 'mcp';
+        const safeService = serviceName.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 18) || 'mcp';
         const definitions = all.map(tool => {
-            const hash = createHash('sha256').update(tool.name).digest('hex').slice(0, 12);
-            const safe = tool.name.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 35);
+            const hash = createHash('sha256').update(tool.name).digest('hex').slice(0, 8);
+            const safe = tool.name.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 26);
             const name = `mcp_${safeService}_${safe}_${hash}`;
             if (map.has(name) || !tool.name || JSON.stringify(tool.inputSchema).length > 32_000)
                 throw new Error('Invalid MCP tool manifest.');

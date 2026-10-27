@@ -8,9 +8,9 @@ export interface UltracodeOptions {
 }
 /**
  * 4 Aşamalı Öz-Onarımlı (Self-Healing) Ultracode Mühendislik Hattı:
- * 1. Araştırma (Research): Salt-okunur alt ajanlarla kanıt toplama.
- * 2. Uygulama (Implementation): Ana ajanla kodlama ve değişiklikleri uygulama.
- * 3. Bağımsız Denetim (Review): Salt-okunur denetçi ajanla değişiklikleri inceleme ([ONAYLANDI] / [ONARIM_GEREKLI]).
- * 4. Otonom Öz-Onarım (Self-Healing Pass): Denetçi onarım gerektirirse ana ajanın hataları kendi kendine düzeltmesi.
+ * 1. Uzman Alt Ajan Araştırması ve Uygulama
+ * 2. Bağımsız Kalite ve Güvenlik Denetimi
+ * 3. Otonom Öz-Onarım ve Doğrulama
+ * 4. Son İnceleme ve Mühendislik Özeti Hazırlanıyor
  */
 export declare function runUltracode(input: UltracodeInput, options?: UltracodeOptions): Promise<Message[]>;

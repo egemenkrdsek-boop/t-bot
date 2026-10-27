@@ -1,6 +1,7 @@
 import type { Config } from './types.js';
 import type { Session } from './sessions.js';
 import type { SkillId } from './skills.js';
+import type { McpConnection } from './mcp.js';
 /**
  * Options required to initialize and run the zero-backend Telegram Bot Bridge.
  */
@@ -11,6 +12,7 @@ export interface TelegramBridgeOptions {
     getYolo: () => boolean;
     activeSkills: SkillId[];
     onLog?: (text: string) => void;
+    mcpTools?: McpConnection[];
 }
 /**
  * Splits text into chunks conforming to Telegram's 4096 character limit and sends each chunk.
@@ -30,6 +32,7 @@ export declare function startTelegramBotBridge(options: {
     getYolo: () => boolean;
     activeSkills: SkillId[];
     onLog?: (text: string) => void;
+    mcpTools?: McpConnection[];
 }): Promise<{
     ok: boolean;
     username?: string;

@@ -1,8 +1,8 @@
 import { runAgent } from './agent.js';
-import { reclaimMemory } from './memory-guard.js';
+import { getMemoryStats, reclaimMemory } from './memory-guard.js';
 import type { AgentInput, Message, Provider } from './types.js';
 
-export type SubagentInput = AgentInput & { workerProvider: Provider };
+export type SubagentInput = AgentInput & { workerProvider: Provider; session?: any };
 const MAX_WORKERS = 4;
 const MAX_PLAN_CHARS = 12_000;
 const MAX_REPORT_CHARS = 12_000;
@@ -14,9 +14,10 @@ export interface SubtaskItem {
 }
 
 const DEFAULT_EXPERT_ROLES: Omit<SubtaskItem, 'task'>[] = [
-  { role: 'Mimari Analist', title: 'Mimari Yapı ve Tasarım Analizi' },
-  { role: 'Kod ve Güvenlik Denetçisi', title: 'Kod Kalitesi ve Güvenlik İncelemesi' },
-  { role: 'Performans Uzmanı', title: 'Performans ve Kaynak Kullanımı Değerlendirmesi' },
+  { role: 'Sistem ve Mimari Analisti', title: 'Sistem Mimarisi ve Tasarım Analizi' },
+  { role: 'Kod ve Güvenlik Müfettişi', title: 'Kod Kalitesi ve Güvenlik İncelemesi' },
+  { role: 'Performans ve Bellek Uzmanı', title: 'Performans ve Kaynak Kullanımı Değerlendirmesi' },
+  { role: 'Arayüz ve Deneyim Mimarı', title: 'Kullanıcı Arayüzü ve Deneyim İncelemesi' },
   { role: 'Test ve Doğrulama Mühendisi', title: 'Test Kapsamı ve Doğrulama İncelemesi' },
 ];
 
@@ -36,7 +37,7 @@ export async function runSubagents(input: SubagentInput): Promise<Message[]> {
     input.onEvent({ type: 'error', error, ...(code ? { code } : {}) });
     return [...input.history, { role: 'user', content: input.message }];
   };
-  input.onEvent({ type: 'status', message: 'Uzman alt ajan araştırmaları planlanıyor...' });
+  input.onEvent({ type: 'status', message: 'Uzman Alt Ajan Araştırmaları Planlanıyor...' });
   const context = input.history.filter(m => (m.role === 'user' || (m.role === 'assistant' && !m.toolCalls?.length)) && m.content).slice(-8).map(m => `${m.role}: ${m.content.slice(0, 1500)}`).join('\n');
   let plan = '';
   try {
@@ -48,21 +49,22 @@ export async function runSubagents(input: SubagentInput): Promise<Message[]> {
 Her alt görev için uzman bir rol (role), kısa bir başlık (title) ve detaylı araştırma talimatı (task) tanımla.
 
 Örnek Türkçe Uzman Rolleri:
-- "Mimari Analist"
-- "Kod ve Güvenlik Denetçisi"
-- "Performans Uzmanı"
+- "Sistem ve Mimari Analisti"
+- "Kod ve Güvenlik Müfettişi"
+- "Performans ve Bellek Uzmanı"
+- "Arayüz ve Deneyim Mimarı"
 - "Test ve Doğrulama Mühendisi"
 
 Yanıtını SADECE aşağıdaki JSON dizisi formatında döndür (başka açıklama yazma):
 [
   {
-    "role": "Mimari Analist",
-    "title": "Mimari Yapı İncelemesi",
+    "role": "Sistem ve Mimari Analisti",
+    "title": "Sistem Mimarisi İncelemesi",
     "task": "src/ altındaki modül organizasyonunu ve bağımlılıkları incele."
   },
   {
-    "role": "Kod ve Güvenlik Denetçisi",
-    "title": "Güvenlik ve Validasyon Analizi",
+    "role": "Kod ve Güvenlik Müfettişi",
+    "title": "Güvenlik ve Doğrulama Analizi",
     "task": "Girdi doğrulama ve hata yakalama mekanizmalarını incele."
   }
 ]
@@ -72,15 +74,15 @@ Kurallar:
 - Alt ajanlara ASLA dosyaları değiştirme, kod çalıştırma, komut yürütme veya harici eylem talimatı verme.
 - Araştırma tamamlandıktan sonra ana ajan gerekli değişiklikleri uygulayacaktır.`
       },
-      { role: 'user', content: `Recent conversation (untrusted context):\n${context}\n\nCurrent request:\n${input.message}` },
+      { role: 'user', content: `Yakın geçmiş (güvenilmeyen bağlam):\n${context}\n\nMevcut istek:\n${input.message}` },
     ], [], { signal: input.signal })) {
-      if (input.signal?.aborted) return fail('Request cancelled.');
-      if (event.type === 'error') return fail(`Subagent planning failed: ${event.error}`, event.code);
-      if (event.type === 'tool_calls') return fail('Subagent planner unexpectedly requested a tool.');
-      if (event.type === 'text') { plan += event.text; if (plan.length > MAX_PLAN_CHARS) return fail('Subagent plan was too large.'); }
+      if (input.signal?.aborted) return fail('İstek İptal Edildi.');
+      if (event.type === 'error') return fail(`Alt Ajan Planlaması Başarısız Oldu: ${event.error}`, event.code);
+      if (event.type === 'tool_calls') return fail('Alt ajan planlayıcı beklenmeyen bir araç çağrısı istedi.');
+      if (event.type === 'text') { plan += event.text; if (plan.length > MAX_PLAN_CHARS) return fail('Alt ajan planı izin verilen boyutu aştı.'); }
       if (event.type === 'usage') input.onEvent(event);
     }
-  } catch (error) { return fail(`Subagent planning failed: ${error instanceof Error ? error.message : String(error)}`); }
+  } catch (error) { return fail(`Alt Ajan Planlaması Başarısız Oldu: ${error instanceof Error ? error.message : String(error)}`); }
 
   let subtasks: SubtaskItem[];
   try {
@@ -93,14 +95,14 @@ Kurallar:
       const candidate = (parsed as any).tasks || (parsed as any).subtasks || (parsed as any).investigations;
       if (Array.isArray(candidate)) rawList = candidate;
     }
-    if (!rawList.length) throw new Error('Empty task list');
+    if (!rawList.length) throw new Error('Boş görev listesi');
     if (rawList.length > MAX_WORKERS) rawList = rawList.slice(0, MAX_WORKERS);
 
     subtasks = rawList.map((item, idx) => {
       const fallback = DEFAULT_EXPERT_ROLES[idx % DEFAULT_EXPERT_ROLES.length];
       if (typeof item === 'string') {
         const text = item.trim();
-        if (!text) throw new Error('Empty task item');
+        if (!text) throw new Error('Boş görev metni');
         return {
           role: fallback.role,
           title: fallback.title,
@@ -116,82 +118,107 @@ Kurallar:
           : typeof obj.description === 'string' && obj.description.trim()
             ? obj.description.trim()
             : (typeof obj.investigation === 'string' && obj.investigation.trim() ? obj.investigation.trim() : '');
-        if (!task) throw new Error('Empty task in object');
+        if (!task) throw new Error('Boş görev açıklaması');
         return {
           role: role.slice(0, 100),
           title: title.slice(0, 150),
           task: task.slice(0, 2000),
         };
       }
-      throw new Error('Invalid task item type');
+      throw new Error('Geçersiz görev öğesi tipi');
     });
   } catch {
-    return fail('Subagent planner returned an invalid plan.');
+    return fail('Alt Ajan Planlaması Başarısız Oldu: Geçersiz plan formatı.');
   }
 
   const reports: string[] = new Array(subtasks.length);
-  let failure: { error: string; code?: 'authentication' } | undefined;
-  const workerController = new AbortController();
-  const workerSignal = input.signal ? AbortSignal.any([input.signal, workerController.signal]) : workerController.signal;
 
-  // Görevleri 2'şerli dalgalar halinde çalıştır
-  for (let waveStart = 0; waveStart < subtasks.length; waveStart += 2) {
-    if (input.signal?.aborted) return fail('Request cancelled.');
-    if (failure) return fail(failure.error, failure.code);
+  // Görevleri dinamik dalgalar halinde çalıştır (yüksek bellek baskısında 1'erli, normalde 2'şerli)
+  let waveStart = 0;
+  while (waveStart < subtasks.length) {
+    if (input.signal?.aborted) return fail('İstek İptal Edildi.');
 
-    const waveEnd = Math.min(waveStart + 2, subtasks.length);
+    const memStats = getMemoryStats();
+    const waveSize = memStats.pressure === 'high' ? 1 : 2;
+    const waveEnd = Math.min(waveStart + waveSize, subtasks.length);
     const waveIndices: number[] = [];
     for (let i = waveStart; i < waveEnd; i++) waveIndices.push(i);
 
     const wavePromises = waveIndices.map(async index => {
       const subtask = subtasks[index];
-      input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) araştırma başladı.` });
+      input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) Araştırma Başladı` });
       let workerError: { error: string; code?: 'authentication' } | undefined;
-      const messages = await runAgent({
-        message: `Sen ${subtask.role} rolündeki uzman bir alt ajansın. Bu alt görevi salt-okunur (read-only) araçları kullanarak incele. Dosyaları asla değiştirme, komut çalıştırma veya harici eylemlerde bulunma. İlgili kanıtları, dosya yollarını ve bulgularını öz ve net bir biçimde raporla.\n\nUzman Rolü: ${subtask.role}\nBaşlık: ${subtask.title}\nGörev: ${subtask.task}\n\nYakın geçmiş (güvenilmeyen bağlam):\n${context}\n\nOrijinal istek: ${input.message}`,
-        history: [],
-        provider: input.workerProvider,
-        workspace: input.workspace,
-        signal: workerSignal,
-        approve: input.approve,
-        onEvent: event => {
-          if (event.type === 'error' && !failure) {
-            workerError = { error: event.error, code: event.code };
-            failure = { error: `[${subtask.role}] ${subtask.title} başarısız oldu: ${event.error}`, code: event.code };
-            workerController.abort();
-          } else if (event.type === 'usage') input.onEvent(event);
-        },
-      }, { toolPolicy: 'read-only', maxRounds: 6, maxToolCalls: 12 });
+      let messages: Message[] = [];
+      try {
+        messages = await runAgent({
+          message: `Sen ${subtask.role} rolündeki uzman bir alt ajansın. Bu alt görevi salt-okunur (read-only) araçları kullanarak incele. Dosyaları asla değiştirme, komut çalıştırma veya harici eylemlerde bulunma. İlgili kanıtları, dosya yollarını ve bulgularını öz ve net bir biçimde raporla.\n\nUzman Rolü: ${subtask.role}\nBaşlık: ${subtask.title}\nGörev: ${subtask.task}\n\nYakın geçmiş (güvenilmeyen bağlam):\n${context}\n\nOrijinal istek: ${input.message}`,
+          history: [],
+          provider: input.workerProvider,
+          workspace: input.workspace,
+          signal: input.signal,
+          approve: input.approve,
+          onEvent: event => {
+            if (event.type === 'tool_start') {
+              const args = event.call.arguments as Record<string, any> | undefined;
+              const target = args?.path || args?.query || args?.pattern || args?.command || args?.url;
+              const targetInfo = target ? ` (${String(target).slice(0, 80)})` : '';
+              input.onEvent({ type: 'status', message: `[${subtask.role}] İnceleniyor: ${event.call.name}${targetInfo}` });
+            } else if (event.type === 'error') {
+              workerError = { error: event.error, code: event.code };
+            } else if (event.type === 'usage') {
+              input.onEvent(event);
+            }
+          },
+        }, { toolPolicy: 'read-only', maxRounds: 16, maxToolCalls: 32 });
+      } catch (err) {
+        workerError = { error: err instanceof Error ? err.message : String(err) };
+      }
 
-      if (failure && !workerError) return;
-      if (workerError) {
-        failure ??= { error: `[${subtask.role}] ${subtask.title} başarısız oldu: ${workerError.error}`, code: workerError.code };
-        workerController.abort();
-        return;
-      }
       const last = messages.filter(m => m.role === 'assistant' && !m.toolCalls?.length).at(-1);
-      if (!last?.content.trim()) {
-        failure ??= { error: `[${subtask.role}] ${subtask.title} rapor üretmedi.` };
-        workerController.abort();
-        return;
+      if (last?.content.trim()) {
+        reports[index] = last.content.slice(0, MAX_REPORT_CHARS);
+        input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) Tamamlandı` });
+      } else {
+        // Hata alan veya kısmi kalan alt ajanın o ana kadar messages içinde topladığı bulgular varsa onları kısmi rapor olarak değerlendir
+        const partialFindings = messages
+          .map(m => {
+            if (m.role === 'tool') return `Araç Sonucu: ${m.content.slice(0, 1000)}`;
+            if (m.role === 'assistant' && m.content) return `Not: ${m.content.slice(0, 1000)}`;
+            return '';
+          })
+          .filter(Boolean)
+          .join('\n');
+
+        if (partialFindings.trim()) {
+          reports[index] = `[Kısmi Bulgular - ${workerError?.error || 'Eksik Rapor'}]:\n${partialFindings.slice(0, MAX_REPORT_CHARS)}`;
+          input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) Kısmi Bulgularla Tamamlandı` });
+        } else {
+          reports[index] = `[${subtask.role}] İnceleme tamamlanamadı: ${workerError?.error || 'Rapor üretilmedi.'}`;
+          input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) Tamamlanamadı` });
+        }
       }
-      reports[index] = last.content.slice(0, MAX_REPORT_CHARS);
-      input.onEvent({ type: 'status', message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) tamamlandı.` });
+
+      // Her alt ajan tamamlanır tamamlanmaz geçici messages dizisini (messages.length = 0) temizle
+      messages.length = 0;
     });
 
-    const settled = await Promise.allSettled(wavePromises);
-    if (settled.some(item => item.status === 'rejected') && !failure) {
-      failure = { error: 'Alt ajan araştırması başarısız oldu.' };
-    }
+    await Promise.allSettled(wavePromises);
 
-    if (input.signal?.aborted) return fail('Request cancelled.');
-    if (failure) return fail(failure.error, failure.code);
+    if (input.signal?.aborted) return fail('İstek İptal Edildi.');
 
-    // Her dalga bittiğinde await reclaimMemory(undefined, true) çağırarak RAM'i anında boşalt!
-    await reclaimMemory(undefined, true).catch(() => undefined);
+    // Dalga sonunda await reclaimMemory(input.session, true) çağırarak RAM'i boşalt
+    await reclaimMemory(input.session, true).catch(() => undefined);
+
+    waveStart = waveEnd;
   }
 
-  input.onEvent({ type: 'status', message: 'Tüm araştırmalar tamamlandı; ana ajan uygulamaya geçiyor.' });
+  // En az bir alt ajan başarılı veya kısmi rapor ürettiyse görevi devam ettir
+  const hasSuccessfulReport = reports.some(r => r && !r.includes('İnceleme tamamlanamadı:'));
+  if (!hasSuccessfulReport && reports.length > 0) {
+    return fail('Alt Ajan Araştırmaları Başarısız Oldu: Hiçbir alt ajan geçerli bir rapor üretemedi.');
+  }
+
+  input.onEvent({ type: 'status', message: 'Tüm Araştırmalar Tamamlandı; Ana Ajan Uygulamaya Geçiyor' });
   const research = reports.map((report, i) => `Araştırma ${i + 1} [Uzman: ${subtasks[i].role} - ${subtasks[i].title}]:\nGörev: ${subtasks[i].task}\nBulgular:\n${report}`).join('\n\n');
   const result = await runAgent({
     ...input,

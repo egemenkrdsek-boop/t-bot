@@ -54,6 +54,19 @@ export class GroundingLedger {
         this.warnings.push(warning);
     }
     /**
+     * Record a shell command execution in the ledger.
+     * If commandsRun exceeds 100 entries, removes oldest entries to prevent memory bloat.
+     */
+    recordShellCommand(commandOrRecord, ok = true, outputSnippet = '') {
+        const record = typeof commandOrRecord === 'string'
+            ? { command: commandOrRecord, ok, timestamp: Date.now(), outputSnippet }
+            : commandOrRecord;
+        this.commandsRun.push(record);
+        while (this.commandsRun.length > 100) {
+            this.commandsRun.shift();
+        }
+    }
+    /**
      * Clear all recorded states.
      */
     clear() {
@@ -127,7 +140,7 @@ export class GroundingLedger {
                 ? args.command
                 : (typeof args.cmd === 'string' ? args.cmd : (typeof args.CommandLine === 'string' ? args.CommandLine : ''));
             const snippet = result.output ? result.output.slice(0, 300) : '';
-            this.commandsRun.push({
+            this.recordShellCommand({
                 command: cmd,
                 ok: result.ok,
                 timestamp: Date.now(),
@@ -180,6 +193,12 @@ export function getGroundingLedger(workspace) {
  */
 export function getStatus(ledger = globalGroundingLedger) {
     return ledger.getStatus();
+}
+/**
+ * Standalone helper to record shell command in grounding ledger.
+ */
+export function recordShellCommand(commandOrRecord, ok = true, outputSnippet = '', ledger = globalGroundingLedger) {
+    ledger.recordShellCommand(commandOrRecord, ok, outputSnippet);
 }
 /**
  * Fast TypeScript lexer/scanner that validates balanced parentheses, braces,

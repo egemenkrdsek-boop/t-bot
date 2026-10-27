@@ -26,10 +26,10 @@ const word = [
     '10001 10001 00101',
     '11110 01110 00010',
 ];
-/** Render two image pixels per terminal cell, with a plain-text fallback. */
+/** Terminal hücresi başına iki piksel çizer; düz metin yedeği içerir. */
 export function logo(width, frame = -1) {
     if (!unicode || width < 30)
-        return [`  ${theme.bold('[t] Bot')}`];
+        return [`  ${theme.bold('[T] Bot')}`];
     const compact = width < 54;
     const monochrome = process.env.NO_COLOR !== undefined;
     const trueColor = Boolean(process.env.WT_SESSION) || /truecolor|24bit/i.test(process.env.COLORTERM ?? '');
@@ -38,18 +38,30 @@ export function logo(width, frame = -1) {
         const prefix = background ? '48' : '38';
         if (pixel === '.')
             return background ? '49' : '39';
-        if (trueColor)
-            return `${prefix};2;${pixel === 'G' ? (highlight ? '160;218;80' : '120;184;42') : '255;255;255'}`;
-        if (color256)
-            return `${prefix};5;${pixel === 'G' ? (highlight ? '149' : '107') : '231'}`;
-        return background ? (pixel === 'G' ? (highlight ? '102' : '42') : '107') : (pixel === 'G' ? (highlight ? '92' : '32') : '97');
+        // Yumuşak Zümrüt (#38D9A9) ve Mat Adaçayı (#2B8A66), Göz Yormayan Kırık Beyaz (#DAE4EB)
+        if (trueColor) {
+            if (pixel === 'G') {
+                return `${prefix};2;${highlight ? '56;217;169' : '43;138;102'}`;
+            }
+            return `${prefix};2;${highlight ? '240;248;252' : '218;228;235'}`;
+        }
+        if (color256) {
+            if (pixel === 'G') {
+                return `${prefix};5;${highlight ? '79' : '29'}`;
+            }
+            return `${prefix};5;${highlight ? '255' : '254'}`;
+        }
+        return background
+            ? (pixel === 'G' ? (highlight ? '102' : '42') : '107')
+            : (pixel === 'G' ? (highlight ? '92' : '32') : '97');
     };
     const lines = [];
+    const wavePos = frame >= 0 ? frame * 8 : -1;
     for (let y = 0; y < mark.length; y += 2) {
         let row = '  ';
         for (let x = 0; x < mark[y].length; x += compact ? 2 : 1) {
-            const highlight = frame >= 0 && Math.abs(x - frame * 10) < 7;
-            const visible = frame < 0 || x <= frame * 10 + 8;
+            const highlight = frame >= 0 && Math.abs(x - wavePos) < 6;
+            const visible = frame < 0 || x <= wavePos + 8;
             const top = visible ? mark[y][x] : '.';
             const bottom = visible ? mark[y + 1][x] : '.';
             if (monochrome)
@@ -62,32 +74,35 @@ export function logo(width, frame = -1) {
                 row += `\x1b[${color(top, false, highlight)};${color(bottom, true, highlight)}m▀`;
         }
         row += monochrome ? '  ' : '\x1b[0m  ';
-        // Double each font pixel in both axes to match the 14-pixel mark height.
+        // 14 piksellik işaret boyuna eşitlemek için iki eksende de piksel büyütme
         for (const [x, pixel] of [...word[y / 2]].entries()) {
-            const highlight = frame >= 0 && Math.abs(17 + x * 2 - frame * 10) < 7;
+            const fontX = 17 + x * 2;
+            const highlight = frame >= 0 && Math.abs(fontX - wavePos) < 6;
             const glyph = compact ? '█' : '██';
-            const visible = frame < 0 || 17 + x * 2 <= frame * 10 + 8;
-            row += pixel === '1' && visible ? (highlight && !monochrome ? theme.accent(glyph) : glyph) : ' '.repeat(glyph.length);
+            const visible = frame < 0 || fontX <= wavePos + 8;
+            row += pixel === '1' && visible
+                ? (highlight && !monochrome ? theme.accent(glyph) : (!monochrome ? theme.text(glyph) : glyph))
+                : ' '.repeat(glyph.length);
         }
         lines.push(row);
     }
     return lines;
 }
-/** Render static logo frame directly to stdout. */
+/** Statik logoyu doğrudan standart çıktıya çizer. */
 export function renderLogo(width) {
     const logoWidth = width ?? process.stdout.columns ?? 70;
     const lines = logo(logoWidth, -1);
     process.stdout.write(`\n${lines.join('\n')}\n`);
 }
 /**
- * Terminal-responsive animated logo.
- * If terminal rows < 12 or columns < 50, renders static logo directly
- * to prevent cursor drift/clipping.
+ * Terminal Duyarlı Hareketli Logo Çizimi.
+ * Terminal satır sayısı < 12 veya sütun sayısı < 50 ise imleç kaymasını
+ * önlemek için statik logo çizer.
  */
 export async function animateLogo(width, isExiting) {
     const cols = width ?? process.stdout.columns ?? 70;
     const rows = process.stdout.rows ?? 24;
-    // Terminal boyutu kontrolü: rows < 12 veya columns < 50 ise imleç kaymasını önlemek için statik bas
+    // Terminal Boyutu Kontrolü
     const skipAnimation = rows < 12 ||
         cols < 50 ||
         process.env.TBOT_NO_ANIMATION !== undefined ||
@@ -98,17 +113,18 @@ export async function animateLogo(width, isExiting) {
         renderLogo(cols);
         return;
     }
-    // İlk kare
+    // İlk Kare
     process.stdout.write(`\n${logo(cols, 0).join('\n')}\n`);
-    // Dalga animasyonu (5 kare)
-    for (let frame = 1; frame <= 5; frame++) {
+    // Yumuşak Dalga Animasyonu
+    const totalFrames = 7;
+    for (let frame = 1; frame <= totalFrames; frame++) {
         if (isExiting?.())
             break;
-        await new Promise(resolve => setTimeout(resolve, 110));
+        await new Promise(resolve => setTimeout(resolve, 75));
         if (isExiting?.())
             break;
-        // 7 satır yukarı çıkıp yeniden çiz
-        process.stdout.write(`\x1b[7A\r${logo(cols, frame === 5 ? -1 : frame).join('\n')}\n`);
+        // 7 Satır Yukarı Çıkıp Yeniden Çiz
+        process.stdout.write(`\x1b[7A\r${logo(cols, frame === totalFrames ? -1 : frame).join('\n')}\n`);
     }
 }
 //# sourceMappingURL=logo.js.map

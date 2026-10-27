@@ -23,19 +23,19 @@ export const PROVIDER_CATALOG = [
 type Obj = Record<string, any>;
 function safeUrl(value: string): URL {
   let url: URL;
-  try { url = new URL(value); } catch { throw new Error('Provider endpoint is invalid. Configure a valid HTTPS URL or localhost URL.'); }
+  try { url = new URL(value); } catch { throw new Error('Sağlayıcı uç noktası geçersiz. Geçerli bir HTTPS veya localhost URL\'si yapılandırın.'); }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash) throw new Error('Endpoint must use HTTPS, or HTTP on localhost, and must not contain credentials, query or fragment.');
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash) throw new Error('Uç nokta HTTPS (veya localhost üzerinde HTTP) kullanmalı; kimlik bilgisi, sorgu parametresi veya parça içermemelidir.');
   return url;
 }
 function endpoint(base: string, path: string): string { const url = safeUrl(base); url.pathname = `${url.pathname.replace(/\/$/, '')}/${path}`; return url.toString(); }
 function objectArgs(raw: string): Record<string, unknown> {
   const value: unknown = JSON.parse(raw || '{}');
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Tool arguments must be a JSON object.');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
   return value as Record<string, unknown>;
 }
 async function* sse(response: Response): AsyncGenerator<Obj> {
-  if (!response.body) throw new Error('Provider returned an empty response stream.');
+  if (!response.body) throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
   const reader = response.body.getReader(); const decoder = new TextDecoder();
   let buffer = ''; let data: string[] = []; let frameSize = 0;
   const parse = (payload: string): Obj => payload === '[DONE]' ? { __done: true } : JSON.parse(payload) as Obj;
@@ -48,11 +48,11 @@ async function* sse(response: Response): AsyncGenerator<Obj> {
         if (!done && match[0] === '\r' && match.index === buffer.length - 1) break;
         const line = buffer.slice(0, match.index); buffer = buffer.slice(match.index + match[0].length);
         frameSize += line.length + match[0].length;
-        if (frameSize > 4_000_000) throw new Error('Provider stream frame is too large.');
+        if (frameSize > 4_000_000) throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
         if (!line) { if (data.length) yield parse(data.join('\n')); data = []; frameSize = 0; }
         else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
       }
-      if (frameSize + buffer.length > 4_000_000) throw new Error('Provider stream frame is too large.');
+      if (frameSize + buffer.length > 4_000_000) throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
       // An unterminated SSE event is discarded on EOF, per the event-stream protocol.
       if (done) break;
     }
@@ -77,12 +77,12 @@ function geminiImages(m: Message): Obj[] { return (m.images ?? []).map(image => 
 
 export function createProvider(config: ProviderConfig): Provider {
   const spec = PROVIDER_CATALOG.find(p => p.id === config.id);
-  if (!spec) throw new Error(`Unknown provider: ${config.id}`);
-  if (!config.model.trim()) throw new Error('A model is required.');
-  if (spec.requiresApiKey && !config.apiKey?.trim()) throw new Error(`${spec.label} requires an API key.`);
+  if (!spec) throw new Error(`Bilinmeyen sağlayıcı: ${config.id}`);
+  if (!config.model.trim()) throw new Error('Bir model belirtilmelidir.');
+  if (spec.requiresApiKey && !config.apiKey?.trim()) throw new Error(`${spec.label} için bir API anahtarı gereklidir.`);
   // Only custom and local providers accept an override; a stale endpoint must not receive another provider's key.
   const base = (['custom', 'ollama', 'lmstudio'].includes(spec.id) ? config.baseUrl?.trim() : undefined) || spec.baseUrl;
-  if (!base) throw new Error('A custom endpoint is required.');
+  if (!base) throw new Error('Özel bir uç nokta gereklidir.');
   safeUrl(base);
   if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model)) return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey!, effort: config.effort, timeoutMs: config.timeoutMs });
   return { id: spec.id, label: spec.label, async *stream(messages: Message[], tools: ToolDefinition[], options = {}): AsyncGenerator<ProviderEvent> {
@@ -135,7 +135,7 @@ export function createProvider(config: ProviderConfig): Provider {
 
         body = {
           model: config.model,
-          max_tokens: 4096,
+          max_tokens: 8192,
           stream: true,
           ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
           messages: anthropicMessages,
@@ -168,15 +168,21 @@ export function createProvider(config: ProviderConfig): Provider {
         yield { type: 'error', code: 'authentication', error: `${spec.label} kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden bu sağlayıcının API anahtarını kontrol edin; varsa sağlayıcıya özel ortam değişkeni veya TBOT_API_KEY kullanılan anahtarı etkileyebilir.` };
         return;
       }
-      if (!response.ok) throw new Error(`Provider request failed (HTTP ${response.status}).`);
+      if (!response.ok) throw new Error(`Sağlayıcı isteği başarısız oldu (HTTP ${response.status}).`);
       const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined; let finished = false; let toolFinish = false;
       for await (const chunk of sse(response)) {
-        if (chunk.error || chunk.type === 'error') throw new Error('Provider reported a stream error.');
+        if (chunk.error || chunk.type === 'error') throw new Error('Sağlayıcı bir akış hatası bildirdi.');
         if (spec.id === 'anthropic') {
           if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') pending.set(chunk.index, { id: chunk.content_block.id, name: chunk.content_block.name, args: '' });
           if (chunk.type === 'content_block_delta') { if (chunk.delta?.type === 'text_delta') yield { type: 'text', text: chunk.delta.text }; if (chunk.delta?.type === 'input_json_delta') { const call = pending.get(chunk.index); if (call) call.args += chunk.delta.partial_json; } }
           if (chunk.type === 'message_stop') finished = true;
-          if (chunk.type === 'message_delta' && chunk.delta?.stop_reason === 'tool_use') toolFinish = true;
+          if (chunk.type === 'message_delta') {
+            if (chunk.delta?.stop_reason === 'tool_use') toolFinish = true;
+            else if (chunk.delta?.stop_reason === 'max_tokens' && pending.size === 0) {
+              finished = true;
+              toolFinish = true;
+            }
+          }
           if (chunk.type === 'message_start') {
             inputTokens = chunk.message?.usage?.input_tokens;
             const cacheRead = chunk.message?.usage?.cache_read_input_tokens;
@@ -188,7 +194,7 @@ export function createProvider(config: ProviderConfig): Provider {
             if (typeof cacheRead === 'number') cachedTokens = (cachedTokens ?? 0) + cacheRead;
           }
         } else if (spec.id === 'gemini') {
-          for (const part of chunk.candidates?.[0]?.content?.parts ?? []) { if (typeof part.text === 'string') yield { type: 'text', text: part.text }; if (part.functionCall) { const args = part.functionCall.args ?? {}; if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be a JSON object.'); if (typeof part.functionCall.name !== 'string' || !part.functionCall.name) throw new Error('Incomplete tool call received.'); complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) }); } }
+          for (const part of chunk.candidates?.[0]?.content?.parts ?? []) { if (typeof part.text === 'string') yield { type: 'text', text: part.text }; if (part.functionCall) { const args = part.functionCall.args ?? {}; if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.'); if (typeof part.functionCall.name !== 'string' || !part.functionCall.name) throw new Error('Eksik araç çağrısı alındı.'); complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) }); } }
           if (chunk.candidates?.[0]?.finishReason === 'STOP') { finished = true; toolFinish = true; }
           inputTokens = chunk.usageMetadata?.promptTokenCount ?? inputTokens; outputTokens = chunk.usageMetadata?.candidatesTokenCount ?? outputTokens;
           if (typeof chunk.usageMetadata?.cachedContentTokenCount === 'number') {
@@ -206,12 +212,12 @@ export function createProvider(config: ProviderConfig): Provider {
           }
         }
       }
-      if ((pending.size || complete.length) && (!finished || !toolFinish)) throw new Error('Incomplete provider stream; tool calls were discarded.');
-      if (!finished) throw new Error('Incomplete provider stream.');
-      for (const call of pending.values()) { if (!call.id || !call.name) throw new Error('Incomplete tool call received.'); complete.push({ id: call.id, name: call.name, arguments: objectArgs(call.args) }); }
+      if ((pending.size || complete.length) && (!finished || !toolFinish)) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
+      if (!finished) throw new Error('Tamamlanmamış sağlayıcı akışı.');
+      for (const call of pending.values()) { if (!call.id || !call.name) throw new Error('Eksik araç çağrısı alındı.'); complete.push({ id: call.id, name: call.name, arguments: objectArgs(call.args) }); }
       if (complete.length) yield { type: 'tool_calls', calls: complete };
       if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) } as ProviderEvent;
-    } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' }; }
+    } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'İstek iptal edildi.' : signal.aborted ? 'Sağlayıcı İsteği Zaman Aşımına Uğradı.' : error instanceof Error && /^(Sağlayıcı|Tamamlanmamış|Eksik|Araç|Bilinmeyen|Bir model|Özel bir|Uç nokta|Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Sağlayıcı isteği başarısız oldu veya geçersiz veri döndürdü.' }; }
   } };
 }
 

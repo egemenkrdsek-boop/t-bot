@@ -9,7 +9,7 @@ export interface HudConfig {
 }
 /**
  * Renders the single-line Cyber-Minimalist HUD status bar:
- * ╭─[ ⚡ model │ 🧠 efor │ 💎 Tasarruf: %XX (Y tok) │ 🛡️ Grounding: ✓ │ 💾 RAM: XX MB │ 🤖 Bot/MCP ]
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]
  */
 export declare function renderHudBar(config: HudConfig): string;
 export interface EventPrinterOptions {
@@ -23,9 +23,10 @@ export interface EventPrinter {
     startThinking: (label?: string) => void;
     stopSpinner: () => void;
 }
+export declare function formatToolTitle(toolName: string): string;
 /**
- * Creates an event printer with animated braille spinner, streaming syntax/diff highlighting,
- * and token/grounding/memory HUD reporting.
+ * Creates an event printer with animated braille spinner, wave bar thinking animation,
+ * streaming syntax/diff highlighting, and token/grounding/memory HUD reporting.
  */
 export declare function createEventPrinter(options: EventPrinterOptions): EventPrinter;
 /** Print comprehensive help menu with modern cyber-minimalist categories. */

@@ -1,4 +1,4 @@
-![T Bot logosu](assets/tabit.webp)
+![T Bot Logosu](assets/tabit.webp)
 
 # T Bot 2.0
 
@@ -8,7 +8,7 @@ T Bot 2.0; terminalinizde çalışan, çoklu model sağlayıcılarıyla (Gemini,
 
 ---
 
-## ⚡ Tek Komutla Uzaktan Terminal Kurulumu
+## Tek Komutla Uzaktan Terminal Kurulumu
 
 T Bot 2.0'ı uzaktan terminal yoluyla tek komutla sıfır hatayla anında kurabilirsiniz:
 
@@ -17,7 +17,7 @@ T Bot 2.0'ı uzaktan terminal yoluyla tek komutla sıfır hatayla anında kurabi
 irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
 ```
 
-### Linux & macOS (Bash / Sh)
+### Linux ve macOS (Bash / Sh)
 ```bash
 curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh
 ```
@@ -32,7 +32,7 @@ npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git
 
 ---
 
-## 🏛️ Üçlü Çekirdek (Tri-Core) Mimarisi
+## Üçlü Çekirdek (Tri-Core) Mimarisi
 
 T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 
@@ -57,8 +57,8 @@ T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 * **4 Aşamalı Öz-Onarımlı `Ultracode` (`/ultracode`):**
   1. *Derin Paralel Araştırma:* Proje mimarisini ve bağımlılıkları haritalar.
   2. *Grounded Uygulama:* Read-Before-Write prensibiyle atomik değişiklikleri hayata geçirir.
-  3. *AST & Sözdizimi Öz-Onarımı:* Ayrıştırıcı hatalarını tespit edip otomatik rollback ve telafi adımları uygular.
-  4. *Bağımsız Salt-Okunur Denetim & İddia Doğrulaması:* Yapılan işleri bağımsız gözle denetler ve doğrular.
+  3. *AST ve Sözdizimi Öz-Onarımı:* Ayrıştırıcı hatalarını tespit edip otomatik rollback ve telafi adımları uygular.
+  4. *Bağımsız Salt-Okunur Denetim ve İddia Doğrulaması:* Yapılan işleri bağımsız gözle denetler ve doğrular.
 
 ### 2. Otonom Masaüstü ve Genel Ajan (Autonomous Desktop Agent)
 * **Çok Adımlı Hedef Yönetimi (`/goal`):** Karmaşık görevleri alt hedeflere böler, durumunu izler (`/goal status`, `/goal pause`, `/goal complete`).
@@ -76,18 +76,18 @@ T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 
 ---
 
-## 💎 %50–%75 Gerçek Token Tasarrufu Motoru
+## %50–%75 Gerçek Token Tasarrufu Motoru
 
 T Bot 2.0, API maliyetlerinizi ve gecikmelerinizi dramatik ölçüde azaltan özel bir optimizasyon motoruna sahiptir:
 
 * **Sağlayıcı Düzeyinde Prompt Caching:** Anthropic Claude (`cache_control: ephemeral`), OpenAI sistem mesajı önbelleklemesi ve Gemini bağlam önbelleği tam desteklenir.
 * **Niyet-Duyarlı Araç Şeması Budama (Intent-Aware Pruning):** İstek bağlamında ihtiyaç duyulmayan onlarca araç şemasını filtreleyerek LLM girdi boyutunu anında %60–%80 oranında küçültür.
-* **Sembol İskeleti & Kanıt Sıkıştırma:** Dosya içerikleri yerine sembol taslakları ve bounded diff'ler kullanılarak bağlam penceresi korunur.
-* **Canlı Token HUD & Raporlama (`/tokens`):** Oturum boyunca kullanılan ham tokenları, önbellek kazancını ve net tasarruf oranını anlık görüntüler.
+* **Sembol İskeleti ve Kanıt Sıkıştırma:** Dosya içerikleri yerine sembol taslakları ve bounded diff'ler kullanılarak bağlam penceresi korunur.
+* **Canlı Token HUD ve Raporlama (`/tokens`):** Oturum boyunca kullanılan ham tokenları, önbellek kazancını ve net tasarruf oranını anlık görüntüler.
 
 ---
 
-## 🛡️ Deterministik Anti-Halüsinasyon Motoru
+## Deterministik Anti-Halüsinasyon Motoru
 
 T Bot 2.0, LLM'lerin "yapmadığı işi yapmış gibi gösterme" ve "var olmayan dosyalarda değişiklik üretme" hatalarını deterministik koruma kapılarıyla engeller:
 
@@ -97,9 +97,9 @@ T Bot 2.0, LLM'lerin "yapmadığı işi yapmış gibi gösterme" ve "var olmayan
 
 ---
 
-## ⚡ Hafif RAM & CPU Bekçisi (`MemoryGuard`) ve Siber TUI
+## Hafif RAM ve CPU Bekçisi (`MemoryGuard`) ve Siber TUI
 
-* **`MemoryGuard` & `/gc`:** Node.js bellek kullanımını (Heap & RSS) sürekli gözetler, bellek sızıntılarını önler. `/memory` ile anlık RAM kullanımını gösterir, `/gc` komutuyla çöp toplayıcıyı tetikler.
+* **`MemoryGuard` ve `/gc`:** Node.js bellek kullanımını (Heap & RSS) sürekli gözetler, bellek sızıntılarını önler. `/memory` ile anlık RAM kullanımını gösterir, `/gc` komutuyla çöp toplayıcıyı tetikler.
 * **Siber-Minimalist TUI:** Braille animasyonlu canlı spinner, akış halinde renklendirilen diff'ler ve tek satırlık **Canlı HUD Çubuğu**:
   ```text
   [gemini-2.5-pro · normal+Ultra · YOLO · %68 Token Tasarrufu · 84MB RAM · 3/3 Grounded]
@@ -107,7 +107,7 @@ T Bot 2.0, LLM'lerin "yapmadığı işi yapmış gibi gösterme" ve "var olmayan
 
 ---
 
-## 🚀 Kullanım ve CLI Seçenekleri
+## Kullanım ve CLI Seçenekleri
 
 ```text
 tbot                              Etkileşimli Siber-Minimalist TUI oturumu
@@ -154,7 +154,7 @@ tbot --version                   Sürüm bilgisi (2.0.0)
 
 ---
 
-## 🔌 MCP (Model Context Protocol) Desteği
+## MCP (Model Context Protocol) Desteği
 
 Etkileşimli oturumda `/mcp` menüsünden bulut araçlarınızı kolayca bağlayabilirsiniz:
 * **Vercel:** Projeleri listeleme, önizleme ve üretim dağıtımı oluşturma (`create_deployment`).
@@ -163,7 +163,7 @@ Etkileşimli oturumda `/mcp` menüsünden bulut araçlarınızı kolayca bağlay
 
 ---
 
-## 🔒 Güvenlik ve Gizlilik
+## Güvenlik ve Gizlilik
 
 * **Korumalı Anahtar Saklama:** Windows'ta API anahtarları işletim sistemi düzeyinde DPAPI ile şifrelenir. Linux/macOS ortamında kısıtlanmış dosya izinleriyle saklanır.
 * **Onay Mekanizması:** Dosya değişiklikleri ve kabuk komutları varsayılan olarak kullanıcı onayı ister; istem dışı zararlı işlemler engellenir.
@@ -171,6 +171,6 @@ Etkileşimli oturumda `/mcp` menüsünden bulut araçlarınızı kolayca bağlay
 
 ---
 
-## 📄 Lisans
+## Lisans
 
 Bu proje [MIT Lisansı](LICENSE) altında dağıtılmaktadır. Üçüncü taraf bildirimleri için [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasına bakın.

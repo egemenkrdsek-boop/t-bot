@@ -221,7 +221,7 @@ async function requestRemoteToolApproval(request, chatId, token, getYolo) {
     }
     const argsSnippet = JSON.stringify(request.arguments, null, 2);
     const truncatedArgs = argsSnippet.length > 500 ? `${argsSnippet.slice(0, 500)}...` : argsSnippet;
-    const promptText = `⚠️ *Araç Onayı Gerekiyor:* \`${request.tool}\`
+    const promptText = `*[ONAY GEREKİYOR] Araç Onayı:* \`${request.tool}\`
 ${request.description ? `*Açıklama:* ${request.description}\n` : ''}*Argümanlar:*
 \`\`\`json
 ${truncatedArgs}
@@ -233,7 +233,7 @@ Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın (60sn)`;
         const timeoutId = setTimeout(async () => {
             if (activeApproval && activeApproval.resolve === resolve) {
                 activeApproval = null;
-                await sendTelegramMessage(token, chatId, `⏱️ *Araç Onayı Zaman Aşımı (60sn)*\n\`${request.tool}\` işlemi zamanında yanıtlanmadığı için iptal edildi.`);
+                await sendTelegramMessage(token, chatId, `*[ZAMAN AŞIMI] Araç Onayı (60 Saniye)*\n\`${request.tool}\` işlemi zamanında yanıtlanmadığı için iptal edildi.`);
                 resolve(false);
             }
         }, 60_000);
@@ -264,7 +264,21 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
         const resolved = await resolveProviderConfig(options.config, options.workspace);
         const provider = createProvider(resolved);
         const imageProvider = await getImageProviderConfig(options.config);
+        let lastReportedTool = '';
         const onEvent = (event) => {
+            if (event.type === 'tool_start') {
+                const name = event.call.name;
+                const majorTools = {
+                    computer: '[DURUM] Bilgisayar İşlemi Yürütülüyor...',
+                    image_generate: '[DURUM] Görsel Üretimi Başlatıldı...',
+                    browser_navigate: '[DURUM] Web Tarayıcısı Başlatılıyor...',
+                    bash: '[DURUM] Sistem Komutu Yürütülüyor...',
+                };
+                if (majorTools[name] && lastReportedTool !== name) {
+                    lastReportedTool = name;
+                    void sendTelegramMessage(token, chatId, majorTools[name]);
+                }
+            }
             if (event.type === 'tool_end') {
                 // Capture generated images from image_generate
                 if (event.call.name === 'image_generate' && event.result.startsWith('Generated image saved: ')) {
@@ -300,6 +314,7 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
             history: options.session.messages,
             provider,
             workspace: options.workspace,
+            mcpTools: options.mcpTools,
             onEvent,
             approve,
             signal,
@@ -325,7 +340,7 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
             await sendTelegramMessage(token, chatId, lastAssistant.content);
         }
         else {
-            await sendTelegramMessage(token, chatId, '✅ İşlem tamamlandı.');
+            await sendTelegramMessage(token, chatId, '[TAMAMLANDI] İşlem Tamamlandı.');
         }
         // Inspect disk for newly produced images or screenshots
         const scanned = await collectGeneratedImages(options.workspace, startTime);
@@ -336,14 +351,14 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
         for (const imgPath of discoveredPaths) {
             const base = path.basename(imgPath);
             const isScreenshot = base.toLowerCase().startsWith('screenshot') || base.toLowerCase().startsWith('browser');
-            const caption = isScreenshot ? `📸 Ekran Görüntüsü: \`${base}\`` : `🎨 Üretilen Görsel: \`${base}\``;
+            const caption = isScreenshot ? `[EKRAN GÖRÜNTÜSÜ] \`${base}\`` : `[GÖRSEL] \`${base}\``;
             await sendTelegramPhoto(token, chatId, imgPath, caption);
         }
     }
     catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         options.onLog?.(`[Telegram Bot] Ajan çalıştırma hatası: ${errorMsg}`);
-        await sendTelegramMessage(token, chatId, `❌ *Hata:* ${escapeMarkdown(errorMsg)}`);
+        await sendTelegramMessage(token, chatId, `*[HATA]* ${escapeMarkdown(errorMsg)}`);
     }
     finally {
         clearInterval(typingTimer);
@@ -362,13 +377,13 @@ async function handleIncomingMessage(msg, token, signal, options) {
     // Register first user automatically if allowed list is empty
     if (allowed.length === 0) {
         await persistAllowedChatId(options.config, chatId, options.onLog);
-        const welcome = `🎉 *T Bot 2.0 Yerel Ağ Geçidine Hoş Geldiniz!*\n\nChat ID'niz (\`${chatId}\`) ana yetkili kullanıcı olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
+        const welcome = `*[BİLGİ] T Bot 2.0 Yerel Ağ Geçidine Hoş Geldiniz*\n\nChat ID (\`${chatId}\`) ana yetkili kullanıcı olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
         await sendTelegramMessage(token, chatId, welcome);
         options.onLog?.(`[Telegram Bot] İlk yetkili kullanıcı eklendi: Chat ID ${chatId} (${msg.from?.first_name || 'Kullanıcı'})`);
     }
     else if (!allowed.includes(chatId)) {
         options.onLog?.(`[Telegram Bot] Yetkisiz erişim denemesi: Chat ID ${chatId} (${msg.from?.username || msg.from?.first_name || 'Bilinmeyen'})`);
-        await sendTelegramMessage(token, chatId, '⛔ *Yetkisiz Erişim*\nBu T Bot yerel köprüsü özeldir ve yalnızca yetkili kullanıcıya açıktır.');
+        await sendTelegramMessage(token, chatId, '*[YETKİSİZ ERİŞİM]*\nBu T Bot yerel köprüsü özeldir ve yalnızca yetkili kullanıcıya açıktır.');
         return;
     }
     // 1. Tool Approval Handling (/onay and /red)
@@ -377,11 +392,11 @@ async function handleIncomingMessage(msg, token, signal, options) {
             clearTimeout(activeApproval.timeoutId);
             const { resolve, tool } = activeApproval;
             activeApproval = null;
-            await sendTelegramMessage(token, chatId, `✅ *Araç Onaylandı:* \`${tool}\` çalıştırılıyor...`);
+            await sendTelegramMessage(token, chatId, `*[ONAYLANDI]* \`${tool}\` çalıştırılıyor...`);
             resolve(true);
         }
         else {
-            await sendTelegramMessage(token, chatId, 'ℹ️ Şu anda bekleyen bir araç onayı bulunmuyor.');
+            await sendTelegramMessage(token, chatId, '[BİLGİ] Şu anda bekleyen bir araç onayı bulunmuyor.');
         }
         return;
     }
@@ -390,35 +405,35 @@ async function handleIncomingMessage(msg, token, signal, options) {
             clearTimeout(activeApproval.timeoutId);
             const { resolve, tool } = activeApproval;
             activeApproval = null;
-            await sendTelegramMessage(token, chatId, `❌ *Araç Reddedildi:* \`${tool}\` işlemi iptal edildi.`);
+            await sendTelegramMessage(token, chatId, `*[REDDEDİLDİ]* \`${tool}\` işlemi iptal edildi.`);
             resolve(false);
         }
         else {
-            await sendTelegramMessage(token, chatId, 'ℹ️ Şu anda bekleyen bir araç onayı bulunmuyor.');
+            await sendTelegramMessage(token, chatId, '[BİLGİ] Şu anda bekleyen bir araç onayı bulunmuyor.');
         }
         return;
     }
     // If a tool approval is currently pending, prompt the user to resolve it first
     if (activeApproval && activeApproval.chatId === chatId) {
-        await sendTelegramMessage(token, chatId, `⚠️ *Bekleyen Araç Onayı Var:*\n\`${activeApproval.tool}\` için onay bekleniyor. Lütfen önce \`/onay\` veya \`/red\` yazın.`);
+        await sendTelegramMessage(token, chatId, `*[UYARI] Bekleyen Araç Onayı Var:*\n\`${activeApproval.tool}\` için onay bekleniyor. Lütfen önce \`/onay\` veya \`/red\` yazın.`);
         return;
     }
     // 2. /start or /help
     if (text === '/start' || text === '/help') {
-        const helpText = `🤖 *T Bot 2.0 Yerel Bot Köprüsü*
+        const helpText = `*[BOT] T Bot 2.0 Yerel Bot Köprüsü*
 
 T Bot yerel terminal ajanı ile doğrudan Telegram üzerinden iletişimdesiniz. %100 yerel ve DPAPI korumalı.
 
-📋 *Kullanılabilir Komutlar:*
-• \`/status\` - Sistem durumu (Sağlayıcı, RAM, Token Tasarrufu, Grounding)
-• \`/goal <hedef>\` - Otonom hedefi başlat, durumunu gör veya yönet
-• \`/ultracode <görev>\` - Ultracode çoklu ajan akışı ile araştır & uygula & incele
-• \`/memory\` - Proje hafızasındaki bilgileri listele
-• \`/clear\` - Oturum geçmişini ve RAM'i temizle
-• \`/onay\` - Bekleyen araç işlemini onayla
-• \`/red\` - Bekleyen araç işlemini reddet
+*[KOMUTLAR] Kullanılabilir Komutlar:*
+• \`/status\` - Sistem Durumu (Sağlayıcı, RAM, Token Tasarrufu, Grounding)
+• \`/goal <hedef>\` - Otonom Hedefi Başlat, Durumunu Gör veya Yönet
+• \`/ultracode <görev>\` - Ultracode Çoklu Ajan Akışı ile Araştır, Uygula ve İncele
+• \`/memory\` - Proje Hafızasındaki Bilgileri Listele
+• \`/clear\` - Oturum Geçmişini ve RAM'i Temizle
+• \`/onay\` - Bekleyen Araç İşlemini Onayla
+• \`/red\` - Bekleyen Araç İşlemini Reddet
 
-💡 *Doğrudan İstek:*
+*[BİLGİ] Doğrudan İstek:*
 Herhangi bir metin göndererek doğrudan T Bot ajanını çalıştırabilirsiniz. Oluşan ekran görüntüleri ve üretilen görseller doğrudan telefonunuza gönderilir.`;
         await sendTelegramMessage(token, chatId, helpText);
         return;
@@ -428,35 +443,35 @@ Herhangi bir metin göndererek doğrudan T Bot ajanını çalıştırabilirsiniz
         const mem = getMemoryStats();
         const tokenReport = globalTokenTracker.getReport();
         const grounding = globalGroundingLedger.getStatus();
-        const yolo = options.getYolo() ? '⚡ Açık (Otomatik Onay)' : '🛡️ Kapalı (Kullanıcı Onayı)';
-        const statusText = `📊 *T Bot 2.0 Sistem Durumu*
+        const yolo = options.getYolo() ? '[AÇIK] Otomatik Onay' : '[KAPALI] Kullanıcı Onayı';
+        const statusText = `*[DURUM] T Bot 2.0 Sistem Durumu*
 
-⚙️ *Model & Sağlayıcı:*
+*[MODEL VE SAĞLAYICI]*
 • Sağlayıcı: \`${options.config.provider}\`
 • Model: \`${options.config.model}\`
 • YOLO Modu: ${yolo}
 
-💾 *Bellek (RAM) Durumu:*
+*[BELLEK] Bellek (RAM) Durumu:*
 • Heap Kullanımı: \`${mem.heapUsedMB} MB / ${mem.heapTotalMB} MB\`
 • RSS: \`${mem.rssMB} MB\`
 • Bellek Baskısı: \`${mem.pressure.toUpperCase()}\`
 
-🪙 *Token Tasarrufu:*
+*[TOKEN] Token Tasarrufu:*
 • Gönderilen Girdi: \`${tokenReport.totalSentInputTokens.toLocaleString()} tokens\`
 • Üretilen Çıktı: \`${tokenReport.totalOutputTokens.toLocaleString()} tokens\`
 • Tasarruf Edilen: \`${tokenReport.totalSavedTokens.toLocaleString()} tokens\` (%${tokenReport.savingsPercent})
 • Toplam Tur: \`${tokenReport.turnsCount}\`
 
-🛡️ *Grounding & Doğrulama:*
-• Doğrulama Durumu: ${grounding.verified ? '✅ Doğrulandı' : '⚠️ Uyarılar Mevcut'}
+*[DOĞRULAMA] Grounding ve Doğrulama:*
+• Doğrulama Durumu: ${grounding.verified ? '[DOĞRULANDI]' : '[UYARI] Uyarılar Mevcut'}
 • İncelenen Dosyalar: \`${grounding.inspectedCount}\`
 • Değiştirilen Dosyalar: \`${grounding.modifiedCount}\`
 • Doğrulanan Komutlar: \`${grounding.verifiedCommands}\`
 ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `  - ${w}`).join('\n')}` : ''}
 
-🤖 *Telegram Köprüsü:*
+*[KÖPRÜ] Telegram Köprüsü:*
 • İşlenen Mesaj: \`${handledCount}\`
-• Durum: \`Aktif & Dinliyor\``;
+• Durum: \`Aktif ve Dinliyor\``;
         await sendTelegramMessage(token, chatId, statusText);
         return;
     }
@@ -465,42 +480,43 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
         try {
             const facts = await recallFacts(options.workspace);
             if (facts.length === 0) {
-                await sendTelegramMessage(token, chatId, '🧠 *Proje Hafızası*\n\nHenüz kayıtlı bir bilgi bulunmuyor.');
+                await sendTelegramMessage(token, chatId, '*[HAFIZA] Proje Hafızası*\n\nHenüz kayıtlı bir bilgi bulunmuyor.');
             }
             else {
                 const list = facts
                     .map((f) => `• *${escapeMarkdown(f.key)}* (${f.scope}):\n  \`${escapeMarkdown(f.value)}\``)
                     .join('\n\n');
-                await sendTelegramMessage(token, chatId, `🧠 *Proje Hafızası (${facts.length} kayıt):*\n\n${list}`);
+                await sendTelegramMessage(token, chatId, `*[HAFIZA] Proje Hafızası (${facts.length} Kayıt):*\n\n${list}`);
             }
         }
         catch (err) {
-            await sendTelegramMessage(token, chatId, `❌ Hafıza okunamadı: ${err instanceof Error ? err.message : String(err)}`);
+            await sendTelegramMessage(token, chatId, `[HATA] Hafıza okunamadı: ${err instanceof Error ? err.message : String(err)}`);
         }
         return;
     }
     // 5. /clear
     if (text === '/clear') {
         options.session.messages = [];
+        globalGroundingLedger.clear();
         const reclaimResult = await reclaimMemory(options.session, true);
         const sessionStore = new SessionStore(configDirectory());
         await sessionStore.save(options.session).catch(() => { });
-        await sendTelegramMessage(token, chatId, `🧹 *Oturum Temizlendi!*\n\nMesaj geçmişi sıfırlandı ve bellek boşaltıldı.\n• Öncesi: \`${reclaimResult.beforeMB} MB\`\n• Sonrası: \`${reclaimResult.afterMB} MB\`\n• Geri Kazanılan: \`${reclaimResult.freedMB} MB\``);
+        await sendTelegramMessage(token, chatId, `*[TEMİZLENDİ] Oturum Temizlendi*\n\nMesaj geçmişi sıfırlandı ve bellek boşaltıldı.\n• Öncesi: \`${reclaimResult.beforeMB} MB\`\n• Sonrası: \`${reclaimResult.afterMB} MB\`\n• Geri Kazanılan: \`${reclaimResult.freedMB} MB\``);
         return;
     }
     // Guard against concurrent execution on mutating tasks
     if (isAgentBusy) {
-        await sendTelegramMessage(token, chatId, '⏳ *T Bot Meşgul*\nŞu anda devam eden bir görevi işliyor. Lütfen tamamlanmasını bekleyin.');
+        await sendTelegramMessage(token, chatId, '*[MEŞGUL] T Bot Meşgul*\nŞu anda devam eden bir görevi işliyor. Lütfen tamamlanmasını bekleyin.');
         return;
     }
     // 6. /ultracode <görev>
     if (text.startsWith('/ultracode')) {
         const task = text.replace(/^\/ultracode\s*/i, '').trim();
         if (!task) {
-            await sendTelegramMessage(token, chatId, 'ℹ️ *Kullanım:* `/ultracode <görev>`\nÖrnek: `/ultracode API hata yönetimini refactor et`');
+            await sendTelegramMessage(token, chatId, '*[BİLGİ] Kullanım:* `/ultracode <görev>`\nÖrnek: `/ultracode API hata yönetimini refactor et`');
             return;
         }
-        await sendTelegramMessage(token, chatId, `🚀 *Ultracode Akışı Başlatıldı*\n\nGörev: \`${task}\`\nAraştırma, uygulama ve bağımsız inceleme adımları çalıştırılıyor...`);
+        await sendTelegramMessage(token, chatId, `*[BAŞLATILDI] Ultracode Akışı Başlatıldı*\n\nGörev: \`${task}\`\nAraştırma, uygulama ve bağımsız inceleme adımları çalıştırılıyor...`);
         void executeAgentTurn(task, chatId, token, options, signal, 'ultracode');
         return;
     }
@@ -511,31 +527,31 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
         if (!sub || action === 'status') {
             const goal = await getGoal(options.workspace).catch(() => undefined);
             if (goal) {
-                await sendTelegramMessage(token, chatId, `🎯 *Aktif Hedef Durumu*\n\n• Hedef: \`${goal.objective}\`\n• Durum: \`${goal.status}\`\n• Son Çalışma: \`${goal.lastRun ?? 'bilinmiyor'}\`${goal.lastResult ? `\n• Son İlerleme:\n\`${goal.lastResult.slice(0, 500)}\`` : ''}`);
+                await sendTelegramMessage(token, chatId, `*[HEDEF] Aktif Hedef Durumu*\n\n• Hedef: \`${goal.objective}\`\n• Durum: \`${goal.status}\`\n• Son Çalışma: \`${goal.lastRun ?? 'bilinmiyor'}\`${goal.lastResult ? `\n• Son İlerleme:\n\`${goal.lastResult.slice(0, 500)}\`` : ''}`);
             }
             else {
-                await sendTelegramMessage(token, chatId, '🎯 Kayıtlı hedef yok. Başlatmak için: `/goal <hedef>`');
+                await sendTelegramMessage(token, chatId, '[HEDEF] Kayıtlı Hedef Yok. Başlatmak İçin: `/goal <hedef>`');
             }
             return;
         }
         if (action === 'pause') {
             await pauseGoal(options.workspace).catch(() => { });
-            await sendTelegramMessage(token, chatId, '⏸️ Hedef duraklatıldı.');
+            await sendTelegramMessage(token, chatId, '[DURAKLATILDI] Hedef Duraklatıldı.');
             return;
         }
         if (action === 'cancel') {
             await cancelGoal(options.workspace).catch(() => { });
-            await sendTelegramMessage(token, chatId, '🛑 Hedef iptal edildi.');
+            await sendTelegramMessage(token, chatId, '[İPTAL EDİLDİ] Hedef İptal Edildi.');
             return;
         }
         if (action === 'done' || action === 'complete') {
             await completeGoal(options.workspace).catch(() => { });
-            await sendTelegramMessage(token, chatId, '🏁 Hedef tamamlandı olarak işaretlendi.');
+            await sendTelegramMessage(token, chatId, '[TAMAMLANDI] Hedef Tamamlandı Olarak İşaretlendi.');
             return;
         }
         if (action === 'resume') {
             await resumeGoal(options.workspace).catch(() => { });
-            await sendTelegramMessage(token, chatId, '▶️ Hedef sürdürülüyor...');
+            await sendTelegramMessage(token, chatId, '[SÜRDÜRÜLÜYOR] Hedef Sürdürülüyor...');
             void executeAgentTurn('', chatId, token, options, signal, 'goal');
             return;
         }
@@ -546,16 +562,16 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
                 await cancelGoal(options.workspace).catch(() => { });
             }
             await startGoal(options.workspace, sub);
-            await sendTelegramMessage(token, chatId, `🎯 *Yeni Hedef Başlatıldı:*\n\`${sub}\`\nOtonom ajan çalıştırılıyor...`);
+            await sendTelegramMessage(token, chatId, `*[HEDEF] Yeni Hedef Başlatıldı:*\n\`${sub}\`\nOtonom Ajan Çalıştırılıyor...`);
             void executeAgentTurn('', chatId, token, options, signal, 'goal');
         }
         catch (err) {
-            await sendTelegramMessage(token, chatId, `❌ Hedef başlatılamadı: ${err instanceof Error ? err.message : String(err)}`);
+            await sendTelegramMessage(token, chatId, `[HATA] Hedef başlatılamadı: ${err instanceof Error ? err.message : String(err)}`);
         }
         return;
     }
     // 8. Normal text messages -> Standard agent run
-    await sendTelegramMessage(token, chatId, `⚡ *İstek Alındı:* \`${text.slice(0, 100)}${text.length > 100 ? '...' : ''}\`\nT Bot çalışıyor...`);
+    await sendTelegramMessage(token, chatId, `*[ALINDI] İstek Alındı:* \`${text.slice(0, 100)}${text.length > 100 ? '...' : ''}\`\nT Bot Çalışıyor...`);
     void executeAgentTurn(text, chatId, token, options, signal, 'agent');
 }
 /**
@@ -575,7 +591,7 @@ async function runPollingLoop(token, signal, options) {
                     limit: 100,
                     allowed_updates: ['message'],
                 }),
-                signal,
+                signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]),
             });
             if (!res.ok) {
                 if (signal.aborted || !isRunning)
@@ -602,8 +618,11 @@ async function runPollingLoop(token, signal, options) {
             }
         }
         catch (err) {
-            if (signal.aborted || !isRunning || err?.name === 'AbortError') {
+            if (signal.aborted || !isRunning) {
                 break;
+            }
+            if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+                continue;
             }
             options.onLog?.(`[Telegram Bot] Polling uyarısı: ${err?.message || String(err)}`);
             await new Promise((r) => setTimeout(r, 3000));
@@ -618,12 +637,12 @@ export async function startTelegramBotBridge(options) {
     if (isRunning) {
         return { ok: true, username: currentBotUsername };
     }
-    // Retrieve token securely stored via Windows DPAPI
-    const token = await getCustomSecret('telegram_bot_token');
+    // Retrieve token securely stored via Windows DPAPI or environment variable
+    const token = (await getCustomSecret('telegram_bot_token')) || process.env.TELEGRAM_BOT_TOKEN;
     if (!token || !token.trim()) {
         return {
             ok: false,
-            error: 'Telegram bot token bulunamadı. Lütfen secrets içinde telegram_bot_token değerini kaydedin.',
+            error: 'Telegram bot token bulunamadı. Lütfen secrets içinde telegram_bot_token değerini kaydedin veya TELEGRAM_BOT_TOKEN ortam değişkenini ayarlayın.',
         };
     }
     // Validate bot token using getMe

@@ -1,0 +1,1876 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+// 1. Read tabit.webp base64
+const base64Data = fs.readFileSync('assets_tabit_base64.txt', 'utf8').trim();
+const tabitLogoDataUrl = `data:image/webp;base64,${base64Data}`;
+
+// 2. Pixel definitions from src/logo.ts
+const mark = [
+  'GGGGGGGGGGGGG.',
+  'GGGGGGGGGGGGGG',
+  'GGGGGWWGGGGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGWWWWWWGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGGWWWGGGGGG',
+  'GGGGGWWWWGGGGG',
+  'GGGGGGWWWGGGGG',
+  'GGGGGGGGGGGGGG',
+  '.GGGGGGGGGGGGG',
+];
+
+const word = [
+  '11110 00000 00100',
+  '10001 00000 00100',
+  '10001 01110 11111',
+  '11110 10001 00100',
+  '10001 10001 00100',
+  '10001 10001 00101',
+  '11110 01110 00010',
+];
+
+function renderPixelMarkSvg(pixelSize = 3, glow = true) {
+  const width = 14 * pixelSize;
+  const height = 14 * pixelSize;
+  let rects = '';
+  for (let y = 0; y < mark.length; y++) {
+    for (let x = 0; x < mark[y].length; x++) {
+      const char = mark[y][x];
+      if (char === '.') continue;
+      const fill = char === 'W' ? '#FFFFFF' : '#00EB96';
+      const op = char === 'W' ? '1' : '0.94';
+      rects += `<rect x="${x * pixelSize}" y="${y * pixelSize}" width="${(pixelSize - 0.3).toFixed(1)}" height="${(pixelSize - 0.3).toFixed(1)}" rx="0.4" fill="${fill}" opacity="${op}"/>`;
+    }
+  }
+  return `
+  <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="${glow ? 'filter drop-shadow-[0_0_12px_rgba(0,235,150,0.6)]' : ''}" xmlns="http://www.w3.org/2000/svg">
+    ${rects}
+  </svg>`;
+}
+
+function renderPixelWordSvg(pixelSize = 3) {
+  const cols = word[0].length;
+  const rows = word.length;
+  const width = Math.round(cols * pixelSize);
+  const height = Math.round(rows * pixelSize);
+  let rects = '';
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const char = word[y][x];
+      if (char === '1') {
+        rects += `<rect x="${(x * pixelSize).toFixed(1)}" y="${(y * pixelSize).toFixed(1)}" width="${(pixelSize - 0.4).toFixed(1)}" height="${(pixelSize - 0.4).toFixed(1)}" fill="#00EB96" rx="0.4"/>`;
+      }
+    }
+  }
+  return `
+  <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="filter drop-shadow-[0_0_10px_rgba(0,235,150,0.7)]" xmlns="http://www.w3.org/2000/svg">
+    ${rects}
+  </svg>`;
+}
+
+// Build Presentation HTML
+function buildPresentationHtml() {
+  const markSvgSm = renderPixelMarkSvg(2.5, true);
+  const markSvgLg = renderPixelMarkSvg(6, true);
+  const wordSvg = renderPixelWordSvg(3.2);
+
+  return `<!DOCTYPE html>
+<html lang="tr" class="h-full bg-[#070D0A]">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T Bot V2 — Şirket Yönetim Kurulu Sunumu</title>
+  <!-- CSP Compliant Tailwind CSS -->
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --brand: #00EB96;
+      --brand-glow: rgba(0, 235, 150, 0.4);
+      --amber: #FFB800;
+      --cyan: #38CDF2;
+      --dark-bg: #070D0A;
+      --card-bg: #0C1612;
+      --border-color: #1A2F25;
+      --text-main: #E6F2EB;
+      --text-muted: #8291A0;
+    }
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      background-color: var(--dark-bg);
+      color: var(--text-main);
+      overflow-x: hidden;
+      background-image: 
+        radial-gradient(ellipse at 50% -10%, rgba(0, 235, 150, 0.15), transparent 60%),
+        radial-gradient(ellipse at 85% 105%, rgba(56, 205, 242, 0.08), transparent 50%),
+        radial-gradient(ellipse at 15% 105%, rgba(255, 184, 0, 0.06), transparent 50%);
+      background-attachment: fixed;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .cyber-glow-emerald {
+      box-shadow: 0 0 25px rgba(0, 235, 150, 0.25);
+    }
+    .cyber-glow-amber {
+      box-shadow: 0 0 25px rgba(255, 184, 0, 0.25);
+    }
+    .text-glow-emerald {
+      text-shadow: 0 0 16px rgba(0, 235, 150, 0.5);
+    }
+    .text-glow-amber {
+      text-shadow: 0 0 16px rgba(255, 184, 0, 0.5);
+    }
+    .text-glow-cyan {
+      text-shadow: 0 0 16px rgba(56, 205, 242, 0.5);
+    }
+    .slide-active {
+      display: flex !important;
+      animation: slideFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes slideFadeIn {
+      from { opacity: 0; transform: translateY(12px) scale(0.995); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #070D0A;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1C3328;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #00EB96;
+    }
+    /* Slider styling */
+    input[type=range] {
+      accent-color: #00EB96;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col justify-between selection:bg-[#00EB96] selection:text-[#070D0A]">
+
+  <!-- TOP EXECUTIVE APP HEADER -->
+  <header class="border-b border-[#1A2F25] bg-[#0A120E]/90 backdrop-blur-md sticky top-0 z-50 px-5 py-3 transition-all">
+    <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+      
+      <!-- Brand & Project Identity -->
+      <div class="flex items-center gap-3.5 cursor-pointer" onclick="goToSlide(0)">
+        <div class="relative flex items-center justify-center p-1.5 rounded-lg bg-[#0F1C16] border border-[#1E362A] shadow-inner">
+          <img src="${tabitLogoDataUrl}" alt="Tabit Logo" class="w-7 h-7 rounded object-contain drop-shadow" />
+          <div class="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-[#00EB96] animate-pulse"></div>
+        </div>
+        <div class="flex flex-col">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-extrabold tracking-wider text-white flex items-center gap-1.5">
+              T BOT <span class="text-[#00EB96] text-xs font-mono px-1.5 py-0.5 rounded bg-[#00EB96]/15 border border-[#00EB96]/30">V2.0</span>
+            </span>
+            <span class="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-[#FFB800]/15 text-[#FFB800] border border-[#FFB800]/30 font-semibold tracking-wider">
+              YÖNETİM KURULU VİZYONU
+            </span>
+          </div>
+          <span class="text-[11px] text-[#8291A0] font-medium tracking-tight">Tri-Core Otonom Ajan & Sıfır Halüsinasyon Mimarisi</span>
+        </div>
+      </div>
+
+      <!-- Slide Title & Quick Selector -->
+      <div class="hidden md:flex items-center gap-3">
+        <div class="flex items-center gap-2 bg-[#0F1C16] border border-[#1A2F25] rounded-lg px-3 py-1.5">
+          <span class="w-2 h-2 rounded-full bg-[#00EB96]"></span>
+          <span id="currentSlideLabel" class="text-xs font-semibold text-white tracking-wide">01 / 08 • Vizyon & Yönetim Kurulu Özeti</span>
+        </div>
+
+        <select id="slideDropdown" onchange="goToSlide(parseInt(this.value))" class="bg-[#0D1713] text-[#E6F2EB] text-xs rounded-lg border border-[#1A2F25] px-2.5 py-1.5 focus:outline-none focus:border-[#00EB96] cursor-pointer font-medium">
+          <option value="0">1. Vizyon & Executive Keynote</option>
+          <option value="1">2. Üçlü Çekirdek (Tri-Core) Mimarisi</option>
+          <option value="2">3. [Ekran 1] Siber Terminal & Canlı HUD</option>
+          <option value="3">4. [Ekran 2] Sıfır-Backend Mobil Telegram Botu</option>
+          <option value="4">5. [Ekran 3] ROI Kokpiti & %50-%75 Tasarruf</option>
+          <option value="5">6. Kurumsal Karşılaştırma Matrisi</option>
+          <option value="6">7. Kurulum & Dağıtım Mimarisi</option>
+          <option value="7">8. Yönetici & Mühendislik Komut Kılavuzu</option>
+        </select>
+      </div>
+
+      <!-- Presentation Meta, Timer & Fullscreen -->
+      <div class="flex items-center gap-2.5">
+        <div class="hidden sm:flex items-center gap-2 font-mono text-xs text-[#8291A0] bg-[#0F1C16] border border-[#1A2F25] px-2.5 py-1.5 rounded-lg">
+          <span class="text-[#00EB96]">⏱️</span>
+          <span id="presentationTimer">00:00</span>
+        </div>
+
+        <button onclick="toggleFullScreen()" title="Tam Ekran Modu (F)" class="flex items-center gap-1.5 bg-[#0F1C16] hover:bg-[#15271F] text-[#E6F2EB] hover:text-[#00EB96] border border-[#1A2F25] hover:border-[#00EB96]/40 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+          </svg>
+          <span class="hidden sm:inline">Tam Ekran (F)</span>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- MAIN SLIDES CONTAINER -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+
+    <!-- SLIDE 1: VISION & EXECUTIVE SUMMARY -->
+    <section id="slide-0" class="slide-active w-full flex-col gap-6">
+      <!-- Hero Top -->
+      <div class="relative overflow-hidden rounded-2xl bg-gradient-to-b from-[#0F1D17] to-[#0A130F] border border-[#1E382B] p-8 lg:p-10 shadow-2xl">
+        <div class="absolute -right-16 -top-16 w-80 h-80 rounded-full bg-[#00EB96]/10 blur-3xl pointer-events-none"></div>
+        <div class="absolute -left-16 -bottom-16 w-80 h-80 rounded-full bg-[#FFB800]/10 blur-3xl pointer-events-none"></div>
+
+        <div class="flex flex-col lg:flex-row items-center justify-between gap-8 relative z-10">
+          <div class="max-w-3xl space-y-4 text-center lg:text-left">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#00EB96]/10 border border-[#00EB96]/30 text-xs font-mono text-[#00EB96]">
+              <span class="w-2 h-2 rounded-full bg-[#00EB96] animate-ping"></span>
+              YENİ NESİL KURUMSAL YAPAY ZEKÂ ÇAĞI
+            </div>
+            
+            <h1 class="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-white leading-tight">
+              T BOT <span class="text-[#00EB96] text-glow-emerald">V2.0</span> İLE KURUMSAL YAZILIM ÜRETKENLİĞİNDE <span class="text-transparent bg-clip-text bg-gradient-to-r from-[#00EB96] via-[#38CDF2] to-[#FFB800]">ZİRVE NOKTASI</span>
+            </h1>
+
+            <p class="text-base sm:text-lg text-[#BAC7BF] font-normal leading-relaxed">
+              Mühendislik ekiplerimizin yazılım geliştirme, denetleme ve hata giderme hızını <strong class="text-[#00EB96] font-semibold">10 kata kadar artıran</strong>; kurumsal LLM token harcamalarında <strong class="text-[#FFB800] font-semibold">%50 ile %75 net tasarruf</strong> sağlayan ve <strong class="text-white font-semibold">3 Katmanlı Deterministik Anti-Halüsinasyon</strong> motoruyla sıfır hata güvencesi sunan özerk yerel yapay zekâ ajanı.
+            </p>
+          </div>
+
+          <!-- Hero Vector Logo Badge -->
+          <div class="flex flex-col items-center justify-center p-6 rounded-2xl bg-[#09120E]/90 border border-[#1E382B] cyber-glow-emerald">
+            <div class="p-3 bg-[#0E1A14] rounded-xl border border-[#00EB96]/30 shadow-inner flex flex-col items-center gap-3">
+              ${markSvgLg}
+              <div class="mt-1">
+                ${wordSvg}
+              </div>
+            </div>
+            <div class="mt-4 flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-[#00EB96]"></span>
+              <span class="text-xs font-mono font-bold text-[#E6F2EB] tracking-widest">SİBER-ZÜMRÜT ÇEKİRDEK</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4 Strategic Executive KPI Pillars -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        
+        <!-- Pillar 1 -->
+        <div class="p-5 rounded-xl bg-[#0C1612] border border-[#1A2E24] hover:border-[#00EB96]/50 transition-all group">
+          <div class="w-10 h-10 rounded-lg bg-[#00EB96]/15 border border-[#00EB96]/30 flex items-center justify-center text-xl mb-3.5 group-hover:scale-105 transition-transform">
+            💎
+          </div>
+          <div class="text-2xl font-bold text-white flex items-baseline gap-1">
+            %50 – %75
+            <span class="text-xs text-[#00EB96] font-mono font-normal">Tasarruf</span>
+          </div>
+          <h3 class="text-sm font-semibold text-[#00EB96] mt-1">Düşük Token Harcaması</h3>
+          <p class="text-xs text-[#8291A0] mt-1.5 leading-relaxed">
+            Intent-Aware Pruning ve Sağlayıcı Prompt Caching ile kurumsal API maliyetlerini asgariye indirir.
+          </p>
+        </div>
+
+        <!-- Pillar 2 -->
+        <div class="p-5 rounded-xl bg-[#0C1612] border border-[#1A2E24] hover:border-[#FFB800]/50 transition-all group">
+          <div class="w-10 h-10 rounded-lg bg-[#FFB800]/15 border border-[#FFB800]/30 flex items-center justify-center text-xl mb-3.5 group-hover:scale-105 transition-transform">
+            🛡️
+          </div>
+          <div class="text-2xl font-bold text-white flex items-baseline gap-1">
+            %100
+            <span class="text-xs text-[#FFB800] font-mono font-normal">Doğruluk</span>
+          </div>
+          <h3 class="text-sm font-semibold text-[#FFB800] mt-1">Sıfır Halüsinasyon Kapısı</h3>
+          <p class="text-xs text-[#8291A0] mt-1.5 leading-relaxed">
+            Read-Before-Write invariantı, otomatik AST Rollback ve terminal kanıt doğrulaması ile tam güvenilirlik.
+          </p>
+        </div>
+
+        <!-- Pillar 3 -->
+        <div class="p-5 rounded-xl bg-[#0C1612] border border-[#1A2E24] hover:border-[#38CDF2]/50 transition-all group">
+          <div class="w-10 h-10 rounded-lg bg-[#38CDF2]/15 border border-[#38CDF2]/30 flex items-center justify-center text-xl mb-3.5 group-hover:scale-105 transition-transform">
+            🏛️
+          </div>
+          <div class="text-2xl font-bold text-white flex items-baseline gap-1">
+            Üçlü Çekirdek
+            <span class="text-xs text-[#38CDF2] font-mono font-normal">Tri-Core</span>
+          </div>
+          <h3 class="text-sm font-semibold text-[#38CDF2] mt-1">Bütünleşik Ajan Gücü</h3>
+          <p class="text-xs text-[#8291A0] mt-1.5 leading-relaxed">
+            Kodlama Ajanı, Masaüstü/Tarayıcı Ajanı ve Mobil Telegram Botu tek bir yerel motorda harmanlandı.
+          </p>
+        </div>
+
+        <!-- Pillar 4 -->
+        <div class="p-5 rounded-xl bg-[#0C1612] border border-[#1A2E24] hover:border-[#00EB96]/50 transition-all group">
+          <div class="w-10 h-10 rounded-lg bg-[#00EB96]/15 border border-[#00EB96]/30 flex items-center justify-center text-xl mb-3.5 group-hover:scale-105 transition-transform">
+            💾
+          </div>
+          <div class="text-2xl font-bold text-white flex items-baseline gap-1">
+            ~38 MB
+            <span class="text-xs text-[#00EB96] font-mono font-normal">RAM</span>
+          </div>
+          <h3 class="text-sm font-semibold text-[#00EB96] mt-1">Ultra Düşük Tüketim</h3>
+          <p class="text-xs text-[#8291A0] mt-1.5 leading-relaxed">
+            MemoryGuard çöp toplayıcı ve önbellekli Win32 DLL ile donanımı yormadan, sıfır sunucu yüküyle çalışır.
+          </p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SLIDE 2: TRI-CORE ARCHITECTURE -->
+    <section id="slide-1" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> MİMARİ MÜKEMMELLİK
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">Üçlü Çekirdek (Tri-Core) Mimarisi</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          T Bot 2.0, birbirini tamamlayan üç özerk çekirdeğin tek bir yüksek verimli yerel motorda çalışmasıyla sektördeki tek boyutlu araçları geride bırakır.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Core 1 -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#00EB96]/60 transition-all p-6 flex flex-col justify-between relative overflow-hidden group">
+          <div class="absolute -top-12 -right-12 w-32 h-32 bg-[#00EB96]/10 rounded-full blur-2xl"></div>
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <span class="px-2.5 py-1 rounded bg-[#00EB96]/15 text-[#00EB96] font-mono text-xs font-bold border border-[#00EB96]/30">
+                ÇEKİRDEK 01
+              </span>
+              <span class="text-2xl">⚡</span>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Seçkin Yerel Kodlama Ajanı</h3>
+            <p class="text-xs text-[#8291A0] leading-relaxed mb-4">
+              Kurumsal büyük kod depolarında hassas, bağlam korumalı ve deterministik geliştirme yapar.
+            </p>
+
+            <ul class="space-y-2.5 text-xs text-[#E6F2EB]">
+              <li class="flex items-start gap-2">
+                <span class="text-[#00EB96] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Sembol Haritalama (<code>file_outline</code>):</strong> Dosyayı bütünüyle okumadan sınıf ve fonksiyonları indeksler, %80 token tasarrufu sağlar.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#00EB96] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Multi-Hunk Yama (<code>file_patch</code>):</strong> Tüm dosyayı yeniden yazmak yerine sadece değişen parçaları atomik uygular.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#00EB96] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Tam Git Araç Seti:</strong> Status, Diff, Log, Branch, Commit ve Push operasyonlarını hatasız yönetir.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#00EB96] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">4 Aşamalı Ultracode:</strong> Araştırma ➔ Uygulama ➔ AST Öz-Onarımı ➔ Bağımsız Denetim döngüsü.
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="mt-6 pt-4 border-t border-[#1A2F25] flex items-center justify-between text-[11px] font-mono text-[#00EB96]">
+            <span>Kod Kalitesi & Sıfır Gerileme</span>
+            <span>%100 Grounded</span>
+          </div>
+        </div>
+
+        <!-- Core 2 -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#38CDF2]/60 transition-all p-6 flex flex-col justify-between relative overflow-hidden group">
+          <div class="absolute -top-12 -right-12 w-32 h-32 bg-[#38CDF2]/10 rounded-full blur-2xl"></div>
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <span class="px-2.5 py-1 rounded bg-[#38CDF2]/15 text-[#38CDF2] font-mono text-xs font-bold border border-[#38CDF2]/30">
+                ÇEKİRDEK 02
+              </span>
+              <span class="text-2xl">🌐</span>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Otonom Masaüstü & Tarayıcı Ajanı</h3>
+            <p class="text-xs text-[#8291A0] leading-relaxed mb-4">
+              İşletim sistemi düzeyinde pencere, fare, klavye ve izole web tarayıcısını yöneten özerk katman.
+            </p>
+
+            <ul class="space-y-2.5 text-xs text-[#E6F2EB]">
+              <li class="flex items-start gap-2">
+                <span class="text-[#38CDF2] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Çok Adımlı Hedef Motoru (<code>/goal</code>):</strong> Karmaşık projeleri alt hedeflere böler, durumunu adım adım takip eder.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#38CDF2] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Paralel Alt Ajanlar (<code>/subagents</code>):</strong> Ana bağlamı kirletmeden eşzamanlı araştırma ve analiz yürütür.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#38CDF2] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Önbellekli Win32 C# DLL:</strong> Windows işletim sisteminde fare ve ekran yakalamayı sıfır gecikmeyle yürütür.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#38CDF2] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Playwright & Kalıcı Bellek:</strong> İzole web oturumları ve oturumlar arası şirket hafızası (<code>/remember</code>).
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="mt-6 pt-4 border-t border-[#1A2F25] flex items-center justify-between text-[11px] font-mono text-[#38CDF2]">
+            <span>Masaüstü & Web Otonomisi</span>
+            <span>Ultra Hızlı</span>
+          </div>
+        </div>
+
+        <!-- Core 3 -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#FFB800]/60 transition-all p-6 flex flex-col justify-between relative overflow-hidden group">
+          <div class="absolute -top-12 -right-12 w-32 h-32 bg-[#FFB800]/10 rounded-full blur-2xl"></div>
+          <div>
+            <div class="flex items-center justify-between mb-4">
+              <span class="px-2.5 py-1 rounded bg-[#FFB800]/15 text-[#FFB800] font-mono text-xs font-bold border border-[#FFB800]/30">
+                ÇEKİRDEK 03
+              </span>
+              <span class="text-2xl">📱</span>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Sıfır-Backend Mobil Telegram Botu</h3>
+            <p class="text-xs text-[#8291A0] leading-relaxed mb-4">
+              Harici aracı sunucuya veya sabit IP'ye ihtiyaç duymadan, doğrudan geliştirici makinesinden çalışan güvenli köprü.
+            </p>
+
+            <ul class="space-y-2.5 text-xs text-[#E6F2EB]">
+              <li class="flex items-start gap-2">
+                <span class="text-[#FFB800] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Sıfır Altyapı & Sıfır Maliyet:</strong> Webhook, AWS Lambda veya public IP yok; doğrudan TLS Long-Polling ile güvenli haberleşme.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#FFB800] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Cep Telefonundan Yönetim:</strong> Yöneticiler dışarıdayken <code>/ultracode</code> ve <code>/status</code> ile işleri yönetir.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#FFB800] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Canlı Masaüstü Ekran Görüntüsü:</strong> <code>/screenshot</code> komutuyla anlık masaüstü durumunu fotoğraf olarak alır.
+                </div>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="text-[#FFB800] font-bold mt-0.5">✓</span>
+                <div>
+                  <strong class="text-white">Mobil Onay Butonları:</strong> Kritik komut ve dosya değişikliklerini mobil ekrandan tek dokunuşla onaylar.
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="mt-6 pt-4 border-t border-[#1A2F25] flex items-center justify-between text-[11px] font-mono text-[#FFB800]">
+            <span>Uçtan Uca Şifreli</span>
+            <span>%100 Yerel Gizlilik</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SLIDE 3: SCREEN 1 - CYBER TERMINAL & LIVE HUD -->
+    <section id="slide-2" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> TEMSİLİ EKRAN 01
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">Siber-Minimalist Terminal & Canlı HUD</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          Göz yormayan, yüksek kontrastlı siber-zümrüt estetiği ve geliştiriciyi her an bilgilendiren tek satırlık canlı telemetri çubuğu.
+        </p>
+      </div>
+
+      <!-- Real Terminal Mockup Window -->
+      <div class="rounded-2xl bg-[#09110D] border border-[#1E382A] shadow-2xl overflow-hidden font-mono text-xs">
+        
+        <!-- Terminal Window Title Bar -->
+        <div class="bg-[#0E1A14] px-4 py-2.5 border-b border-[#1A2F25] flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-3 h-3 rounded-full bg-[#FF5C5C] inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-[#FFB800] inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-[#00EB96] inline-block"></span>
+            <span class="ml-2 text-[#8291A0] text-[11px]">tbot@tabit-enterprise: ~/projects/core-engine (node v22.14.0)</span>
+          </div>
+          <div class="flex items-center gap-3 text-[11px] text-[#8291A0]">
+            <span class="text-[#00EB96] flex items-center gap-1">● CANLI</span>
+            <span>UTF-8</span>
+            <span>xterm-256color</span>
+          </div>
+        </div>
+
+        <!-- Terminal Body -->
+        <div class="p-5 space-y-4 leading-relaxed text-[#BAC7BF] max-h-[500px] overflow-y-auto">
+          
+          <!-- Terminal Logo & Banner Output -->
+          <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4 py-2 border-b border-[#16271F]">
+            <div class="p-2 bg-[#0C1712] rounded border border-[#00EB96]/30">
+              ${markSvgSm}
+            </div>
+            <div>
+              <div class="text-[#00EB96] font-bold text-sm tracking-widest flex items-center gap-2">
+                T BOT V2.0.0 <span class="text-[10px] bg-[#00EB96]/20 text-[#00EB96] px-1.5 py-0.2 rounded">ENTERPRISE EDITION</span>
+              </div>
+              <div class="text-[11px] text-[#8291A0]">Tri-Core AI Coding & Desktop Agent with Deterministic Anti-Hallucination</div>
+              <div class="text-[10px] text-[#2E8B57] mt-0.5">Workspace: C:/Users/Enterprise/Workspace (Grounded: Active)</div>
+            </div>
+          </div>
+
+          <!-- Canlı HUD Çubuğu (Gereksinimde belirtilen birebir format) -->
+          <div class="p-2.5 rounded-lg bg-[#0E1B15] border border-[#00EB96]/40 text-[#E6F2EB] font-bold shadow-sm">
+            <span class="text-[#00EB96]">╭─[</span> 
+            <span class="text-[#FFB800]">⚡ gemini-4-argon</span> 
+            <span class="text-[#485F73]">│</span> 
+            <span class="text-[#38CDF2]">🧠 efor: high</span> 
+            <span class="text-[#485F73]">│</span> 
+            <span class="text-[#00EB96]">💎 Tasarruf: %68 (18,420 tok)</span> 
+            <span class="text-[#485F73]">│</span> 
+            <span class="text-[#4ADE80]">🛡️ Grounding: ✓ Doğrulandı</span> 
+            <span class="text-[#485F73]">│</span> 
+            <span class="text-[#E6F2EB]">💾 RAM: 38 MB</span> 
+            <span class="text-[#485F73]">│</span> 
+            <span class="text-[#FFB800]">🤖 Bot: Aktif</span> 
+            <span class="text-[#00EB96]">]</span>
+          </div>
+
+          <!-- Interactive Prompt & Action -->
+          <div>
+            <span class="text-[#00EB96] font-bold">›</span> <span class="text-white font-semibold">tbot /ultracode "Auth modülünü JWT'den güvenli oturum anahtarına geçir, AST denetimi yap"</span>
+          </div>
+
+          <!-- 4-Stage Ultracode Output -->
+          <div class="space-y-2 bg-[#0A140F] p-3.5 rounded-lg border border-[#16291F]">
+            <div class="flex items-center gap-2 text-[#38CDF2] font-semibold">
+              <span id="brailleSpinner" class="text-[#00EB96] text-sm font-bold">⠋</span>
+              <span>[Aşama 1/4 - Derin Paralel Araştırma]</span>
+              <span class="text-[#8291A0] text-[10px] font-normal">Sembol haritası (file_outline) çıkarıldı: 8 dosya, 42 metot indekslendi.</span>
+            </div>
+
+            <div class="flex items-center gap-2 text-[#00EB96] font-semibold">
+              <span class="text-[#00EB96]">✓</span>
+              <span>[Aşama 2/4 - Grounded Uygulama]</span>
+              <span class="text-[#8291A0] text-[10px] font-normal">Read-Before-Write sağlandı. Multi-hunk parçalı yama uygulandı.</span>
+            </div>
+
+            <div class="flex items-center gap-2 text-[#FFB800] font-semibold">
+              <span class="text-[#FFB800]">✓</span>
+              <span>[Aşama 3/4 - AST & Sözdizimi Öz-Onarımı]</span>
+              <span class="text-[#8291A0] text-[10px] font-normal">TypeScript Parser denetimi tamam: 0 sözdizimi hatası, tip güvenliği %100.</span>
+            </div>
+
+            <div class="flex items-center gap-2 text-[#4ADE80] font-semibold">
+              <span class="text-[#4ADE80]">✓</span>
+              <span>[Aşama 4/4 - Bağımsız Kanıt Denetimi]</span>
+              <span class="text-[#8291A0] text-[10px] font-normal">Birim testleri çalıştırıldı: 28/28 başarılı (Süre: 142ms).</span>
+            </div>
+          </div>
+
+          <!-- Multi-Hunk Diff Code Patch -->
+          <div class="rounded-lg bg-[#070D0A] border border-[#1A2E24] p-3">
+            <div class="text-[11px] text-[#8291A0] mb-1 font-semibold flex items-center justify-between">
+              <span>PATCH: src/auth/session_manager.ts (Multi-Hunk Diff)</span>
+              <span class="text-[#00EB96]">Grounded ✓</span>
+            </div>
+            <pre class="text-[11px] leading-tight overflow-x-auto"><span class="text-[#8291A0]">@@ -48,7 +48,9 @@ export class SessionManager {</span>
+<span class="text-[#FF5C5C] bg-[#FF5C5C]/10 block">-   private legacyJwtVerify(token: string): boolean { return false; }</span>
+<span class="text-[#00EB96] bg-[#00EB96]/10 block">+   private secureKeyVerify(token: string): AuthSession {</span>
+<span class="text-[#00EB96] bg-[#00EB96]/10 block">+     MemoryGuard.assertHeapLimit(256); // Otomatik bellek koruma sınırı</span>
+<span class="text-[#00EB96] bg-[#00EB96]/10 block">+     return DeterministicStore.validateToken(token);</span>
+<span class="text-[#00EB96] bg-[#00EB96]/10 block">+   }</span>
+<span class="text-[#8291A0]">@@ -95,4 +97,5 @@ export const authEngine = new SessionManager();</span></pre>
+          </div>
+
+          <!-- Bottom Summary -->
+          <div class="flex items-center justify-between text-[11px] text-[#8291A0] pt-1">
+            <span class="text-[#4ADE80] font-bold">✦ İşlem 3.4 saniyede hatasız tamamlandı. Token Tasarrufu: %71.</span>
+            <span class="text-[#BAC7BF]">Bellek Boşaltımı (GC): 38 MB RSS</span>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SLIDE 4: SCREEN 2 - ZERO-BACKEND MOBILE TELEGRAM BOT -->
+    <section id="slide-3" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#FFB800] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> TEMSİLİ EKRAN 02
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">Sıfır-Backend Mobil Telegram Bot Köprüsü</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          Yöneticilerin ve mühendislerin masadan uzaktayken cep telefonundan tek mesajla projeyi yönetmesini ve anlık ekran görüntüsü almasını sağlayan sıfır altyapılı mobil kapı.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+        
+        <!-- Left: Realistic Mobile Phone Mockup -->
+        <div class="lg:col-span-6 flex justify-center">
+          <div class="w-[320px] sm:w-[360px] rounded-[42px] bg-[#000000] border-[5px] border-[#25392F] shadow-[0_0_50px_rgba(0,235,150,0.2)] p-3 relative overflow-hidden">
+            
+            <!-- Dynamic Island / Speaker Notch -->
+            <div class="absolute top-4 left-1/2 -translate-x-1/2 w-28 h-5 bg-[#0D1612] rounded-full z-30 flex items-center justify-center">
+              <div class="w-2.5 h-2.5 rounded-full bg-[#1A2E24] mr-2"></div>
+              <div class="w-1.5 h-1.5 rounded-full bg-[#00EB96] animate-pulse"></div>
+            </div>
+
+            <!-- Phone Inner Screen -->
+            <div class="w-full h-[580px] rounded-[32px] bg-[#0A130F] flex flex-col justify-between overflow-hidden relative pt-7 border border-[#1C3326]">
+              
+              <!-- Telegram Chat Header -->
+              <div class="bg-[#0E1C15] border-b border-[#1A3326] px-4 py-2.5 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-8 h-8 rounded-full bg-[#00EB96]/20 border border-[#00EB96]/40 flex items-center justify-center text-sm shadow">
+                    🤖
+                  </div>
+                  <div>
+                    <div class="text-xs font-bold text-white flex items-center gap-1">
+                      T Bot V2 Gateway
+                      <span class="w-1.5 h-1.5 rounded-full bg-[#00EB96]"></span>
+                    </div>
+                    <div class="text-[10px] text-[#00EB96] font-mono">bot · çevrimiçi (Long-Polling)</div>
+                  </div>
+                </div>
+                <div class="text-xs text-[#8291A0]">⋮</div>
+              </div>
+
+              <!-- Telegram Messages Flow -->
+              <div class="flex-1 p-3 space-y-3 overflow-y-auto font-sans text-xs">
+                
+                <!-- Date separator -->
+                <div class="text-center">
+                  <span class="text-[9px] bg-[#14261D] text-[#8291A0] px-2.5 py-0.5 rounded-full font-mono">Bugün</span>
+                </div>
+
+                <!-- User message -->
+                <div class="flex justify-end">
+                  <div class="bg-[#00EB96] text-[#070D0A] font-medium px-3.5 py-2 rounded-2xl rounded-tr-sm max-w-[85%] shadow-md">
+                    /status
+                    <span class="text-[9px] text-[#0A2619] block text-right mt-0.5 font-mono">14:42 ✓✓</span>
+                  </div>
+                </div>
+
+                <!-- Bot message: Status Card -->
+                <div class="flex justify-start">
+                  <div class="bg-[#12221A] text-[#E6F2EB] border border-[#1D382B] px-3.5 py-2.5 rounded-2xl rounded-tl-sm max-w-[90%] shadow-md space-y-1 font-mono text-[11px]">
+                    <div class="text-[#00EB96] font-bold flex items-center gap-1">
+                      ✦ T BOT V2 CANLI DURUM
+                    </div>
+                    <div class="text-[10px] text-[#BAC7BF] leading-relaxed">
+                      • Model: <span class="text-[#38CDF2]">gemini-4-argon</span><br>
+                      • Görev: <span class="text-white">API Güvenlik Güncellemesi</span><br>
+                      • Tasarruf: <span class="text-[#00EB96] font-bold">%68 (18.4k tok)</span><br>
+                      • RAM: <span class="text-[#FFB800]">38.2 MB</span> │ CPU: <span class="text-[#4ADE80]">%1.2</span><br>
+                      • Grounding: <span class="text-[#4ADE80]">3/3 Tam Doğrulandı</span>
+                    </div>
+                    <span class="text-[9px] text-[#8291A0] block text-right">14:42</span>
+                  </div>
+                </div>
+
+                <!-- User message: Request Screenshot -->
+                <div class="flex justify-end">
+                  <div class="bg-[#00EB96] text-[#070D0A] font-medium px-3.5 py-2 rounded-2xl rounded-tr-sm max-w-[85%] shadow-md">
+                    /screenshot
+                    <span class="text-[9px] text-[#0A2619] block text-right mt-0.5 font-mono">14:43 ✓✓</span>
+                  </div>
+                </div>
+
+                <!-- Bot message: Screenshot Photo Preview -->
+                <div class="flex justify-start">
+                  <div class="bg-[#12221A] border border-[#1D382B] p-2 rounded-2xl rounded-tl-sm max-w-[90%] shadow-md space-y-1.5">
+                    <!-- Photo preview placeholder -->
+                    <div class="rounded-lg bg-[#09120D] border border-[#1D382B] p-2 text-[9px] font-mono text-[#BAC7BF] relative overflow-hidden">
+                      <div class="flex items-center justify-between text-[#00EB96] text-[8px] mb-1">
+                        <span>📸 Masaüstü Ekran Görüntüsü (1920x1080)</span>
+                        <span>0 gecikme</span>
+                      </div>
+                      <div class="h-16 bg-[#070E0A] rounded flex flex-col justify-center px-2 text-[8px] text-[#8291A0] space-y-0.5 border border-[#16271F]">
+                        <span class="text-[#00EB96]">> git commit -m "feat(security): token invariant gate"</span>
+                        <span class="text-white">> 2 files changed, 24 insertions(+)</span>
+                        <span class="text-[#FFB800]">> Build passing (0 errors, 142ms)</span>
+                      </div>
+                    </div>
+                    <div class="text-[10px] text-[#BAC7BF] font-mono px-1">
+                      ⚠️ <strong class="text-white">Kritik Onay:</strong> Üretim ortamına dağıtım yapılsın mı?
+                    </div>
+
+                    <!-- Interactive Telegram Inline Buttons -->
+                    <div class="grid grid-cols-2 gap-1.5 pt-1">
+                      <button onclick="alert('✓ Mobil Onay Başarılı: T Bot V2 görevi güvenle yürüttü.')" class="py-1.5 px-2 rounded-lg bg-[#00EB96]/20 hover:bg-[#00EB96]/30 text-[#00EB96] border border-[#00EB96]/40 text-center font-bold text-[10px] transition-all">
+                        ✓ Evet, Dağıt
+                      </button>
+                      <button onclick="alert('İşlem iptal edildi.')" class="py-1.5 px-2 rounded-lg bg-[#FF5C5C]/20 hover:bg-[#FF5C5C]/30 text-[#FF5C5C] border border-[#FF5C5C]/40 text-center font-bold text-[10px] transition-all">
+                        ✕ İptal Et
+                      </button>
+                    </div>
+                    <span class="text-[9px] text-[#8291A0] block text-right px-1">14:43</span>
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- Telegram Input Bar -->
+              <div class="bg-[#0E1C15] border-t border-[#1A3326] p-2 flex items-center gap-2">
+                <span class="text-sm text-[#8291A0]">📎</span>
+                <input type="text" placeholder="Komut veya mesaj yazın..." readonly value="/ultracode testleri tamamla" class="bg-[#08100C] text-xs text-[#E6F2EB] rounded-full px-3 py-1.5 flex-1 border border-[#162B20] focus:outline-none font-mono text-[10px]">
+                <div class="w-6 h-6 rounded-full bg-[#00EB96] flex items-center justify-center text-[#070D0A] text-xs font-bold">
+                  ➤
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Executive Architectural Advantages -->
+        <div class="lg:col-span-6 space-y-4">
+          <div class="p-5 rounded-2xl bg-[#0C1612] border border-[#1E362A] space-y-3">
+            <div class="flex items-center gap-2 text-[#FFB800] font-mono text-xs font-bold uppercase tracking-wider">
+              <span>●</span> SIFIR ALTYAPI, SIFIR ARACI SUNUCU
+            </div>
+            <h3 class="text-xl font-bold text-white">Neden Sıfır-Backend?</h3>
+            <p class="text-xs sm:text-sm text-[#8291A0] leading-relaxed">
+              Geleneksel botlar pahalı bulut sunucuları (AWS, Google Cloud), açık portlar, webhook URL'leri ve statik IP maliyetleri gerektirir. 
+              <strong class="text-[#00EB96]">T Bot V2</strong> ise doğrudan geliştirici makinesinden TLS şifreli <strong class="text-white">Long-Polling</strong> ile Telegram Bot API'ye bağlanır.
+            </p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            <div class="p-4 rounded-xl bg-[#09120D] border border-[#192E23] space-y-1.5">
+              <div class="text-[#00EB96] text-lg font-bold">0 TL / Ay</div>
+              <h4 class="text-xs font-bold text-white">Ek Altyapı Maliyeti Yok</h4>
+              <p class="text-[11px] text-[#8291A0]">Sunucu faturası, domain veya SSL sertifika yenileme ihtiyacı bulunmaz.</p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-[#09120D] border border-[#192E23] space-y-1.5">
+              <div class="text-[#38CDF2] text-lg font-bold">%100 Güvenli</div>
+              <h4 class="text-xs font-bold text-white">Doğrudan Şifreli İletişim</h4>
+              <p class="text-[11px] text-[#8291A0]">Kodlarınız veya verileriniz üçüncü parti bir aracı köprüye asla uğramaz.</p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-[#09120D] border border-[#192E23] space-y-1.5">
+              <div class="text-[#FFB800] text-lg font-bold">Mobil Onay</div>
+              <h4 class="text-xs font-bold text-white">Yönetici Güvenlik Kapısı</h4>
+              <p class="text-[11px] text-[#8291A0]">Riskli komutlar cebinize buton olarak gelir; onayınız olmadan çalışmaz.</p>
+            </div>
+
+            <div class="p-4 rounded-xl bg-[#09120D] border border-[#192E23] space-y-1.5">
+              <div class="text-[#4ADE80] text-lg font-bold">7/24 Kesintisiz</div>
+              <h4 class="text-xs font-bold text-white">Seyahat Özgürlüğü</h4>
+              <p class="text-[11px] text-[#8291A0]">Toplantıdayken veya yoldayken tek komutla test ve derleme başlatabilirsiniz.</p>
+            </div>
+          </div>
+
+          <!-- Bottom Quote Box -->
+          <div class="p-4 rounded-xl bg-gradient-to-r from-[#0E1C15] to-[#0A130F] border-l-4 border-[#00EB96] text-xs text-[#BAC7BF] leading-relaxed">
+            <strong class="text-white">Yönetim Kurulu Notu:</strong> Şirket yöneticileri tatilde veya seyahatte dahi olsalar, acil durumlarda bilgisayarlarını açmadan Telegram üzerinden tüm kritik sistemleri izleyebilir ve yönlendirebilirler.
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SLIDE 5: SCREEN 3 - TOKEN SAVINGS & ZERO-HALLUCINATION COCKPIT -->
+    <section id="slide-4" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> TEMSİLİ EKRAN 03 & FİNANSAL ROI
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">%50–%75 Token Tasarrufu & Sıfır Halüsinasyon Kokpiti</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          Etkileşimli simülatör ile şirketinizin mühendislik kadrosuna göre yıllık net dolar tasarrufunu anlık hesaplayın.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- Left: Interactive Financial ROI Simulator (Live Calculator) -->
+        <div class="lg:col-span-7 rounded-2xl bg-[#0C1612] border border-[#1E362A] p-6 space-y-5">
+          <div class="flex items-center justify-between border-b border-[#1A2E24] pb-3">
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              <span>📊</span> Canlı Kurumsal Maliyet ve Tasarruf Simülatörü
+            </h3>
+            <span class="text-xs font-mono text-[#00EB96] bg-[#00EB96]/15 px-2 py-0.5 rounded border border-[#00EB96]/30 font-semibold">
+              Canlı Dinamik Motor
+            </span>
+          </div>
+
+          <!-- Slider 1: Team Size -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-xs font-medium">
+              <span class="text-[#BAC7BF]">Yazılım Mühendisi / Geliştirici Sayısı:</span>
+              <span id="teamSizeVal" class="text-[#00EB96] font-mono font-bold text-sm">10 Mühendis</span>
+            </div>
+            <input type="range" id="teamSizeInput" min="1" max="100" value="10" class="w-full h-2 bg-[#14261D] rounded-lg appearance-none cursor-pointer" oninput="calculateSavings()">
+            <div class="flex justify-between text-[10px] font-mono text-[#8291A0]">
+              <span>1 Kişi</span>
+              <span>25 Kişi</span>
+              <span>50 Kişi</span>
+              <span>100 Kişi</span>
+            </div>
+          </div>
+
+          <!-- Slider 2: Monthly Token Per Engineer -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-xs font-medium">
+              <span class="text-[#BAC7BF]">Geliştirici Başına Aylık Token Hacmi:</span>
+              <span id="tokenVolVal" class="text-[#38CDF2] font-mono font-bold text-sm">20 Milyon Token</span>
+            </div>
+            <input type="range" id="tokenVolInput" min="5" max="100" step="5" value="20" class="w-full h-2 bg-[#14261D] rounded-lg appearance-none cursor-pointer" oninput="calculateSavings()">
+            <div class="flex justify-between text-[10px] font-mono text-[#8291A0]">
+              <span>5M</span>
+              <span>25M</span>
+              <span>50M</span>
+              <span>100M</span>
+            </div>
+          </div>
+
+          <!-- Model Price Preset Selector -->
+          <div class="space-y-2">
+            <span class="text-xs text-[#BAC7BF] font-medium block">Kullanılan Model Sınıfı Fiyatlandırması:</span>
+            <div class="grid grid-cols-3 gap-2">
+              <label class="flex items-center gap-2 p-2 rounded-lg bg-[#09120E] border border-[#192E23] text-xs cursor-pointer hover:border-[#00EB96]/50 transition-all">
+                <input type="radio" name="modelPreset" value="sonnet" checked onchange="calculateSavings()" class="text-[#00EB96]">
+                <span class="text-white font-medium">Claude 3.5 Sonnet</span>
+              </label>
+              <label class="flex items-center gap-2 p-2 rounded-lg bg-[#09120E] border border-[#192E23] text-xs cursor-pointer hover:border-[#00EB96]/50 transition-all">
+                <input type="radio" name="modelPreset" value="gpt4o" onchange="calculateSavings()" class="text-[#00EB96]">
+                <span class="text-white font-medium">GPT-4o</span>
+              </label>
+              <label class="flex items-center gap-2 p-2 rounded-lg bg-[#09120E] border border-[#192E23] text-xs cursor-pointer hover:border-[#00EB96]/50 transition-all">
+                <input type="radio" name="modelPreset" value="gemini" onchange="calculateSavings()" class="text-[#00EB96]">
+                <span class="text-white font-medium">Gemini 2.5 Pro</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Dynamic Financial Results Cards -->
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+            
+            <div class="p-3.5 rounded-xl bg-[#08110D] border border-[#192E23]">
+              <span class="text-[10px] font-mono text-[#8291A0] block">HAM YILLIK MALİYET</span>
+              <div id="rawAnnualCost" class="text-lg font-bold text-white font-mono mt-1">$21,600</div>
+              <span class="text-[10px] text-[#8291A0]">Standart Ajanlar İle</span>
+            </div>
+
+            <div class="p-3.5 rounded-xl bg-[#08110D] border border-[#192E23]">
+              <span class="text-[10px] font-mono text-[#38CDF2] block">T BOT V2 İLE MALİYET</span>
+              <div id="tbotAnnualCost" class="text-lg font-bold text-[#38CDF2] font-mono mt-1">$6,912</div>
+              <span class="text-[10px] text-[#38CDF2] font-semibold">%68 Net İndirim</span>
+            </div>
+
+            <div class="p-3.5 rounded-xl bg-[#08110D] border border-[#00EB96]/50 cyber-glow-emerald">
+              <span class="text-[10px] font-mono text-[#00EB96] block font-bold">YILLIK NET TASARRUF</span>
+              <div id="netSavingsAnnual" class="text-xl font-extrabold text-[#00EB96] font-mono mt-1">+$14,688</div>
+              <span id="trySavingsAnnual" class="text-[10px] text-[#BAC7BF] font-mono">₺558,000 / yıl</span>
+            </div>
+
+          </div>
+
+          <!-- Dynamic Visual Bar Comparison -->
+          <div class="space-y-1.5 pt-2">
+            <div class="flex items-center justify-between text-[11px] font-mono">
+              <span class="text-[#8291A0]">Maliyet Karşılaştırması:</span>
+              <span class="text-[#00EB96] font-bold">T Bot V2 Sayesinde %68 Bütçe Tasarrufu</span>
+            </div>
+            <!-- Bar 1: Competitors -->
+            <div class="h-4 bg-[#14261D] rounded-full overflow-hidden relative">
+              <div class="h-full bg-gradient-to-r from-red-500/70 to-red-400 rounded-full w-full flex items-center justify-end pr-2 text-[9px] font-mono text-white font-bold">
+                Rakipler (100% Tam Tüketim)
+              </div>
+            </div>
+            <!-- Bar 2: T Bot V2 -->
+            <div class="h-4 bg-[#14261D] rounded-full overflow-hidden relative">
+              <div id="tbotBar" style="width: 32%;" class="h-full bg-gradient-to-r from-[#00EB96] to-[#38CDF2] rounded-full flex items-center justify-end pr-2 text-[9px] font-mono text-[#070D0A] font-bold transition-all duration-500">
+                T Bot V2 (%32)
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right: 3-Layer Deterministic Anti-Hallucination Architecture -->
+        <div class="lg:col-span-5 rounded-2xl bg-[#0C1612] border border-[#1E362A] p-6 space-y-4">
+          <div class="flex items-center justify-between border-b border-[#1A2E24] pb-3">
+            <h3 class="text-base font-bold text-white flex items-center gap-2">
+              <span class="text-[#FFB800]">🛡️</span> Deterministik Anti-Halüsinasyon
+            </h3>
+            <span class="text-[10px] font-mono text-[#FFB800] bg-[#FFB800]/15 px-2 py-0.5 rounded border border-[#FFB800]/30 font-semibold">
+              3 Katmanlı Kapı
+            </span>
+          </div>
+
+          <p class="text-xs text-[#8291A0] leading-relaxed">
+            Yapay zekânın "yapmadığı işi yapmış gibi göstermesi" veya "kodda sözdizimi bozması" problemleri T Bot V2'de matematiksel ve deterministik olarak engellenmiştir.
+          </p>
+
+          <div class="space-y-3">
+            
+            <!-- Layer 1 -->
+            <div class="p-3.5 rounded-xl bg-[#08110D] border-l-4 border-[#00EB96] border border-[#192E23] space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-white">1. Read-Before-Write İnvariantı</span>
+                <span class="text-[10px] font-mono text-[#00EB96]">Giriş Kapısı</span>
+              </div>
+              <p class="text-[11px] text-[#8291A0] leading-relaxed">
+                Ajan bir dosyayı önce okumadan (<code>file_read</code> / <code>file_outline</code>) asla yazamaz veya yamayamaz. Hayali dosya üretme ihtimali <strong>%0</strong>'dır.
+              </p>
+            </div>
+
+            <!-- Layer 2 -->
+            <div class="p-3.5 rounded-xl bg-[#08110D] border-l-4 border-[#38CDF2] border border-[#192E23] space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-white">2. Post-Write AST & Rollback</span>
+                <span class="text-[10px] font-mono text-[#38CDF2]">Ayrıştırıcı Kapısı</span>
+              </div>
+              <p class="text-[11px] text-[#8291A0] leading-relaxed">
+                Dosya yazıldığı an derleyici/AST sözdizimi doğrulamasına girer. Hata varsa dosya <strong>milinaniyeler içinde eski güvenli durumuna geri döner</strong> ve kendini onarır.
+              </p>
+            </div>
+
+            <!-- Layer 3 -->
+            <div class="p-3.5 rounded-xl bg-[#08110D] border-l-4 border-[#FFB800] border border-[#192E23] space-y-1">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-white">3. Claim-Evidence Doğrulaması</span>
+                <span class="text-[10px] font-mono text-[#FFB800]">Çıkış Kapısı</span>
+              </div>
+              <p class="text-[11px] text-[#8291A0] leading-relaxed">
+                Ajanın "testler geçti" veya "derlendi" şeklindeki sözlü iddiaları, işletim sistemi terminal çıkış kodlarıyla (exit code 0) eşleşmeden geçerli kabul edilmez.
+              </p>
+            </div>
+
+          </div>
+
+          <div class="p-3 rounded-lg bg-[#070D0A] border border-[#16271F] flex items-center gap-2 text-[11px] text-[#4ADE80]">
+            <span>✓</span>
+            <span class="font-medium">Kurumsal Kod Bütünlüğü %100 Güvence Altında</span>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- SLIDE 6: COMPETITOR COMPARISON MATRIX -->
+    <section id="slide-5" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> SEKTÖREL ÜSTÜNLÜK MATRİSİ
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">T Bot V2 vs Sektör Standartları</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          T Bot 2.0; token verimliliği, deterministik anti-halüsinasyon, donanım kaynak tüketimi ve sıfır-backend mobil yönetimde rakiplerine karşı ezici üstünlüğe sahiptir.
+        </p>
+      </div>
+
+      <!-- High Tech Comparison Table -->
+      <div class="rounded-2xl bg-[#0C1612] border border-[#1E362A] overflow-hidden shadow-2xl">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr class="bg-[#0E1A14] border-b border-[#1A2F25] text-[#BAC7BF] font-mono">
+                <th class="p-4 pl-6 text-white font-bold">Kriter / Özellik</th>
+                <th class="p-4 bg-[#00EB96]/10 text-[#00EB96] font-bold border-x border-[#00EB96]/30">
+                  <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-[#00EB96]"></span>
+                    T BOT V2.0 (Lider)
+                  </div>
+                </th>
+                <th class="p-4 text-[#8291A0]">Claude Code</th>
+                <th class="p-4 text-[#8291A0]">OpenCode</th>
+                <th class="p-4 text-[#8291A0]">Grok Bot</th>
+                <th class="p-4 text-[#8291A0]">Hermes Agent</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-[#16271F] text-[#BAC7BF]">
+              
+              <!-- Row 1: Token Savings -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Token Tasarruf Oranı
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Intent Pruning & Caching</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30 text-sm">
+                  %50 – %75 Tasarruf 💎
+                </td>
+                <td class="p-4 text-[#8291A0]">%10 – %20 (Kısmi)</td>
+                <td class="p-4 text-[#8291A0]">%0 – %10 (Yok)</td>
+                <td class="p-4 text-[#8291A0]">%5 (Standart)</td>
+                <td class="p-4 text-[#8291A0]">%0 (Ham Tüketim)</td>
+              </tr>
+
+              <!-- Row 2: Anti-Hallucination -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Anti-Halüsinasyon Güvencesi
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Deterministik Korumalar</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  3 Katmanlı Deterministik (AST + Evidence)
+                </td>
+                <td class="p-4 text-[#8291A0]">Yalnızca Prompt Seviyesinde</td>
+                <td class="p-4 text-[#8291A0]">Yok (Manuel Takip)</td>
+                <td class="p-4 text-[#8291A0]">Temel Linter</td>
+                <td class="p-4 text-[#8291A0]">Yok</td>
+              </tr>
+
+              <!-- Row 3: Architecture -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Ajan Mimarisi
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Çekirdek Kapsamı</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  Üçlü Çekirdek (Kodlama + Masaüstü + Telegram)
+                </td>
+                <td class="p-4 text-[#8291A0]">Sadece Kodlama CLI</td>
+                <td class="p-4 text-[#8291A0]">Sadece Kodlama CLI</td>
+                <td class="p-4 text-[#8291A0]">Chat / Temel Kod</td>
+                <td class="p-4 text-[#8291A0]">Masaüstü Ajanı</td>
+              </tr>
+
+              <!-- Row 4: Memory / RAM Consumption -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  RAM & Donanım Tüketimi
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Arka Plan Kaynak Yükü</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  Ultra Hafif (~35–45 MB RAM)
+                </td>
+                <td class="p-4 text-[#8291A0]">~280–450 MB RAM</td>
+                <td class="p-4 text-[#8291A0]">~350–600 MB RAM</td>
+                <td class="p-4 text-[#8291A0]">Bulut Bağımlı</td>
+                <td class="p-4 text-[#8291A0]">~500–850 MB RAM</td>
+              </tr>
+
+              <!-- Row 5: Mobile Telegram Gateway -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Mobil Uzaktan Yönetim
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Sıfır-Backend Telegram Köprüsü</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  Var (Long-Polling + Ekran Görüntüsü)
+                </td>
+                <td class="p-4 text-[#8291A0]">Yok (Sadece Terminal)</td>
+                <td class="p-4 text-[#8291A0]">Yok</td>
+                <td class="p-4 text-[#8291A0]">Yok</td>
+                <td class="p-4 text-[#8291A0]">Kısmi Webhook</td>
+              </tr>
+
+              <!-- Row 6: Model Independence -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Model Bağımsızlığı & Gizlilik
+                  <span class="block text-[10px] text-[#8291A0] font-normal">Sağlayıcı Desteği</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  14+ Sağlayıcı + %100 Yerel Ollama
+                </td>
+                <td class="p-4 text-[#8291A0]">Yalnızca Anthropic Claude</td>
+                <td class="p-4 text-[#8291A0]">OpenAI / Anthropic</td>
+                <td class="p-4 text-[#8291A0]">Yalnızca xAI Grok</td>
+                <td class="p-4 text-[#8291A0]">Kısıtlı Açık Modeller</td>
+              </tr>
+
+              <!-- Row 7: Enterprise Security -->
+              <tr class="hover:bg-[#0E1B15] transition-colors">
+                <td class="p-4 pl-6 font-semibold text-white">
+                  Kurumsal Anahtar Güvenliği
+                  <span class="block text-[10px] text-[#8291A0] font-normal">İşletim Sistemi Düzeyi</span>
+                </td>
+                <td class="p-4 bg-[#00EB96]/10 font-bold text-[#00EB96] border-x border-[#00EB96]/30">
+                  Windows DPAPI Şifreli
+                </td>
+                <td class="p-4 text-[#8291A0]">Düz Metin (.env / config)</td>
+                <td class="p-4 text-[#8291A0]">Düz Metin</td>
+                <td class="p-4 text-[#8291A0]">Bulut Senkronizasyonu</td>
+                <td class="p-4 text-[#8291A0]">Düz Metin</td>
+              </tr>
+
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Executive Decision Summary Banner -->
+      <div class="p-4 rounded-xl bg-gradient-to-r from-[#0C1612] via-[#0E1E17] to-[#0C1612] border border-[#00EB96]/30 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-[#00EB96]/20 border border-[#00EB96]/40 flex items-center justify-center text-sm font-bold text-[#00EB96]">
+            🏆
+          </div>
+          <span class="text-xs text-[#E6F2EB]">
+            <strong>Sonuç:</strong> T Bot V2; şirketimizi tek bir model sağlayıcısına esir etmeden, en düşük donanım yükü ve en yüksek token verimliliğiyle açık ara lider konumdadır.
+          </span>
+        </div>
+        <button onclick="goToSlide(4)" class="text-xs font-mono text-[#00EB96] hover:underline whitespace-nowrap">
+          ROI Simülatörünü İncele →
+        </button>
+      </div>
+
+    </section>
+
+    <!-- SLIDE 7: DEPLOYMENT & INSTALLATION GUIDE -->
+    <section id="slide-6" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> DAĞITIM VE İŞLETİM MİMARİSİ
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">Tek Komutla Kurulum Kılavuzu</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          Tüm kurumsal geliştirici makinelerine sıfır konfigürasyon eforuyla 30 saniye içinde uzaktan terminal ile tek komutla dağıtılır.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Windows PowerShell -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] p-5 space-y-3 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2.5 py-1 rounded bg-[#38CDF2]/15 text-[#38CDF2] font-mono text-xs font-bold border border-[#38CDF2]/30">
+                WINDOWS
+              </span>
+              <span class="text-xs text-[#8291A0] font-mono">PowerShell</span>
+            </div>
+            <h3 class="text-sm font-bold text-white">Tek Komutla PowerShell Kurulumu</h3>
+            <p class="text-xs text-[#8291A0] mt-1">
+              Node.js >= 20.3, Git ve ortam değişkenlerini otomatik kontrol eder ve yapılandırır.
+            </p>
+
+            <div class="mt-3 p-3 rounded-lg bg-[#070D0A] border border-[#1A2E24] font-mono text-[11px] text-[#00EB96] relative group">
+              <pre class="overflow-x-auto whitespace-pre-wrap break-all" id="cmdWindows">irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex</pre>
+            </div>
+          </div>
+
+          <button onclick="copyToClipboard('cmdWindows', this)" class="w-full py-2 px-3 rounded-lg bg-[#0F1D17] hover:bg-[#142B20] text-[#00EB96] border border-[#1A2F25] hover:border-[#00EB96]/50 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all">
+            <span>📋</span> <span>Komutu Kopyala</span>
+          </button>
+        </div>
+
+        <!-- Linux & macOS -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] p-5 space-y-3 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2.5 py-1 rounded bg-[#00EB96]/15 text-[#00EB96] font-mono text-xs font-bold border border-[#00EB96]/30">
+                LINUX & MACOS
+              </span>
+              <span class="text-xs text-[#8291A0] font-mono">Bash / Sh</span>
+            </div>
+            <h3 class="text-sm font-bold text-white">Tek Komutla cURL Kurulumu</h3>
+            <p class="text-xs text-[#8291A0] mt-1">
+              Unix tabanlı sunucu ve geliştirici cihazlarında sorunsuz arka plan yetkilendirmesi sağlar.
+            </p>
+
+            <div class="mt-3 p-3 rounded-lg bg-[#070D0A] border border-[#1A2E24] font-mono text-[11px] text-[#00EB96] relative group">
+              <pre class="overflow-x-auto whitespace-pre-wrap break-all" id="cmdUnix">curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh</pre>
+            </div>
+          </div>
+
+          <button onclick="copyToClipboard('cmdUnix', this)" class="w-full py-2 px-3 rounded-lg bg-[#0F1D17] hover:bg-[#142B20] text-[#00EB96] border border-[#1A2F25] hover:border-[#00EB96]/50 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all">
+            <span>📋</span> <span>Komutu Kopyala</span>
+          </button>
+        </div>
+
+        <!-- Global NPM Package -->
+        <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] p-5 space-y-3 flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2.5 py-1 rounded bg-[#FFB800]/15 text-[#FFB800] font-mono text-xs font-bold border border-[#FFB800]/30">
+                GLOBAL NPM
+              </span>
+              <span class="text-xs text-[#8291A0] font-mono">Doğrudan Git</span>
+            </div>
+            <h3 class="text-sm font-bold text-white">NPM Global Paket Kurulumu</h3>
+            <p class="text-xs text-[#8291A0] mt-1">
+              Doğrudan global npm yoluyla sistem geneline tbot binary'sini bağlar.
+            </p>
+
+            <div class="mt-3 p-3 rounded-lg bg-[#070D0A] border border-[#1A2E24] font-mono text-[11px] text-[#00EB96] relative group">
+              <pre class="overflow-x-auto whitespace-pre-wrap break-all" id="cmdNpm">npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git</pre>
+            </div>
+          </div>
+
+          <button onclick="copyToClipboard('cmdNpm', this)" class="w-full py-2 px-3 rounded-lg bg-[#0F1D17] hover:bg-[#142B20] text-[#00EB96] border border-[#1A2F25] hover:border-[#00EB96]/50 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all">
+            <span>📋</span> <span>Komutu Kopyala</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Verification & Health Check -->
+      <div class="rounded-2xl bg-[#0C1612] border border-[#1A2F25] p-6 space-y-4">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <span>🩺</span> Kurulum Sonrası Otomatik Doğrulama ve Sistem Sağlığı
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="p-3.5 rounded-xl bg-[#070D0A] border border-[#16271F] space-y-1">
+            <div class="text-xs font-mono text-[#00EB96] font-bold">tbot doctor</div>
+            <p class="text-[11px] text-[#8291A0]">Tüm sistem gereksinimlerini, PATH değişkenini, API anahtar durumlarını ve C# Win32 köprülerini denetler.</p>
+          </div>
+          <div class="p-3.5 rounded-xl bg-[#070D0A] border border-[#16271F] space-y-1">
+            <div class="text-xs font-mono text-[#38CDF2] font-bold">tbot config</div>
+            <p class="text-[11px] text-[#8291A0]">14+ sağlayıcıdan dilediğiniz API anahtarını güvenli DPAPI kasasında şifreler.</p>
+          </div>
+          <div class="p-3.5 rounded-xl bg-[#070D0A] border border-[#16271F] space-y-1">
+            <div class="text-xs font-mono text-[#FFB800] font-bold">tbot --bot</div>
+            <p class="text-[11px] text-[#8291A0]">Telegram Bot Token'ı kaydedildiği an sıfır konfigürasyon ile mobil ağ geçidini anında ayağa kaldırır.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SLIDE 8: EXECUTIVE & ENGINEERING COMMAND GUIDE -->
+    <section id="slide-7" class="hidden w-full flex-col gap-6">
+      <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-[#1A2F25] pb-4">
+        <div>
+          <div class="text-xs font-mono text-[#00EB96] uppercase tracking-wider mb-1 flex items-center gap-1.5">
+            <span>●</span> KOMUTA KONTROL MERKEZİ
+          </div>
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-white">Yönetici ve Mühendislik Komut Kılavuzu</h2>
+        </div>
+        <p class="text-xs sm:text-sm text-[#8291A0] max-w-lg">
+          Etkileşimli oturumda geliştiricilerin parmak ucundaki tüm akıllı slash komutları ve CLI bayrakları.
+        </p>
+      </div>
+
+      <!-- Quick Command Filter Buttons -->
+      <div class="flex flex-wrap items-center gap-2">
+        <button onclick="filterCommands('all')" class="cmd-filter-btn px-3 py-1.5 rounded-lg bg-[#00EB96] text-[#070D0A] font-bold text-xs transition-all">
+          Tüm Komutlar (10+)
+        </button>
+        <button onclick="filterCommands('core')" class="cmd-filter-btn px-3 py-1.5 rounded-lg bg-[#0C1612] border border-[#1A2F25] text-[#BAC7BF] hover:text-white text-xs transition-all">
+          ⚡ Kodlama & Ultracode
+        </button>
+        <button onclick="filterCommands('system')" class="cmd-filter-btn px-3 py-1.5 rounded-lg bg-[#0C1612] border border-[#1A2F25] text-[#BAC7BF] hover:text-white text-xs transition-all">
+          💾 Bellek & Token HUD
+        </button>
+        <button onclick="filterCommands('remote')" class="cmd-filter-btn px-3 py-1.5 rounded-lg bg-[#0C1612] border border-[#1A2F25] text-[#BAC7BF] hover:text-white text-xs transition-all">
+          📱 Mobil & Otonom Hedef
+        </button>
+      </div>
+
+      <!-- Command Cards Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 max-h-[480px] overflow-y-auto pr-1">
+        
+        <!-- Cmd 1 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#00EB96]/50 transition-all space-y-1.5" data-cat="core">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#00EB96]">/ultracode [on|off]</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Kodlama</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            4 aşamalı derin otonom kodlama, Read-Before-Write garantisi ve AST öz-onarımı modunu açar.
+          </p>
+        </div>
+
+        <!-- Cmd 2 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#38CDF2]/50 transition-all space-y-1.5" data-cat="remote">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#38CDF2]">/goal &lt;hedef&gt;</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Otonom</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Büyük mühendislik görevlerini otomatik alt hedeflere böler, adım adım ilerlemeyi takip eder.
+          </p>
+        </div>
+
+        <!-- Cmd 3 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#FFB800]/50 transition-all space-y-1.5" data-cat="remote">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#FFB800]">/subagents &lt;istek&gt;</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Paralel</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Ana ajanın bağlamını kirletmeden eşzamanlı Türkçe isimli araştırmacı alt ajanlar çalıştırır.
+          </p>
+        </div>
+
+        <!-- Cmd 4 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#00EB96]/50 transition-all space-y-1.5" data-cat="remote">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#00EB96]">/bot</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Mobil</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Sıfır-backend Telegram ağ geçidinin durumunu görüntüler, telefondan kontrol köprüsünü açar.
+          </p>
+        </div>
+
+        <!-- Cmd 5 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#38CDF2]/50 transition-all space-y-1.5" data-cat="system">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#38CDF2]">/tokens</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Telemetri</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Oturum boyunca kullanılan ham tokenları, önbellek kazancını ve net dolar tasarrufunu raporlar.
+          </p>
+        </div>
+
+        <!-- Cmd 6 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#00EB96]/50 transition-all space-y-1.5" data-cat="system">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#00EB96]">/memory &amp; /gc</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Performans</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Heap ve RSS RAM kullanımını denetler, istenirse manuel çöp toplayıcıyı (GC) anında tetikler.
+          </p>
+        </div>
+
+        <!-- Cmd 7 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#FFB800]/50 transition-all space-y-1.5" data-cat="core">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#FFB800]">/remember &lt;k&gt; = &lt;v&gt;</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Hafıza</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Şirketin mimari standartlarını ve kurallarını kalıcı belleğe (<code>.tbot/memory.json</code>) yazar.
+          </p>
+        </div>
+
+        <!-- Cmd 8 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#38CDF2]/50 transition-all space-y-1.5" data-cat="core">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#38CDF2]">/plan &lt;istek&gt;</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Planlama</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            Koda dokunmadan önce deterministik bir yol haritası sunar; <code>/plan apply</code> ile uygular.
+          </p>
+        </div>
+
+        <!-- Cmd 9 -->
+        <div class="cmd-card p-4 rounded-xl bg-[#0C1612] border border-[#1A2F25] hover:border-[#00EB96]/50 transition-all space-y-1.5" data-cat="system">
+          <div class="flex items-center justify-between">
+            <span class="font-mono text-xs font-bold text-[#00EB96]">/effort &lt;düzey&gt;</span>
+            <span class="text-[10px] font-mono text-[#8291A0] bg-[#14261D] px-2 py-0.5 rounded">Akıl Yürütme</span>
+          </div>
+          <p class="text-xs text-[#BAC7BF] leading-relaxed">
+            LLM düşünme derinliğini görev karmaşıklığına göre ayarlar (low, medium, high, xhigh, max).
+          </p>
+        </div>
+
+      </div>
+
+      <!-- Executive Action Footer -->
+      <div class="p-4 rounded-xl bg-[#0B1510] border border-[#1A2E24] flex items-center justify-between">
+        <div class="text-xs text-[#BAC7BF]">
+          <strong class="text-white">Yönetim Kurulu Karar Tavsiyesi:</strong> T Bot V2'nin şirket bünyesinde resmi AI geliştirme standardı olarak kabul edilmesi.
+        </div>
+        <button onclick="goToSlide(0)" class="px-3.5 py-1.5 rounded-lg bg-[#00EB96] hover:bg-[#00D285] text-[#070D0A] font-bold text-xs transition-all shadow-md">
+          Başa Dön ↺
+        </button>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- BOTTOM EXECUTIVE NAVIGATION BAR -->
+  <footer class="border-t border-[#1A2F25] bg-[#0A120E]/90 backdrop-blur-md px-5 py-3 sticky bottom-0 z-50">
+    <div class="max-w-7xl mx-auto flex items-center justify-between gap-4">
+      
+      <!-- Previous Button -->
+      <button id="prevBtn" onclick="prevSlide()" class="flex items-center gap-1.5 bg-[#0F1C16] hover:bg-[#15271F] disabled:opacity-30 disabled:pointer-events-none text-[#E6F2EB] hover:text-[#00EB96] border border-[#1A2F25] hover:border-[#00EB96]/40 px-3.5 py-2 rounded-lg text-xs font-bold transition-all">
+        <span>←</span> <span>Önceki Slayt</span>
+      </button>
+
+      <!-- Slide Indicator Dots -->
+      <div class="flex items-center gap-2">
+        <button onclick="goToSlide(0)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#00EB96] transition-all hover:scale-125" title="1. Vizyon"></button>
+        <button onclick="goToSlide(1)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="2. Mimarisi"></button>
+        <button onclick="goToSlide(2)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="3. Terminal & Canlı HUD"></button>
+        <button onclick="goToSlide(3)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="4. Telegram Bot Köprüsü"></button>
+        <button onclick="goToSlide(4)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="5. Finansal ROI Kokpiti"></button>
+        <button onclick="goToSlide(5)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="6. Karşılaştırma Matrisi"></button>
+        <button onclick="goToSlide(6)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="7. Kurulum Kılavuzu"></button>
+        <button onclick="goToSlide(7)" class="slide-dot w-2.5 h-2.5 rounded-full bg-[#1C3328] transition-all hover:scale-125" title="8. Komut Kılavuzu"></button>
+      </div>
+
+      <!-- Next Button -->
+      <button id="nextBtn" onclick="nextSlide()" class="flex items-center gap-1.5 bg-[#00EB96] hover:bg-[#00D285] disabled:opacity-30 disabled:pointer-events-none text-[#070D0A] px-4 py-2 rounded-lg text-xs font-bold transition-all shadow-md">
+        <span>Sonraki Slayt</span> <span>→</span>
+      </button>
+
+    </div>
+  </footer>
+
+  <!-- SCRIPT LOGIC -->
+  <script>
+    const totalSlides = 8;
+    let currentSlide = 0;
+    const slideLabels = [
+      "01 / 08 • Vizyon & Yönetim Kurulu Özeti",
+      "02 / 08 • Üçlü Çekirdek (Tri-Core) Mimarisi",
+      "03 / 08 • [Ekran 1] Siber Terminal & Canlı HUD",
+      "04 / 08 • [Ekran 2] Sıfır-Backend Mobil Telegram Botu",
+      "05 / 08 • [Ekran 3] ROI Kokpiti & %50-%75 Tasarruf",
+      "06 / 08 • Kurumsal Karşılaştırma Matrisi",
+      "07 / 08 • Tek Komutla Kurulum & Dağıtım",
+      "08 / 08 • Yönetici & Mühendislik Komut Kılavuzu"
+    ];
+
+    function showSlide(index) {
+      if (index < 0) index = 0;
+      if (index >= totalSlides) index = totalSlides - 1;
+      currentSlide = index;
+
+      for (let i = 0; i < totalSlides; i++) {
+        const slide = document.getElementById('slide-' + i);
+        if (slide) {
+          if (i === currentSlide) {
+            slide.classList.remove('hidden');
+            slide.classList.add('slide-active');
+          } else {
+            slide.classList.add('hidden');
+            slide.classList.remove('slide-active');
+          }
+        }
+      }
+
+      // Update UI elements
+      const label = document.getElementById('currentSlideLabel');
+      if (label) label.innerText = slideLabels[currentSlide];
+
+      const dropdown = document.getElementById('slideDropdown');
+      if (dropdown) dropdown.value = currentSlide;
+
+      // Update Dots
+      const dots = document.querySelectorAll('.slide-dot');
+      dots.forEach((dot, idx) => {
+        if (idx === currentSlide) {
+          dot.classList.remove('bg-[#1C3328]');
+          dot.classList.add('bg-[#00EB96]', 'w-5');
+        } else {
+          dot.classList.remove('bg-[#00EB96]', 'w-5');
+          dot.classList.add('bg-[#1C3328]');
+        }
+      });
+
+      // Update Prev/Next buttons
+      const prevBtn = document.getElementById('prevBtn');
+      const nextBtn = document.getElementById('nextBtn');
+      if (prevBtn) prevBtn.disabled = (currentSlide === 0);
+      if (nextBtn) {
+        if (currentSlide === totalSlides - 1) {
+          nextBtn.innerText = "Yeniden Başlat ↺";
+          nextBtn.onclick = () => goToSlide(0);
+        } else {
+          nextBtn.innerHTML = "<span>Sonraki Slayt</span> <span>→</span>";
+          nextBtn.onclick = nextSlide;
+        }
+      }
+    }
+
+    function nextSlide() {
+      if (currentSlide < totalSlides - 1) {
+        showSlide(currentSlide + 1);
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlide > 0) {
+        showSlide(currentSlide - 1);
+      }
+    }
+
+    function goToSlide(index) {
+      showSlide(index);
+    }
+
+    // Keyboard Navigation
+    window.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.key === 'ArrowRight' || e.key === 'Space') {
+        e.preventDefault();
+        nextSlide();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        prevSlide();
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullScreen();
+      } else if (e.key === 'Home') {
+        goToSlide(0);
+      } else if (e.key === 'End') {
+        goToSlide(totalSlides - 1);
+      }
+    });
+
+    // Fullscreen toggle
+    function toggleFullScreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        if (document.exitFullscreen) {
+          document.exitFullscreen();
+        }
+      }
+    }
+
+    // Presentation Elapsed Timer
+    let secondsElapsed = 0;
+    setInterval(() => {
+      secondsElapsed++;
+      const mins = String(Math.floor(secondsElapsed / 60)).padStart(2, '0');
+      const secs = String(secondsElapsed % 60).padStart(2, '0');
+      const timerEl = document.getElementById('presentationTimer');
+      if (timerEl) timerEl.innerText = mins + ':' + secs;
+    }, 1000);
+
+    // Braille Animation in Terminal Mockup
+    const brailleFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let brailleIdx = 0;
+    setInterval(() => {
+      const spinner = document.getElementById('brailleSpinner');
+      if (spinner) {
+        brailleIdx = (brailleIdx + 1) % brailleFrames.length;
+        spinner.innerText = brailleFrames[brailleIdx];
+      }
+    }, 100);
+
+    // Live ROI Cost Calculator
+    function calculateSavings() {
+      const teamSize = parseInt(document.getElementById('teamSizeInput').value) || 10;
+      const tokenVolMillions = parseInt(document.getElementById('tokenVolInput').value) || 20;
+      
+      const teamSizeLabel = document.getElementById('teamSizeVal');
+      if (teamSizeLabel) teamSizeLabel.innerText = teamSize + ' Mühendis';
+
+      const tokenVolLabel = document.getElementById('tokenVolVal');
+      if (tokenVolLabel) tokenVolLabel.innerText = tokenVolMillions + ' Milyon Token';
+
+      // Price per million token blend
+      const preset = document.querySelector('input[name="modelPreset"]:checked')?.value || 'sonnet';
+      let costPerMillion = 9.0; // Sonnet blend
+      if (preset === 'gpt4o') costPerMillion = 6.25;
+      if (preset === 'gemini') costPerMillion = 3.5;
+
+      const monthlyTokensTotal = teamSize * tokenVolMillions;
+      const rawMonthlyCost = monthlyTokensTotal * costPerMillion;
+      const rawAnnual = rawMonthlyCost * 12;
+
+      // T Bot V2 saves 68% on average
+      const savingsRate = 0.68;
+      const tbotAnnual = rawAnnual * (1 - savingsRate);
+      const netSavings = rawAnnual - tbotAnnual;
+      const tryRate = 38.0; // USD/TRY
+      const netSavingsTry = netSavings * tryRate;
+
+      const rawEl = document.getElementById('rawAnnualCost');
+      if (rawEl) rawEl.innerText = '$' + Math.round(rawAnnual).toLocaleString('en-US');
+
+      const tbotEl = document.getElementById('tbotAnnualCost');
+      if (tbotEl) tbotEl.innerText = '$' + Math.round(tbotAnnual).toLocaleString('en-US');
+
+      const netEl = document.getElementById('netSavingsAnnual');
+      if (netEl) netEl.innerText = '+$' + Math.round(netSavings).toLocaleString('en-US');
+
+      const tryEl = document.getElementById('trySavingsAnnual');
+      if (tryEl) tryEl.innerText = '₺' + Math.round(netSavingsTry).toLocaleString('tr-TR') + ' / yıl';
+
+      // Bar percentage
+      const barEl = document.getElementById('tbotBar');
+      if (barEl) {
+        const pct = Math.round((1 - savingsRate) * 100);
+        barEl.style.width = pct + '%';
+        barEl.innerText = 'T Bot V2 (%' + pct + ')';
+      }
+    }
+
+    // Command Filter
+    function filterCommands(cat) {
+      const cards = document.querySelectorAll('.cmd-card');
+      const buttons = document.querySelectorAll('.cmd-filter-btn');
+      
+      buttons.forEach(b => {
+        b.classList.remove('bg-[#00EB96]', 'text-[#070D0A]');
+        b.classList.add('bg-[#0C1612]', 'text-[#BAC7BF]');
+      });
+      event.target.classList.remove('bg-[#0C1612]', 'text-[#BAC7BF]');
+      event.target.classList.add('bg-[#00EB96]', 'text-[#070D0A]');
+
+      cards.forEach(card => {
+        if (cat === 'all' || card.getAttribute('data-cat') === cat) {
+          card.classList.remove('hidden');
+        } else {
+          card.classList.add('hidden');
+        }
+      });
+    }
+
+    // Copy to clipboard helper
+    function copyToClipboard(elementId, btn) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const text = el.innerText.trim();
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.innerHTML;
+        btn.innerHTML = "<span>✓</span> <span>Kopyalandı!</span>";
+        btn.classList.add('bg-[#00EB96]', 'text-[#070D0A]');
+        setTimeout(() => {
+          btn.innerHTML = originalText;
+          btn.classList.remove('bg-[#00EB96]', 'text-[#070D0A]');
+        }, 2000);
+      });
+    }
+
+    // Initialize calculator
+    calculateSavings();
+  </script>
+</body>
+</html>`;
+}
+
+// Build Compact Inline Widget HTML (<= 460px height)
+function buildInlineWidgetHtml() {
+  const markSvgSm = renderPixelMarkSvg(2.5, true);
+
+  return `<!DOCTYPE html>
+<html lang="tr" class="h-full bg-[#070D0A]">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T Bot V2 — Yönetim Kurulu İnteraktif Özet Kartı</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      background: #070D0A;
+      color: #E6F2EB;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      height: 460px;
+      max-height: 460px;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body class="flex flex-col justify-between p-3.5 box-border h-[460px] bg-gradient-to-b from-[#0B1510] via-[#070D0A] to-[#09120E] border border-[#1A3326] rounded-2xl select-none">
+  
+  <!-- Widget Top Bar -->
+  <div class="flex items-center justify-between border-b border-[#1A2E24] pb-2.5">
+    <div class="flex items-center gap-2.5">
+      <div class="p-1 rounded bg-[#0F1C16] border border-[#1E362A]">
+        <img src="${tabitLogoDataUrl}" alt="Logo" class="w-5 h-5 rounded object-contain" />
+      </div>
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs font-extrabold text-white tracking-wider">T BOT V2</span>
+          <span class="text-[9px] font-mono bg-[#00EB96]/20 text-[#00EB96] px-1 py-0.2 rounded font-bold">YÖNETİM KURULU KOKPİTİ</span>
+        </div>
+        <div class="text-[10px] text-[#8291A0]">Tri-Core Ajan & %50-%75 Tasarruf</div>
+      </div>
+    </div>
+
+    <!-- Tab navigation -->
+    <div class="flex items-center gap-1 bg-[#0D1713] p-1 rounded-lg border border-[#1A2E24]">
+      <button onclick="switchTab('hud')" id="tabBtn-hud" class="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00EB96] text-[#070D0A] transition-all">Canlı HUD</button>
+      <button onclick="switchTab('roi')" id="tabBtn-roi" class="px-2 py-0.5 rounded text-[10px] font-bold text-[#8291A0] hover:text-white transition-all">ROI Hesapla</button>
+      <button onclick="switchTab('tri')" id="tabBtn-tri" class="px-2 py-0.5 rounded text-[10px] font-bold text-[#8291A0] hover:text-white transition-all">Üçlü Çekirdek</button>
+      <button onclick="switchTab('install')" id="tabBtn-install" class="px-2 py-0.5 rounded text-[10px] font-bold text-[#8291A0] hover:text-white transition-all">Kurulum</button>
+    </div>
+  </div>
+
+  <!-- Tab Content (Height constrained to ~340px) -->
+  <div class="flex-1 my-2 overflow-hidden relative">
+    
+    <!-- TAB 1: CANLI HUD & GÖSTERGE -->
+    <div id="tab-hud" class="h-full flex flex-col justify-between space-y-2">
+      <!-- HUD Banner -->
+      <div class="p-2 rounded-lg bg-[#0E1B15] border border-[#00EB96]/40 text-[10px] font-mono font-bold text-[#E6F2EB] flex items-center justify-between">
+        <span class="text-[#00EB96]">╭─[ ⚡ gemini-4-argon │ 🧠 efor: high │ 💎 Tasarruf: %68 │ 🛡️ Grounding: ✓ │ 💾 RAM: 38MB ]</span>
+      </div>
+
+      <!-- 4 KPI Box -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div class="p-2 rounded-lg bg-[#0C1612] border border-[#1A2E24]">
+          <span class="text-[9px] text-[#8291A0] font-mono block">TOKEN TASARRUFU</span>
+          <span class="text-sm font-bold text-[#00EB96]">%50 – %75</span>
+        </div>
+        <div class="p-2 rounded-lg bg-[#0C1612] border border-[#1A2E24]">
+          <span class="text-[9px] text-[#8291A0] font-mono block">HALÜSİNASYON</span>
+          <span class="text-sm font-bold text-[#FFB800]">%0 (AST Gate)</span>
+        </div>
+        <div class="p-2 rounded-lg bg-[#0C1612] border border-[#1A2E24]">
+          <span class="text-[9px] text-[#8291A0] font-mono block">MİMARİ</span>
+          <span class="text-sm font-bold text-[#38CDF2]">Üçlü Çekirdek</span>
+        </div>
+        <div class="p-2 rounded-lg bg-[#0C1612] border border-[#1A2E24]">
+          <span class="text-[9px] text-[#8291A0] font-mono block">MOBİL BOT</span>
+          <span class="text-sm font-bold text-[#4ADE80]">Sıfır-Backend</span>
+        </div>
+      </div>
+
+      <!-- Terminal Output Snippet -->
+      <div class="p-2.5 rounded-lg bg-[#08100C] border border-[#16271F] font-mono text-[10px] space-y-1">
+        <div class="text-[#00EB96] flex items-center justify-between">
+          <span>› tbot /ultracode "Enterprise Grounding"</span>
+          <span class="text-[#8291A0] text-[9px]">Süre: 142ms</span>
+        </div>
+        <div class="text-[#BAC7BF] text-[9px]">
+          [1/4] file_outline: 14 sembol indekslendi.<br>
+          [2/4] file_patch: Multi-hunk diff başarıyla uygulandı.<br>
+          [3/4] AST & Syntax: 0 hata, deterministik rollback aktif.<br>
+          [4/4] Kanıt Doğrulandı: 28/28 birim testi başarılı.
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: ROI HESAPLAMA -->
+    <div id="tab-roi" class="hidden h-full flex flex-col justify-between space-y-2">
+      <div class="space-y-1.5">
+        <div class="flex justify-between text-[11px]">
+          <span class="text-[#BAC7BF]">Mühendis Sayısı:</span>
+          <span id="wTeamSizeVal" class="text-[#00EB96] font-mono font-bold">10 Kişi</span>
+        </div>
+        <input type="range" id="wTeamSize" min="1" max="50" value="10" oninput="updateWidgetRoi()" class="w-full h-1.5 bg-[#14261D] rounded appearance-none cursor-pointer">
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 text-center">
+        <div class="p-2.5 rounded-lg bg-[#0C1612] border border-[#1A2E24]">
+          <span class="text-[9px] text-[#8291A0] font-mono block">STANDART MALİYET</span>
+          <span id="wRawCost" class="text-sm font-bold text-white font-mono">$21,600/yıl</span>
+        </div>
+        <div class="p-2.5 rounded-lg bg-[#0C1612] border border-[#00EB96]/40">
+          <span class="text-[9px] text-[#00EB96] font-mono block font-bold">T BOT V2 NET KAZANÇ</span>
+          <span id="wSavedCost" class="text-base font-extrabold text-[#00EB96] font-mono">+$14,688/yıl</span>
+        </div>
+      </div>
+
+      <div class="p-2 rounded-lg bg-[#09130E] border border-[#16271F] text-[10px] text-[#BAC7BF] leading-relaxed">
+        💡 <strong>Yönetim Özeti:</strong> Intent-aware şema budama ve prompt caching sayesinde şirket LLM bütçesinde anında <strong>%68 doğrudan nakit tasarrufu</strong> sağlanır.
+      </div>
+    </div>
+
+    <!-- TAB 3: ÜÇLÜ ÇEKİRDEK (TRI-CORE) -->
+    <div id="tab-tri" class="hidden h-full flex flex-col justify-between space-y-2 text-xs">
+      <div class="p-2 rounded-lg bg-[#0C1612] border-l-2 border-[#00EB96] text-[10px] space-y-0.5">
+        <strong class="text-white">1. Kodlama Çekirdeği:</strong> file_outline sembol çıkarma, multi-hunk patch ve 4 aşamalı Ultracode.
+      </div>
+      <div class="p-2 rounded-lg bg-[#0C1612] border-l-2 border-[#38CDF2] text-[10px] space-y-0.5">
+        <strong class="text-white">2. Otonom Masaüstü:</strong> /goal çok adımlı hedef, Türkçe paralel alt ajanlar, Win32 C# DLL ve kalıcı hafıza.
+      </div>
+      <div class="p-2 rounded-lg bg-[#0C1612] border-l-2 border-[#FFB800] text-[10px] space-y-0.5">
+        <strong class="text-white">3. Sıfır-Backend Telegram:</strong> Sunucusuz Long-polling, mobil ekran görüntüsü ve interaktif onay butonları.
+      </div>
+    </div>
+
+    <!-- TAB 4: KURULUM -->
+    <div id="tab-install" class="hidden h-full flex flex-col justify-between space-y-2 text-xs font-mono">
+      <div class="p-2 rounded-lg bg-[#09120D] border border-[#1A2E24] space-y-1">
+        <span class="text-[9px] text-[#38CDF2] block">Windows (PowerShell)</span>
+        <code class="text-[10px] text-[#00EB96] block break-all">irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex</code>
+      </div>
+      <div class="p-2 rounded-lg bg-[#09120D] border border-[#1A2E24] space-y-1">
+        <span class="text-[9px] text-[#00EB96] block">Linux & macOS</span>
+        <code class="text-[10px] text-[#00EB96] block break-all">curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh</code>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Widget Bottom Bar -->
+  <div class="pt-2 border-t border-[#1A2E24] flex items-center justify-between text-[10px] text-[#8291A0]">
+    <span class="flex items-center gap-1.5 font-mono">
+      <span class="w-2 h-2 rounded-full bg-[#00EB96] animate-pulse"></span>
+      T Bot 2.0 Enterprise
+    </span>
+    <a href="T-Bot-V2-Sunum.html" target="_blank" class="text-[#00EB96] hover:underline font-bold flex items-center gap-1">
+      <span>Tam Sunumu Aç</span> <span>↗</span>
+    </a>
+  </div>
+
+  <script>
+    function switchTab(tabId) {
+      ['hud', 'roi', 'tri', 'install'].forEach(t => {
+        const el = document.getElementById('tab-' + t);
+        const btn = document.getElementById('tabBtn-' + t);
+        if (t === tabId) {
+          if (el) el.classList.remove('hidden');
+          if (btn) {
+            btn.classList.remove('text-[#8291A0]');
+            btn.classList.add('bg-[#00EB96]', 'text-[#070D0A]');
+          }
+        } else {
+          if (el) el.classList.add('hidden');
+          if (btn) {
+            btn.classList.remove('bg-[#00EB96]', 'text-[#070D0A]');
+            btn.classList.add('text-[#8291A0]');
+          }
+        }
+      });
+    }
+
+    function updateWidgetRoi() {
+      const size = parseInt(document.getElementById('wTeamSize').value) || 10;
+      document.getElementById('wTeamSizeVal').innerText = size + ' Kişi';
+      const raw = size * 20 * 9 * 12;
+      const saved = raw * 0.68;
+      document.getElementById('wRawCost').innerText = '$' + Math.round(raw).toLocaleString('en-US') + '/yıl';
+      document.getElementById('wSavedCost').innerText = '+$' + Math.round(saved).toLocaleString('en-US') + '/yıl';
+    }
+  </script>
+</body>
+</html>`;
+}
+
+// Generate the files
+const presentationHtml = buildPresentationHtml();
+const widgetHtml = buildInlineWidgetHtml();
+
+// Targets
+const targetArtifactPresentation = 'C:\\Users\\Egemen\\.gemini\\antigravity\\brain\\dcb95c0d-0cd7-416b-9761-00f9df2db80f\\T_Bot_V2_Sunum.html';
+const targetWorkspacePresentation = 'c:\\Users\\Egemen\\Desktop\\T Bot\\T-Bot-V2-Sunum.html';
+const targetArtifactWidget = 'C:\\Users\\Egemen\\.gemini\\antigravity\\brain\\dcb95c0d-0cd7-416b-9761-00f9df2db80f\\T_Bot_V2_Inline_Widget.html';
+
+fs.writeFileSync(targetWorkspacePresentation, presentationHtml, 'utf8');
+console.log('Saved workspace presentation to:', targetWorkspacePresentation);
+
+fs.writeFileSync(targetArtifactPresentation, presentationHtml, 'utf8');
+console.log('Saved artifact presentation to:', targetArtifactPresentation);
+
+fs.writeFileSync(targetArtifactWidget, widgetHtml, 'utf8');
+console.log('Saved inline widget to:', targetArtifactWidget);

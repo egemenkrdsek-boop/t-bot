@@ -1,6 +1,7 @@
 import type { AgentInput, Message, Provider } from './types.js';
 export type SubagentInput = AgentInput & {
     workerProvider: Provider;
+    session?: any;
 };
 export interface SubtaskItem {
     role: string;

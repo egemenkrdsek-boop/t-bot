@@ -1,42 +1,42 @@
 import { EFFORT_LEVELS } from './effort.js';
-export const HELP = `T Bot 2.0 — Siber-Minimalist Akıllı AI Ajanı & Komut Merkezi
+export const HELP = `T Bot 2.0 — Siber-Minimalist Akıllı AI Ajanı ve Komut Merkezi
 
 Kullanım:
-  tbot                         Etkileşimli TUI oturumu
-  tbot "isteğiniz"             Tek seferlik istek yürüt
-  tbot --bot                   Telegram Bot köprüsünü otomatik başlat
+  tbot                         Etkileşimli TUI Oturumu
+  tbot "isteğiniz"             Tek Seferlik İstek Yürüt
+  tbot --bot                   Telegram Bot Köprüsünü Otomatik Başlat
   tbot --provider <id> --model <model> "isteğiniz"
-  tbot --resume <id>           Kaydedilmiş oturuma devam et
-  tbot config                  Sağlayıcı ve API anahtarı ayarları
-  tbot providers               Kullanılabilir LLM sağlayıcılarını listele
-  tbot sessions                Geçmiş oturumları listele
-  tbot doctor                  Ortam ve sistem sağlığı denetimi
-  tbot --help                  Yardım menüsü
-  tbot --version               Sürüm bilgisi
+  tbot --resume <id>           Kaydedilmiş Oturuma Devam Et
+  tbot config                  Sağlayıcı ve API Anahtarı Ayarları
+  tbot providers               Kullanılabilir LLM Sağlayıcılarını Listele
+  tbot sessions                Geçmiş Oturumları Listele
+  tbot doctor                  Ortam ve Sistem Sağlığı Denetimi
+  tbot --help                  Yardım Menüsü
+  tbot --version               Sürüm Bilgisi
 
 Seçenekler:
-  -p, --provider <id>    Sağlayıcı seç (openai, anthropic, gemini, openrouter, ollama vb.)
-  -m, --model <model>    Model seç
-  -w, --workspace <yol>  Çalışma dizini (varsayılan: aktif dizin)
-  -r, --resume <id>      Oturuma devam et
-      --bot              Telegram Bot Gateway köprüsünü başlatır
-      --yolo             Araç onaylarını bu oturumda otomatik ver
-      --ultracode        Yüksek doğruluklu özerk Ultracode modunu aç
-      --effort <düzey>   Düşünme eforu: low, medium, high, xhigh, max
-  -h, --help             Yardım menüsünü gösterir
-  -v, --version          Sürüm bilgisini gösterir
+  -p, --provider <id>    Sağlayıcı Seç (openai, anthropic, gemini, openrouter, ollama vb.)
+  -m, --model <model>    Model Seç
+  -w, --workspace <yol>  Çalışma Dizini (Varsayılan: Aktif Dizin)
+  -r, --resume <id>      Oturuma Devam Et
+      --bot              Telegram Bot Gateway Köprüsünü Başlatır
+      --yolo             Araç Onaylarını Bu Oturumda Otomatik Ver
+      --ultracode        Yüksek Doğruluklu Özerk Ultracode Modunu Aç
+      --effort <düzey>   Düşünme Eforu: low, medium, high, xhigh, max
+  -h, --help             Yardım Menüsünü Gösterir
+  -v, --version          Sürüm Bilgisini Gösterir
 
-T Bot 2.0 Komutları & İş Akışları (Etkileşimli TUI):
-  /bot [start|stop|token|status|allow]  Telegram Bot Köprüsü yönetimi
-  /tokens                               Canlı Token Tasarrufu & Optimizasyon raporu
-  /memory                               RAM kullanımı & kayıtlı proje/küresel bellek
-  /remember <anahtar> = <değer>         Kalıcı proje belleğine bilgi kaydeder
-  /forget <anahtar>                     Kayıtlı hafıza maddesini siler
-  /gc                                   Bellek koruyucusu & Garbage Collection çalıştırır
-  /ultracode [on|off]                   Özerk araştırma, kodlama ve test modu
-  /subagents [model]                    Paralel alt ajan araştırma koordinatörü
-  /goal [hedef|status|pause|cancel]     Otonom hedef belirleme ve döngüsel yürütme
-  /plan [istek|apply]                   Gereksinim analizi ve adım adım plan yürütme`;
+T Bot 2.0 Komutları ve İş Akışları (Etkileşimli TUI):
+  /bot [start|stop|token|status|allow]  Telegram Bot Köprüsü Yönetimi
+  /tokens                               Canlı Token Tasarrufu ve Optimizasyon Raporu
+  /memory                               RAM Kullanımı ve Kayıtlı Proje/Küresel Bellek
+  /remember <anahtar> = <değer>         Kalıcı Proje Belleğine Bilgi Kaydeder
+  /forget <anahtar>                     Kayıtlı Hafıza Maddesini Siler
+  /gc                                   Bellek Koruyucusu ve Garbage Collection Çalıştırır
+  /ultracode [on|off]                   Özerk Araştırma, Kodlama ve Test Modu
+  /subagents [model]                    Paralel Alt Ajan Araştırma Koordinatörü
+  /goal [hedef|status|pause|cancel]     Otonom Hedef Belirleme ve Döngüsel Yürütme
+  /plan [istek|apply]                   Gereksinim Analizi ve Adım Adım Plan Yürütme`;
 export function printUsage() {
     console.log(HELP);
 }

@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
 # ==============================================================================
-# T Bot 2.0 — Linux & macOS Uzaktan Tek Komutla Kurulum Betiği
+# T Bot 2.0 — Linux ve macOS Uzaktan Tek Komutla Kurulum Betiği
 # Kullanım: curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh
 # ==============================================================================
 
 set -e
 
-# Renk Ayarları (Terminal ve NO_COLOR kontrolü)
+# Renk Ayarları (Terminal ve NO_COLOR Kontrolü)
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   CYAN="\033[36m"
   GREEN="\033[32;1m"
@@ -51,7 +51,7 @@ show_error_and_exit() {
 show_header
 
 # ------------------------------------------------------------------------------
-# ADIM 1: Sistem Gereksinimleri Kontrolü (Node.js >= 20.3, npm, git)
+# Adım 1: Sistem Gereksinimleri Kontrolü (Node.js >= 20.3, npm, git)
 # ------------------------------------------------------------------------------
 printf "${BOLD}${CYAN}[1/3] Sistem gereksinimleri kontrol ediliyor...${RESET}\n"
 
@@ -72,9 +72,9 @@ if [ -n "$NODE_MAJOR" ]; then
       "Mevcut Node.js sürümünüz ($NODE_VER_RAW) gereksinimleri karşılamıyor." \
       "T Bot 2.0 için en az Node.js 20.3 veya üzeri gereklidir. Lütfen Node.js sürümünüzü güncelleyin."
   fi
-  printf "  ${GREEN}✓${RESET} Node.js: ${BOLD}%s${RESET}\n" "$NODE_VER_RAW"
+  printf "  ${GREEN}[OK]${RESET} Node.js: ${BOLD}%s${RESET}\n" "$NODE_VER_RAW"
 else
-  printf "  ${YELLOW}!${RESET} Node.js sürümü doğrulanamadı, kuruluma devam ediliyor.\n"
+  printf "  ${YELLOW}[BİLGİ]${RESET} Node.js sürümü doğrulanamadı, kuruluma devam ediliyor.\n"
 fi
 
 # npm Kontrolü
@@ -84,7 +84,7 @@ if ! command -v npm >/dev/null 2>&1; then
     "Node.js kurulumunuzun eksiksiz olduğundan emin olun."
 fi
 NPM_VER=$(npm -v 2>/dev/null || echo "")
-printf "  ${GREEN}✓${RESET} npm: ${BOLD}v%s${RESET}\n" "$NPM_VER"
+printf "  ${GREEN}[OK]${RESET} npm: ${BOLD}v%s${RESET}\n" "$NPM_VER"
 
 # Git Kontrolü
 if ! command -v git >/dev/null 2>&1; then
@@ -93,12 +93,12 @@ if ! command -v git >/dev/null 2>&1; then
     "T Bot 2.0'ı GitHub üzerinden kurabilmek için Git gereklidir.\n        macOS: xcode-select --install veya brew install git\n        Linux: sudo apt install git veya sudo dnf install git"
 fi
 GIT_VER=$(git --version 2>/dev/null || echo "")
-printf "  ${GREEN}✓${RESET} Git: ${BOLD}%s${RESET}\n" "$GIT_VER"
+printf "  ${GREEN}[OK]${RESET} Git: ${BOLD}%s${RESET}\n" "$GIT_VER"
 
 printf "\n"
 
 # ------------------------------------------------------------------------------
-# ADIM 2: T Bot 2.0 Global Kurulumu
+# Adım 2: T Bot 2.0 Global Kurulumu
 # ------------------------------------------------------------------------------
 printf "${BOLD}${CYAN}[2/3] T Bot 2.0 paketi kuruluyor...${RESET}\n"
 
@@ -127,14 +127,14 @@ else
   fi
 fi
 
-printf "  ${GREEN}✓${RESET} Paket başarıyla yüklendi.\n\n"
+printf "  ${GREEN}[OK]${RESET} Paket başarıyla yüklendi.\n\n"
 
 # ------------------------------------------------------------------------------
-# ADIM 3: Doğrulama (tbot --help) ve PATH Kontrolü
+# Adım 3: Doğrulama (tbot --help) ve PATH Kontrolü
 # ------------------------------------------------------------------------------
 printf "${BOLD}${CYAN}[3/3] Kurulum doğrulanıyor...${RESET}\n"
 
-# Oturum PATH'ine npm global bin ekleme kontrolü
+# Oturum PATH'ine npm Global Bin Ekleme Kontrolü
 NPM_PREFIX=$(npm prefix -g 2>/dev/null || echo "")
 if [ -n "$NPM_PREFIX" ] && [ -d "$NPM_PREFIX/bin" ]; then
   case ":$PATH:" in
@@ -145,12 +145,12 @@ fi
 
 if command -v tbot >/dev/null 2>&1; then
   TBOT_PATH=$(command -v tbot)
-  printf "  ${GREEN}✓${RESET} 'tbot' yürütülebilir dosyası bulundu: ${DIM}%s${RESET}\n" "$TBOT_PATH"
+  printf "  ${GREEN}[OK]${RESET} 'tbot' yürütülebilir dosyası bulundu: ${DIM}%s${RESET}\n" "$TBOT_PATH"
   if tbot --help >/dev/null 2>&1; then
-    printf "  ${GREEN}✓${RESET} 'tbot --help' doğrulaması başarılı.\n"
+    printf "  ${GREEN}[OK]${RESET} 'tbot --help' doğrulaması başarılı.\n"
   fi
 else
-  printf "  ${YELLOW}! 'tbot' komutu mevcut oturumda anında bulunamadı.${RESET}\n"
+  printf "  ${YELLOW}[BİLGİ] 'tbot' komutu mevcut oturumda anında bulunamadı.${RESET}\n"
   printf "  ${DIM}npm global bin dizini PATH değişkeninizde yer almıyor olabilir.${RESET}\n"
   if [ -n "$NPM_PREFIX" ]; then
     printf "  ${DIM}Kabuk profilinize (~/.bashrc veya ~/.zshrc) şunu ekleyin:${RESET}\n"
@@ -160,7 +160,7 @@ fi
 
 printf "\n"
 printf "${GREEN}========================================================================${RESET}\n"
-printf "${GREEN}✓ T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın.${RESET}\n"
+printf "${GREEN}[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın.${RESET}\n"
 printf "${GREEN}========================================================================${RESET}\n"
 printf "\n"
 printf "  ${BOLD}Hızlı Başlangıç İpuçları:${RESET}\n"

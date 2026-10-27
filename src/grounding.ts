@@ -98,6 +98,24 @@ export class GroundingLedger {
   }
 
   /**
+   * Record a shell command execution in the ledger.
+   * If commandsRun exceeds 100 entries, removes oldest entries to prevent memory bloat.
+   */
+  public recordShellCommand(
+    commandOrRecord: string | CommandRunRecord,
+    ok = true,
+    outputSnippet = ''
+  ): void {
+    const record: CommandRunRecord = typeof commandOrRecord === 'string'
+      ? { command: commandOrRecord, ok, timestamp: Date.now(), outputSnippet }
+      : commandOrRecord;
+    this.commandsRun.push(record);
+    while (this.commandsRun.length > 100) {
+      this.commandsRun.shift();
+    }
+  }
+
+  /**
    * Clear all recorded states.
    */
   public clear(): void {
@@ -178,7 +196,7 @@ export class GroundingLedger {
         ? args.command
         : (typeof args.cmd === 'string' ? args.cmd : (typeof args.CommandLine === 'string' ? args.CommandLine : ''));
       const snippet = result.output ? result.output.slice(0, 300) : '';
-      this.commandsRun.push({
+      this.recordShellCommand({
         command: cmd,
         ok: result.ok,
         timestamp: Date.now(),
@@ -234,6 +252,18 @@ export function getGroundingLedger(workspace?: string): GroundingLedger {
  */
 export function getStatus(ledger: GroundingLedger = globalGroundingLedger): GroundingStatus {
   return ledger.getStatus();
+}
+
+/**
+ * Standalone helper to record shell command in grounding ledger.
+ */
+export function recordShellCommand(
+  commandOrRecord: string | CommandRunRecord,
+  ok = true,
+  outputSnippet = '',
+  ledger: GroundingLedger = globalGroundingLedger
+): void {
+  ledger.recordShellCommand(commandOrRecord, ok, outputSnippet);
 }
 
 /**

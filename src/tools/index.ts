@@ -26,6 +26,7 @@ export const localToolDefinitions: ToolDefinition[] = [
   ...imageToolDefinitions,
   ...memoryToolDefinitions,
 ];
+export const toolDefinitions = localToolDefinitions;
 const localTools = localToolDefinitions;
 
 type RemoteTool = { definition: ToolDefinition; connection: McpConnection };
@@ -34,7 +35,7 @@ function remoteTools(connections: McpConnection[] = []): RemoteTool[] {
   const all = connections.flatMap(connection => connection.definitions.map(definition => ({ definition, connection })));
   const counts = new Map<string, number>();
   for (const { definition } of all) counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
-  return all.filter(({ definition }) => /^mcp_[A-Za-z0-9_-]{1,60}$/.test(definition.name) && counts.get(definition.name) === 1 && !localTools.some(tool => tool.name === definition.name));
+  return all.filter(({ definition }) => /^mcp_[A-Za-z0-9_-]{1,80}$/.test(definition.name) && counts.get(definition.name) === 1 && !localTools.some(tool => tool.name === definition.name));
 }
 
 const priority = /(?:create_repository|create_branch|push_files|create_pull_request|merge_pull_request|create_project|create_deployment|deploy_edge_function|apply_migration)/i;

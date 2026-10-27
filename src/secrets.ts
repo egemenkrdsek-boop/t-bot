@@ -40,14 +40,33 @@ function secretPath(id: string): string {
 }
 
 function run(command: string, args: string[], input = ''): Promise<string> {
+  const TIMEOUT_MS = 10_000;
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch {}
+      reject(new SecretStorageError('security'));
+    }, TIMEOUT_MS);
+
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => { output += chunk; });
     child.stderr.resume();
-    child.on('error', () => reject(new Error('Secret storage operation failed')));
-    child.on('close', code => code === 0 ? resolve(output.trim()) : reject(new Error('Secret storage operation failed')));
+    child.on('error', () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error('Secret storage operation failed'));
+    });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      code === 0 ? resolve(output.trim()) : reject(new Error('Secret storage operation failed'));
+    });
     child.stdin.on('error', () => undefined);
     child.stdin.end(input);
   });

@@ -1,10 +1,10 @@
-/** Render two image pixels per terminal cell, with a plain-text fallback. */
+/** Terminal hücresi başına iki piksel çizer; düz metin yedeği içerir. */
 export declare function logo(width: number, frame?: number): string[];
-/** Render static logo frame directly to stdout. */
+/** Statik logoyu doğrudan standart çıktıya çizer. */
 export declare function renderLogo(width?: number): void;
 /**
- * Terminal-responsive animated logo.
- * If terminal rows < 12 or columns < 50, renders static logo directly
- * to prevent cursor drift/clipping.
+ * Terminal Duyarlı Hareketli Logo Çizimi.
+ * Terminal satır sayısı < 12 veya sütun sayısı < 50 ise imleç kaymasını
+ * önlemek için statik logo çizer.
  */
 export declare function animateLogo(width?: number, isExiting?: () => boolean): Promise<void>;

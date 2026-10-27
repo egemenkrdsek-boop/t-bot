@@ -1,8 +1,68 @@
+import os from 'node:os';
+import { execFile } from 'node:child_process';
 import { closeIdleBrowser } from './tools/browser.js';
+import { pruneCompletedProcesses } from './tools/shell.js';
+let lastTrimTime = 0;
+const TRIM_COOLDOWN_MS = 20_000;
+let guardTimer = null;
+/**
+ * Trims physical working set memory using Win32 EmptyWorkingSet API on Windows.
+ * Runs with a 20-second cooldown and a 5-second timeout, failing silently if an error occurs.
+ */
+export async function trimWindowsWorkingSet() {
+    if (process.platform !== 'win32') {
+        return;
+    }
+    const now = Date.now();
+    if (now - lastTrimTime < TRIM_COOLDOWN_MS) {
+        return;
+    }
+    lastTrimTime = now;
+    return new Promise((resolve) => {
+        try {
+            const pid = process.pid;
+            const script = `
+$def = @'
+using System;
+using System.Runtime.InteropServices;
+public static class WsTrim {
+    [DllImport("psapi.dll")]
+    public static extern bool EmptyWorkingSet(IntPtr hProcess);
+    public static void Clean(int curPid) {
+        try {
+            using (var cp = System.Diagnostics.Process.GetProcessById(curPid)) {
+                EmptyWorkingSet(cp.Handle);
+            }
+        } catch {}
+        foreach (var p in System.Diagnostics.Process.GetProcesses()) {
+            try {
+                if (!p.HasExited && p.WorkingSet64 > 52428800) {
+                    EmptyWorkingSet(p.Handle);
+                }
+            } catch {}
+            finally {
+                try { p.Dispose(); } catch {}
+            }
+        }
+    }
+}
+'@
+Add-Type -TypeDefinition $def -Language CSharp
+[WsTrim]::Clean(${pid})
+`;
+            execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
+                resolve();
+            });
+        }
+        catch {
+            resolve();
+        }
+    });
+}
 /**
  * Returns current memory usage and pressure level:
- * - 'high': heapUsedMB > 160 or rssMB > 320
- * - 'moderate': heapUsedMB > 100
+ * - 'high': heapUsedMB > 140 or rssMB > 280 or systemUsedPercent > 82
+ * - 'moderate': heapUsedMB > 90 or rssMB > 200 or systemUsedPercent > 70
  * - 'low': otherwise
  */
 export function getMemoryStats() {
@@ -10,27 +70,51 @@ export function getMemoryStats() {
     const heapUsedMB = Math.round((usage.heapUsed / (1024 * 1024)) * 10) / 10;
     const heapTotalMB = Math.round((usage.heapTotal / (1024 * 1024)) * 10) / 10;
     const rssMB = Math.round((usage.rss / (1024 * 1024)) * 10) / 10;
+    const totalBytes = os.totalmem();
+    const freeBytes = os.freemem();
+    const systemTotalMB = Math.round(totalBytes / (1024 * 1024));
+    const systemFreeMB = Math.round(freeBytes / (1024 * 1024));
+    const systemUsedPercent = totalBytes > 0
+        ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10
+        : 0;
     let pressure = 'low';
-    if (heapUsedMB > 160 || rssMB > 320) {
+    if (heapUsedMB > 140 || rssMB > 280 || systemUsedPercent > 82) {
         pressure = 'high';
     }
-    else if (heapUsedMB > 100) {
+    else if (heapUsedMB > 90 || rssMB > 200 || systemUsedPercent > 70) {
         pressure = 'moderate';
     }
-    return { heapUsedMB, heapTotalMB, rssMB, pressure };
+    return {
+        heapUsedMB,
+        heapTotalMB,
+        rssMB,
+        systemTotalMB,
+        systemFreeMB,
+        systemUsedPercent,
+        pressure,
+    };
 }
 /**
  * Reclaims memory when under pressure ('moderate' | 'high') or when force is true:
+ * 0. Prunes completed shell processes and their buffers.
  * 1. Compacts older large tool outputs (>1500 chars) in session messages (preserving last 4),
  *    and clears old image attachments (preserving only the latest message's image).
  * 2. Closes idle browser instance if active.
  * 3. Triggers V8 garbage collector if available (global.gc).
+ * 4. Trims Windows physical working set if force is true or before.pressure !== 'low'.
  */
 export async function reclaimMemory(session, force = false) {
     const beforeStats = getMemoryStats();
     const beforeMB = beforeStats.heapUsedMB;
     let compactedCount = 0;
     if (beforeStats.pressure === 'moderate' || beforeStats.pressure === 'high' || force) {
+        // 0. Prune completed background processes
+        try {
+            pruneCompletedProcesses();
+        }
+        catch {
+            // Ignore background process prune errors
+        }
         // 1. In-place compaction of session messages
         if (session && Array.isArray(session.messages)) {
             const messages = session.messages;
@@ -74,6 +158,15 @@ export async function reclaimMemory(session, force = false) {
                 // Safe guard against GC execution issues
             }
         }
+        // 4. Windows physical Working Set trim
+        if (force || beforeStats.pressure !== 'low') {
+            try {
+                await trimWindowsWorkingSet();
+            }
+            catch {
+                // Safe guard against working set trim errors
+            }
+        }
     }
     const afterStats = getMemoryStats();
     const afterMB = afterStats.heapUsedMB;
@@ -85,5 +178,35 @@ export async function reclaimMemory(session, force = false) {
         compactedCount,
         pressure: afterStats.pressure,
     };
+}
+/**
+ * Starts automatic memory guard running every 20 seconds.
+ * Triggers reclaimMemory when memory pressure is moderate or high.
+ */
+export function startAutoMemoryGuard(getSession) {
+    if (guardTimer) {
+        return;
+    }
+    guardTimer = setInterval(async () => {
+        try {
+            const stats = getMemoryStats();
+            if (stats.pressure !== 'low') {
+                await reclaimMemory(getSession?.(), false);
+            }
+        }
+        catch {
+            // Safe guard against background watcher errors
+        }
+    }, 20_000);
+    guardTimer.unref();
+}
+/**
+ * Stops the automatic memory guard timer.
+ */
+export function stopAutoMemoryGuard() {
+    if (guardTimer) {
+        clearInterval(guardTimer);
+        guardTimer = null;
+    }
 }
 //# sourceMappingURL=memory-guard.js.map

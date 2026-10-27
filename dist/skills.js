@@ -1,32 +1,32 @@
 export const BUILTIN_SKILLS = [
     {
         id: 'frontenddesign',
-        title: 'Frontend design',
-        description: 'Design and implement user interfaces.',
+        title: 'Önyüz ve Arayüz Tasarımı',
+        description: 'Kullanıcı Arayüzü Tasarımı ve Uygulaması',
         guidance: 'Inspect existing conventions and design systems first. Deliver real, accessible, responsive code using the project stack. Create intentional typography, layout, and colors; avoid generic templates, purple gradients, and placeholder copy.'
     },
     {
         id: 'backend',
-        title: 'Backend',
-        description: 'Design and implement backend services and APIs.',
+        title: 'Arkayüz ve API Mimarisi',
+        description: 'Arkayüz Servisleri ve API Mimarisi',
         guidance: 'Inspect architecture and conventions. Define clear contracts, validate inputs at boundaries, handle errors and cancellation gracefully, and verify changes with tests.'
     },
     {
         id: 'codereview',
-        title: 'Code review',
-        description: 'Review code for actionable defects.',
+        title: 'Kod ve Güvenlik İncelemesi',
+        description: 'Eyleme Dönüştürülebilir Kod ve Güvenlik İncelemesi',
         guidance: 'Inspect relevant code and callers. Prioritize concrete bugs, regressions, and security issues with precise locations and evidence. Distinguish verified facts from uncertainty; never invent findings.'
     },
     {
         id: 'debuganalysis',
-        title: 'Debug analysis',
-        description: 'Investigate failures and identify root causes.',
+        title: 'Hata Ayıklama ve Kök Neden Analizi',
+        description: 'Hata Araştırması ve Kök Neden Analizi',
         guidance: 'Trace actual failures through code and execution evidence. Separate observations from hypotheses. Identify root causes and concrete next steps; never claim a reproduction or fix without evidence.'
     },
     {
         id: 'imagegen',
-        title: 'Image generation',
-        description: 'Create and edit raster images.',
+        title: 'Görsel Üretim ve Tasarım',
+        description: 'Raster Görsel Üretimi ve Düzenleme',
         guidance: 'Use the image_generate tool to create or edit raster images. For image editing, supply the existing image path in source_image. Describe subject, visual style, and constraints clearly. Never claim an image was generated or edited unless the tool succeeded.'
     },
 ];

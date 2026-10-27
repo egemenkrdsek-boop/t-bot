@@ -12,5 +12,6 @@ export interface ManagedProcess {
     child: ChildProcess;
 }
 export declare function stopAllBackgroundProcesses(): void;
+export declare function pruneCompletedProcesses(): number;
 export declare const shellToolDefinitions: ToolDefinition[];
 export declare function handleShellTool(toolNameOrArgs: string | Record<string, unknown>, argsOrWorkspace?: Record<string, unknown> | string, workspaceOrSignal?: string | AbortSignal, maybeSignal?: AbortSignal): Promise<string>;

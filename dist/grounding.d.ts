@@ -62,6 +62,11 @@ export declare class GroundingLedger {
      */
     addWarning(warning: string): void;
     /**
+     * Record a shell command execution in the ledger.
+     * If commandsRun exceeds 100 entries, removes oldest entries to prevent memory bloat.
+     */
+    recordShellCommand(commandOrRecord: string | CommandRunRecord, ok?: boolean, outputSnippet?: string): void;
+    /**
      * Clear all recorded states.
      */
     clear(): void;
@@ -98,6 +103,10 @@ export declare function getGroundingLedger(workspace?: string): GroundingLedger;
  * Standalone status helper for TUI HUD bar.
  */
 export declare function getStatus(ledger?: GroundingLedger): GroundingStatus;
+/**
+ * Standalone helper to record shell command in grounding ledger.
+ */
+export declare function recordShellCommand(commandOrRecord: string | CommandRunRecord, ok?: boolean, outputSnippet?: string, ledger?: GroundingLedger): void;
 /**
  * Fast TypeScript lexer/scanner that validates balanced parentheses, braces,
  * brackets, and string/template literals while collecting relative imports.

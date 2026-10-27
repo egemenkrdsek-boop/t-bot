@@ -33,6 +33,31 @@ export function stopAllBackgroundProcesses(): void {
   }
 }
 
+export function pruneCompletedProcesses(): number {
+  let count = 0;
+  for (const [id, proc] of backgroundProcesses.entries()) {
+    if (proc.status !== 'running') {
+      proc.output = '';
+      backgroundProcesses.delete(id);
+      count++;
+    }
+  }
+  return count;
+}
+
+function enforceProcessLimit(): void {
+  if (backgroundProcesses.size > 20) {
+    const completed = Array.from(backgroundProcesses.entries())
+      .filter(([_, p]) => p.status !== 'running')
+      .sort((a, b) => a[1].startTime - b[1].startTime);
+    for (const [id, proc] of completed) {
+      proc.output = '';
+      backgroundProcesses.delete(id);
+      if (backgroundProcesses.size <= 20) break;
+    }
+  }
+}
+
 // Ensure cleanup on normal process exit
 process.on('exit', () => stopAllBackgroundProcesses());
 
@@ -164,6 +189,7 @@ export async function handleShellTool(
         try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.child.kill('SIGKILL'); }
       }
     }
+    enforceProcessLimit();
     return JSON.stringify({ processId: proc.processId, status: proc.status, message: `Process ${processId} stopped.` }, null, 2);
   }
 
@@ -193,6 +219,7 @@ export async function handleShellTool(
       child,
     };
     backgroundProcesses.set(processId, managed);
+    enforceProcessLimit();
 
     const append = (data: Buffer) => {
       const chunk = data.toString('utf8');
@@ -205,12 +232,14 @@ export async function handleShellTool(
     child.on('error', error => {
       managed.status = 'failed';
       managed.output += `\nProcess error: ${error.message}`;
+      enforceProcessLimit();
     });
     child.on('close', code => {
       if (managed.status === 'running') {
         managed.status = code === 0 ? 'completed' : 'failed';
         managed.exitCode = code;
       }
+      enforceProcessLimit();
     });
 
     // Collect first 1.5 seconds of initial output

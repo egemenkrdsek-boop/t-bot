@@ -4,7 +4,7 @@ Bu kılavuz; T Bot 2.0'ın Windows, macOS ve Linux işletim sistemlerinde tek ko
 
 ---
 
-## 📋 Sistem Gereksinimleri
+## Sistem Gereksinimleri
 
 | Bileşen | Minimum Sürüm | Açıklama |
 | :--- | :--- | :--- |
@@ -15,7 +15,7 @@ Bu kılavuz; T Bot 2.0'ın Windows, macOS ve Linux işletim sistemlerinde tek ko
 
 ---
 
-## ⚡ 1. Tek Komutla Uzaktan Terminal Kurulumu (Önerilen)
+## 1. Tek Komutla Uzaktan Terminal Kurulumu (Önerilen)
 
 T Bot 2.0, herhangi bir ön yapılandırmaya gerek kalmadan terminalinizden tek bir satırla kurulabilir. Betikler ortamınızı denetler, eksik bağımlılıklar hakkında rehberlik sunar ve T Bot'u global olarak kurar.
 
@@ -29,7 +29,7 @@ irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/insta
 > [!NOTE]
 > Betik; Node.js >= 20.3, npm ve Git denetimi yapar, `%APPDATA%\npm` dizinini oturum PATH değişkeninize ekler ve `tbot --help` doğrulamasını çalıştırır.
 
-### Linux & macOS (Bash / Sh)
+### Linux ve macOS (Bash / Sh)
 Terminalinizi açın ve şu komutu çalıştırın:
 
 ```bash
@@ -51,22 +51,22 @@ npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git
 
 ---
 
-## 🛠️ 2. Kaynak Kodundan Kurulum ve Geliştirme
+## 2. Kaynak Kodundan Kurulum ve Geliştirme
 
 T Bot üzerinde geliştirme yapmak veya projeyi yerel olarak derlemek için:
 
 ```bash
-# 1. Depoyu klonlayın
+# 1. Depoyu Klonlayın
 git clone https://github.com/egemenkrdsek-boop/t-bot.git
 cd t-bot
 
-# 2. Bağımlılıkları yükleyin
+# 2. Bağımlılıkları Yükleyin
 npm ci
 
-# 3. TypeScript projesini derleyin
+# 3. TypeScript Projesini Derleyin
 npm run build
 
-# 4. Global symlink olarak bağlayın
+# 4. Global Symlink Olarak Bağlayın
 npm install --global .
 ```
 
@@ -82,7 +82,7 @@ npm run typecheck
 
 ---
 
-## ⚙️ 3. İlk Yapılandırma ve Sağlayıcı Ayarları
+## 3. İlk Yapılandırma ve Sağlayıcı Ayarları
 
 Kurulum tamamlandıktan sonra terminalde etkileşimli yapılandırmayı başlatın:
 
@@ -114,7 +114,7 @@ tbot providers
 
 ---
 
-## 🤖 4. Sıfır-Backend Yerel Telegram Bot Kurulumu
+## 4. Sıfır-Backend Yerel Telegram Bot Kurulumu
 
 T Bot 2.0; harici bir sunucu, port yönlendirme veya ters tünel (ngrok/cloudflare) gerektirmeden, doğrudan yerel makineniz üzerinden Telegram Bot API'ye Long-Polling ile bağlanır.
 
@@ -151,7 +151,7 @@ Telefondan Telegram botunuza mesaj yazdığınızda:
 
 ---
 
-## 🔄 5. Güncelleme ve Kaldırma
+## 5. Güncelleme ve Kaldırma
 
 ### Güncelleme
 En son sürümdeki yenilikleri almak için kurulum komutunu tekrar çalıştırmanız yeterlidir:
@@ -178,20 +178,20 @@ npm uninstall --global t-bot-cli
 
 ---
 
-## 🩺 6. Sorun Giderme (FAQ)
+## 6. Sorun Giderme (FAQ)
 
-### S: `tbot` komutu tanınmıyor / bulunamadı.
+### S: `tbot` Komutu Tanınmıyor / Bulunamadı
 * **Cevap:** npm global ikili klasörü işletim sisteminizin `PATH` çevre değişkeninde yer almıyor olabilir.
   - Windows'ta: `%APPDATA%\npm` klasörünün PATH içinde olduğunu denetleyin.
   - Linux/macOS'ta: `export PATH="$(npm prefix -g)/bin:$PATH"` satırını `~/.bashrc` veya `~/.zshrc` dosyanıza ekleyin.
 
-### S: Kurulum sırasında `EACCES: permission denied` hatası alıyorum.
+### S: Kurulum Sırasında `EACCES: permission denied` Hatası Alıyorum
 * **Cevap:** Linux veya macOS'ta global npm dizinine yazma yetkisi gerekebilir:
   `sudo npm install -g git+https://github.com/egemenkrdsek-boop/t-bot.git`
   veya npm belgelerine uygun olarak global prefix'inizi ev dizininize yönlendirin.
 
-### S: Sağlayıcıdan `401 Unauthorized` hatası alıyorum.
+### S: Sağlayıcıdan `401 Unauthorized` Hatası Alıyorum
 * **Cevap:** Girdiğiniz API anahtarı geçersiz, eksik veya süresi dolmuş olabilir. T Bot oturumunda `/auth` yazarak yeni anahtarı doğrudan girebilir veya `tbot config` ile ayarları tazeleyebilirsiniz.
 
-### S: Sistem sağlığını nasıl kontrol edebilirim?
+### S: Sistem Sağlığını Nasıl Kontrol Edebilirim?
 * **Cevap:** Terminalde `tbot doctor` komutunu çalıştırarak Node sürümünüzü, çalışma ortamınızı, yapılandırma dosya yolunu ve kayıtlı anahtar durumunu tek ekranda inceleyebilirsiniz.

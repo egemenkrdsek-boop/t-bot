@@ -24,6 +24,30 @@ export function stopAllBackgroundProcesses() {
         }
     }
 }
+export function pruneCompletedProcesses() {
+    let count = 0;
+    for (const [id, proc] of backgroundProcesses.entries()) {
+        if (proc.status !== 'running') {
+            proc.output = '';
+            backgroundProcesses.delete(id);
+            count++;
+        }
+    }
+    return count;
+}
+function enforceProcessLimit() {
+    if (backgroundProcesses.size > 20) {
+        const completed = Array.from(backgroundProcesses.entries())
+            .filter(([_, p]) => p.status !== 'running')
+            .sort((a, b) => a[1].startTime - b[1].startTime);
+        for (const [id, proc] of completed) {
+            proc.output = '';
+            backgroundProcesses.delete(id);
+            if (backgroundProcesses.size <= 20)
+                break;
+        }
+    }
+}
 // Ensure cleanup on normal process exit
 process.on('exit', () => stopAllBackgroundProcesses());
 export const shellToolDefinitions = [
@@ -155,6 +179,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
                 }
             }
         }
+        enforceProcessLimit();
         return JSON.stringify({ processId: proc.processId, status: proc.status, message: `Process ${processId} stopped.` }, null, 2);
     }
     // Handle standard 'shell' command
@@ -182,6 +207,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
             child,
         };
         backgroundProcesses.set(processId, managed);
+        enforceProcessLimit();
         const append = (data) => {
             const chunk = data.toString('utf8');
             if (managed.output.length < 200000) {
@@ -193,12 +219,14 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         child.on('error', error => {
             managed.status = 'failed';
             managed.output += `\nProcess error: ${error.message}`;
+            enforceProcessLimit();
         });
         child.on('close', code => {
             if (managed.status === 'running') {
                 managed.status = code === 0 ? 'completed' : 'failed';
                 managed.exitCode = code;
             }
+            enforceProcessLimit();
         });
         // Collect first 1.5 seconds of initial output
         await new Promise(resolve => {

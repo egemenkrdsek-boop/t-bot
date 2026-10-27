@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline';
-import { symbols, theme } from './theme.js';
+import { symbols, theme, toTurkishTitleCase, unicode } from './theme.js';
 import { animateLogo } from './logo.js';
 import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
@@ -7,36 +7,157 @@ import { getMemoryStats } from './memory-guard.js';
 import { getTelegramBotStatus } from './bot.js';
 /**
  * Renders the single-line Cyber-Minimalist HUD status bar:
- * ╭─[ ⚡ model │ 🧠 efor │ 💎 Tasarruf: %XX (Y tok) │ 🛡️ Grounding: ✓ │ 💾 RAM: XX MB │ 🤖 Bot/MCP ]
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]
  */
 export function renderHudBar(config) {
-    const model = config.model || 'model';
-    const effort = config.effort || 'normal';
+    const model = config.model || 'Model';
+    const effort = config.effort || 'Normal';
     const report = globalTokenTracker.getReport();
     const savingsPct = report.savingsPercent || 0;
     const savedTokens = report.totalSavedTokens > 0 ? report.totalSavedTokens.toLocaleString() : '0';
-    const savingsStr = `💎 Tasarruf: %${savingsPct} (${savedTokens} tok)`;
+    const savingsStr = theme.brand(`Tasarruf: %${savingsPct} (${savedTokens} Tok)`);
     const gStatus = globalGroundingLedger.getStatus();
     const groundingStr = gStatus.warnings.length === 0
-        ? theme.success('🛡️ Grounding: ✓')
-        : theme.amber(`🛡️ Grounding: ! (${gStatus.warnings.length})`);
+        ? theme.success('Doğrulama: Doğrulandı')
+        : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
     const mem = getMemoryStats();
-    const ramStr = theme.cyan(`💾 RAM: ${mem.heapUsedMB} MB`);
+    const ramStr = theme.cyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`);
     const botStatus = getTelegramBotStatus();
     const botPart = botStatus.running
-        ? theme.success(`🤖 Bot: ${botStatus.username ? `@${botStatus.username}` : 'Aktif'}`)
+        ? theme.success(`Bot: ${botStatus.username ? `@${botStatus.username}` : 'Aktif'}`)
         : (config.mcpCount && config.mcpCount > 0
-            ? theme.dim(`🤖 MCP: ${config.mcpCount}`)
-            : theme.dim('🤖 Bot: Pasif'));
-    const sep = theme.dim(' │ ');
-    return `${theme.muted('╭─[')} ${theme.cyan(`⚡ ${model}`)}${sep}${theme.amber(`🧠 ${effort}`)}${sep}${theme.brand(savingsStr)}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${theme.muted(']')}`;
+            ? theme.dim(`MCP: ${config.mcpCount}`)
+            : theme.dim('Bot: Pasif'));
+    const sep = theme.dim(symbols.hudSep);
+    return `${theme.muted(unicode ? '╭─[' : '[[')} ${theme.cyan(`Model: ${model}`)}${sep}${theme.amber(`Efor: ${effort}`)}${sep}${savingsStr}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${theme.muted(unicode ? ']' : ']]')}`;
+}
+const TOOL_TITLE_MAP = {
+    // T Bot Yerel Araçları (T Bot Native Tools)
+    file_read: 'Dosya Okuma',
+    file_write: 'Dosya Yazma',
+    file_patch: 'Dosya Yamalama',
+    file_list: 'Dosya Listeleme',
+    file_search: 'Dosya Arama',
+    file_outline: 'Dosya Özeti',
+    shell: 'Komut Satırı',
+    process_list: 'İşlem Listesi',
+    process_output: 'İşlem Çıktısı',
+    process_stop: 'İşlem Durdurma',
+    git_status: 'Git Durumu',
+    git_diff: 'Git Farkı',
+    git_log: 'Git Günlüğü',
+    git_add: 'Git Ekleme',
+    git_commit: 'Git İşleme',
+    git_push: 'Git Gönderme',
+    git_branch: 'Git Dalı',
+    browser_navigate: 'Tarayıcı Gezinme',
+    browser_click: 'Tarayıcı Tıklama',
+    browser_type: 'Tarayıcı Yazma',
+    browser_press: 'Tarayıcı Tuş Basımı',
+    browser_scroll: 'Tarayıcı Kaydırma',
+    browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
+    computer: 'Bilgisayar Kontrolü',
+    image_generate: 'Görsel Üretimi',
+    memory_save: 'Bellek Kaydetme',
+    memory_recall: 'Bellek Hatırlama',
+    mcp_catalog: 'MCP Kataloğu',
+    mcp_call: 'MCP Çağrısı',
+    // Destekleyici ve Geriye Dönük Eşlemeler
+    read_file: 'Dosya Okuma',
+    write_file: 'Dosya Yazma',
+    edit_file: 'Dosya Düzenleme',
+    run_command: 'Komut Çalıştırma',
+    search_web: 'Web Araması',
+    browse_web: 'Web Gezinme',
+    read_url_content: 'URL İçeriği Okuma',
+    manage_task: 'Görev Yönetimi',
+    list_dir: 'Dizin Listeleme',
+    directory_list: 'Dizin Listeleme',
+    notebook_edit: 'Notebook Düzenleme',
+    schedule: 'Zamanlama',
+    call_mcp_tool: 'MCP Araç Çağrısı',
+    read_resource: 'Kaynak Okuma',
+    list_resources: 'Kaynakları Listeleme',
+    send_message: 'Mesaj Gönderme',
+};
+export function formatToolTitle(toolName) {
+    if (TOOL_TITLE_MAP[toolName]) {
+        return `${TOOL_TITLE_MAP[toolName]} (${toolName})`;
+    }
+    const clean = toolName.replace(/[_-]+/g, ' ');
+    return `${toTurkishTitleCase(clean)} (${toolName})`;
+}
+function extractToolTarget(args) {
+    if (!args)
+        return '';
+    let obj = {};
+    if (typeof args === 'string') {
+        try {
+            obj = JSON.parse(args);
+        }
+        catch {
+            const clean = args.trim().replace(/\r?\n.*/s, '');
+            return clean.length > 60 ? `${clean.slice(0, 57)}...` : clean;
+        }
+    }
+    else if (typeof args === 'object' && args !== null) {
+        obj = args;
+    }
+    const priorityKeys = [
+        'path', 'filePath', 'file', 'filename', 'AbsolutePath', 'Path',
+        'command', 'cmd', 'CommandLine',
+        'query', 'q',
+        'url', 'Url',
+        'action', 'Action',
+        'key', 'prompt', 'Prompt'
+    ];
+    for (const key of priorityKeys) {
+        const val = obj[key];
+        if (typeof val === 'string' && val.trim().length > 0) {
+            const cleanVal = val.trim().replace(/\r?\n.*/s, '');
+            return cleanVal.length > 60 ? `${cleanVal.slice(0, 57)}...` : cleanVal;
+        }
+    }
+    for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === 'string' && v.trim().length > 0) {
+            const cleanVal = `${k}: ${v.trim().replace(/\r?\n.*/s, '')}`;
+            return cleanVal.length > 60 ? `${cleanVal.slice(0, 57)}...` : cleanVal;
+        }
+    }
+    return '';
+}
+function extractResultSummary(result) {
+    if (result === undefined || result === null) {
+        return { isError: false, summary: '' };
+    }
+    const str = typeof result === 'string' ? result : JSON.stringify(result);
+    const trimmed = str.trim();
+    const isError = trimmed.startsWith('Tool error:') ||
+        trimmed.startsWith('Araç hatası:') ||
+        trimmed.startsWith('Hata:');
+    if (isError) {
+        const firstLine = trimmed.split('\n')[0] || trimmed;
+        const shortErr = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+        return { isError: true, summary: shortErr };
+    }
+    const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
+    let summary = '';
+    if (lines.length > 1) {
+        summary = `${lines.length} Satır · ${trimmed.length} Karakter`;
+    }
+    else if (lines.length === 1) {
+        const line = lines[0];
+        summary = line.length > 60 ? `${line.slice(0, 57)}...` : line;
+    }
+    return { isError: false, summary };
 }
 const BRAILLE_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const WAVE_BARS = ['━━━───', '─━━━──', '──━━━─', '───━━━', '────━━', '━────━'];
 // Do not allow control sequences from a tool or provider to operate the terminal.
 const safe = (text) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 /**
- * Creates an event printer with animated braille spinner, streaming syntax/diff highlighting,
- * and token/grounding/memory HUD reporting.
+ * Creates an event printer with animated braille spinner, wave bar thinking animation,
+ * streaming syntax/diff highlighting, and token/grounding/memory HUD reporting.
  */
 export function createEventPrinter(options) {
     const write = options.write ?? ((t) => { process.stdout.write(t); });
@@ -44,8 +165,12 @@ export function createEventPrinter(options) {
     let spinnerTimer;
     let spinnerStartTime = 0;
     let spinnerFrame = 0;
+    let waveFrame = 0;
+    let currentSpinnerLabel = '';
     let lineBuffer = '';
     let inCodeBlock = false;
+    let toolStartTime = 0;
+    let stepCount = 0;
     const stopSpinner = () => {
         if (spinnerTimer) {
             clearInterval(spinnerTimer);
@@ -55,17 +180,20 @@ export function createEventPrinter(options) {
             }
         }
     };
-    const startThinking = (label = 'Düşünüyor…') => {
+    const startThinking = (label = 'Düşünülüyor…') => {
+        currentSpinnerLabel = label;
         if (!options.interactive)
             return;
         stopSpinner();
         spinnerStartTime = Date.now();
         spinnerFrame = 0;
-        process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[0])} ${theme.muted(label)} ${theme.dim('0.0s')}`);
+        waveFrame = 0;
+        process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[0])} ${theme.cyan(WAVE_BARS[0])} ${theme.text(label)} ${theme.dim('0.0sn')}`);
         spinnerTimer = setInterval(() => {
             spinnerFrame = (spinnerFrame + 1) % BRAILLE_SPINNER.length;
-            const elapsed = ((Date.now() - spinnerStartTime) / 1000).toFixed(1);
-            process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[spinnerFrame])} ${theme.muted(label)} ${theme.dim(`${elapsed}s`)}`);
+            waveFrame = (waveFrame + 1) % WAVE_BARS.length;
+            const elapsed = `${((Date.now() - spinnerStartTime) / 1000).toFixed(1)}sn`;
+            process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[spinnerFrame])} ${theme.cyan(WAVE_BARS[waveFrame])} ${theme.text(currentSpinnerLabel)} ${theme.dim(elapsed)}`);
         }, 80);
     };
     const highlightLine = (line) => {
@@ -110,15 +238,15 @@ export function createEventPrinter(options) {
             inCodeBlock = false;
             write('\n');
             streaming = false;
-            // Bottom info line: ↳ 💎 Token Tasarrufu: %XX | 🛡️ Doğrulandı | 💾 RAM: XX MB
+            // Alt bilgi satırı: ↳ Token Tasarrufu: %XX │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY)
             const report = globalTokenTracker.getReport();
             const gStatus = globalGroundingLedger.getStatus();
             const mem = getMemoryStats();
             const gBadge = gStatus.warnings.length === 0
-                ? theme.success('🛡️ Doğrulandı')
-                : theme.amber(`🛡️ Uyarı (${gStatus.warnings.length})`);
-            const sep = theme.dim(' | ');
-            const footer = `  ${theme.dim(symbols.arrow)} ${theme.brand(`💎 Token Tasarrufu: %${report.savingsPercent}`)}${sep}${gBadge}${sep}${theme.cyan(`💾 RAM: ${mem.heapUsedMB} MB`)}\n`;
+                ? theme.success('Doğrulama: Doğrulandı')
+                : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
+            const sep = theme.dim(' │ ');
+            const footer = `  ${theme.dim(symbols.arrow)} ${theme.brand(`Token Tasarrufu: %${report.savingsPercent}`)}${sep}${gBadge}${sep}${theme.cyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`)}\n`;
             write(footer);
             if (options.interactive) {
                 write(`  ${renderHudBar(options.getHudConfig())}\n`);
@@ -131,7 +259,7 @@ export function createEventPrinter(options) {
             case 'text':
                 stopSpinner();
                 if (!streaming) {
-                    write(`\n${theme.accent(symbols.assistant)} ${theme.bold('T Bot')}\n\n`);
+                    write(`\n${theme.accent(symbols.prompt)} ${theme.bold('T Bot')}\n\n`);
                     streaming = true;
                 }
                 lineBuffer += safe(event.text);
@@ -142,37 +270,54 @@ export function createEventPrinter(options) {
                     write(`${highlightLine(line)}\n`);
                 }
                 break;
-            case 'tool_start':
+            case 'tool_start': {
                 stopSpinner();
                 finishStream();
-                write(`\n${theme.muted(`${symbols.tool} ${safe(event.call.name)}`)}\n`);
-                startThinking(`${safe(event.call.name)} çalıştırılıyor…`);
+                stepCount++;
+                toolStartTime = Date.now();
+                const toolTitle = formatToolTitle(event.call.name);
+                const targetInfo = extractToolTarget(event.call.arguments);
+                const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.cyan(targetInfo)}` : '';
+                write(`\n  ${theme.muted('╭─')} ${theme.accent('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
+                startThinking(`Adım ${stepCount} · ${toolTitle} Çalıştırılıyor`);
                 break;
-            case 'tool_end':
+            }
+            case 'tool_end': {
                 stopSpinner();
-                write(`  ${theme.dim(symbols.arrow)} ${theme.muted(symbols.tool)} ${theme.accent(safe(event.call.name))} ${theme.dim('tamamlandı')}\n`);
-                startThinking('Yanıt hazırlanıyor…');
+                const elapsed = `${((Date.now() - toolStartTime) / 1000).toFixed(2)}sn`;
+                const toolTitle = formatToolTitle(event.call.name);
+                const { isError, summary } = extractResultSummary(event.result);
+                if (isError) {
+                    write(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}\n`);
+                }
+                else {
+                    const summaryStr = summary ? ` ${theme.dim('·')} ${theme.muted(summary)}` : '';
+                    write(`  ${theme.muted('╰─')} ${theme.success(symbols.check)} ${theme.text(`${toolTitle} Tamamlandı`)} ${theme.dim(`(${elapsed})`)}${summaryStr}\n`);
+                }
+                startThinking('Yanıt Hazırlanıyor…');
                 break;
-            case 'status':
+            }
+            case 'status': {
                 stopSpinner();
                 finishStream();
-                write(`${theme.muted(safe(event.message))}\n`);
+                const msg = safe(event.message);
+                const isWorkflowStatus = /^\[.+\]|Ultracode|Aşama|Adım|Hedef|Plan|MCP/i.test(msg);
+                if (isWorkflowStatus) {
+                    write(`  ▪ ${theme.badge('AKIŞ')} ${theme.text(msg)}\n`);
+                    startThinking(msg);
+                }
+                else {
+                    write(`${theme.muted(msg)}\n`);
+                }
                 break;
+            }
             case 'error':
                 stopSpinner();
                 finishStream();
                 write(`${theme.error(`Hata: ${safe(event.error)}`)}\n`);
                 break;
             case 'usage':
-                if (event.inputTokens !== undefined || event.outputTokens !== undefined) {
-                    globalTokenTracker.recordTurn({
-                        rawTokens: (event.inputTokens ?? 0) + (event.outputTokens ?? 0) + (event.savedTokens ?? 0),
-                        sentInputTokens: event.inputTokens ?? 0,
-                        outputTokens: event.outputTokens ?? 0,
-                        cachedTokens: event.cachedTokens ?? 0,
-                        prunedSchemaTokens: event.savedTokens ?? 0,
-                    });
-                }
+                // globalTokenTracker.recordTurn src/agent.ts içinde kaydediliyor. Çift sayımı önlemek için burada çağırmıyoruz.
                 break;
         }
     };
@@ -181,46 +326,46 @@ export function createEventPrinter(options) {
 /** Print comprehensive help menu with modern cyber-minimalist categories. */
 export function printHelp() {
     const rule = symbols.rule.repeat(64);
-    const title = `${theme.brand('T BOT')} ${theme.muted('─ Siber-Minimalist Terminal Komutları')}`;
+    const title = `${theme.brand('T Bot')} ${theme.muted('─ Siber-Minimalist Terminal Komutları')}`;
     const categories = [
         {
-            name: 'Oturum & Çekirdek',
+            name: 'Oturum ve Çekirdek',
             cmds: [
-                ['/help', 'Yardım menüsünü görüntüler'],
-                ['/clear', 'Sohbet geçmişini ve terminal ekranını temizler'],
-                ['/status', 'Canlı Siber HUD durum çubuğunu görüntüler'],
-                ['/exit, /quit', 'T Bot uygulamasından güvenle ayrılır'],
+                ['/help', 'Yardım Menüsünü Görüntüler'],
+                ['/clear', 'Sohbet Geçmişini ve Terminal Ekranını Temizler'],
+                ['/status', 'Canlı Siber HUD Durum Çubuğunu Görüntüler'],
+                ['/exit, /quit', 'T Bot Uygulamasından Güvenle Ayrılır'],
             ],
         },
         {
-            name: 'Model & Düşünme',
+            name: 'Model ve Düşünme',
             cmds: [
-                ['/provider, /model', 'LLM sağlayıcı ve model seçimi'],
-                ['/config, /auth', 'Yapılandırma ayarları ve API anahtarı yönetimi'],
-                ['/effort [düzey]', 'Düşünme eforu (low, medium, high, xhigh, max)'],
-                ['/ultracode [on|off]', 'Yüksek doğruluklu özerk kodlama modu'],
-                ['/yolo [on|off]', 'Araç çalıştırma otomatik onay modu'],
+                ['/provider, /model', 'LLM Sağlayıcı ve Model Seçimi'],
+                ['/config, /auth', 'Yapılandırma Ayarları ve API Anahtarı Yönetimi'],
+                ['/effort [düzey]', 'Düşünme Eforu (Düşük, Orta, Yüksek, Maksimum)'],
+                ['/ultracode [on|off]', 'Yüksek Doğruluklu Özerk Kodlama Modu'],
+                ['/yolo [on|off]', 'Araç Çalıştırma Otomatik Onay Modu'],
             ],
         },
         {
-            name: 'Sistem, Bellek & Optimizasyon',
+            name: 'Sistem, Bellek ve Optimizasyon',
             cmds: [
-                ['/tokens', 'Token tasarrufu, önbellek ve kullanım raporu'],
-                ['/memory', 'RAM kullanımı ve bellek koruma istatistikleri'],
-                ['/remember <k> = <v>', 'Kalıcı proje/küresel belleğe bilgi kaydeder'],
-                ['/gc', 'Bellek çöp toplayıcısını (GC) tetikler ve RAM temizler'],
-                ['/bot', 'Telegram botu canlı durum ve bağlantı kontrolü'],
+                ['/tokens', 'Token Tasarrufu, Önbellek ve Kullanım Raporu'],
+                ['/memory', 'RAM Kullanımı ve Bellek Koruma İstatistikleri'],
+                ['/remember <k> = <v>', 'Kalıcı Proje veya Küresel Belleğe Bilgi Kaydeder'],
+                ['/gc', 'Bellek Çöp Toplayıcısını (GC) Tetikler ve RAM Temizler'],
+                ['/bot', 'Telegram Botu Canlı Durum ve Bağlantı Kontrolü'],
             ],
         },
         {
-            name: 'Ajan & İş Akışları',
+            name: 'Ajan ve İş Akışları',
             cmds: [
-                ['/goal [hedef]', 'Oturum hedefini belirler veya hedefleri görüntüler'],
-                ['/plan [apply]', 'Görevi adım adım planlar veya planı yürütür'],
-                ['/subagents', 'Paralel araştırma ve alt ajan yönetim menüsü'],
-                ['/mcp', 'Model Context Protocol (MCP) sunucu bağlantıları'],
-                ['/skills', 'Mevcut yerleşik yetenek ve uzmanlıkları listeler'],
-                ['/sessions, /resume', 'Geçmiş oturumları listeler ve devam ettirir'],
+                ['/goal [hedef]', 'Oturum Hedefini Belirler veya Hedefleri Görüntüler'],
+                ['/plan [apply]', 'Görevi Adım Adım Planlar veya Planı Yürütür'],
+                ['/subagents', 'Paralel Araştırma ve Alt Ajan Yönetim Menüsü'],
+                ['/mcp', 'Model Context Protocol (MCP) Sunucu Bağlantıları'],
+                ['/skills', 'Mevcut Yerleşik Yetenek ve Uzmanlıkları Listeler'],
+                ['/sessions, /resume', 'Geçmiş Oturumları Listeler ve Devam Ettirir'],
             ],
         },
     ];
@@ -245,7 +390,7 @@ export async function startTui(options) {
     let yolo = options.yolo ?? false;
     const setYolo = (enabled) => { yolo = enabled; };
     const getHudContext = () => {
-        let effortLabel = 'normal';
+        let effortLabel = 'Normal';
         if (options.modeStatus) {
             const raw = options.modeStatus();
             const match = raw.match(/Effort:\s*([^\s·]+)/i);
@@ -288,7 +433,7 @@ export async function startTui(options) {
                     resolve(undefined);
                 }
                 eventPrinter.finishStream();
-                write(`\n${theme.muted('İptal ediliyor…')}\n`);
+                write(`\n${theme.muted('İptal Ediliyor…')}\n`);
             }
             else {
                 exiting = true;
@@ -309,14 +454,14 @@ export async function startTui(options) {
     const approve = async (request) => {
         eventPrinter.stopSpinner();
         eventPrinter.finishStream();
-        write(`\n${theme.warning('Onay gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
+        write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
         write(`${theme.muted(safe(JSON.stringify(request.arguments, null, 2)))}\n`);
         if (!interactive || controller?.signal.aborted) {
-            write(`${theme.muted('Reddedildi (etkileşimli onay gerekli).')}\n`);
+            write(`${theme.muted('Reddedildi (Etkileşimli Onay Gerekli).')}\n`);
             return false;
         }
-        const answer = await read(`${theme.warning('İzin verilsin mi?')} [y/N] `);
-        return !controller?.signal.aborted && /^(y|yes|e|evet)$/i.test((answer ?? '').trim());
+        const answer = await read(`${theme.warning('İzin Verilsin mi?')} [E/H] `);
+        return !controller?.signal.aborted && /^(e|evet|y|yes)$/i.test((answer ?? '').trim());
     };
     const suspendUi = async (action) => {
         eventPrinter.stopSpinner();
@@ -336,18 +481,18 @@ export async function startTui(options) {
         const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
         await animateLogo(width, () => exiting);
         write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
-        write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
+        write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
         if (options.modeStatus)
             write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
         write(`\n  ${renderHudBar(getHudContext())}\n`);
         write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
-        write(`${theme.muted('  /help komutlar için  ·  Ctrl+C iptal etmek için')}\n\n`);
+        write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
     }
     try {
         while (!exiting) {
             const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
             const promptStr = interactive
-                ? `${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}${status} ${theme.accent(symbols.prompt)} `
+                ? `${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}${status} ${theme.accent(symbols.prompt)} `
                 : '';
             const first = await read(promptStr);
             if (first === undefined)
@@ -377,93 +522,22 @@ export async function startTui(options) {
                     write(`\n  ${renderHudBar(getHudContext())}\n\n`);
                     continue;
                 }
-                if (command === '/tokens') {
-                    const report = globalTokenTracker.getReport();
-                    write(`\n  ${theme.bold('💎 Canlı Token Tasarrufu & Oturum Raporu')}\n`);
-                    write(`  ${theme.dim('─'.repeat(48))}\n`);
-                    write(`  Toplam Ham Token     : ${theme.cyan(report.totalRawTokens.toLocaleString())}\n`);
-                    write(`  Gönderilen Girdi     : ${theme.text(report.totalSentInputTokens.toLocaleString())}\n`);
-                    write(`  Üretilen Çıktı       : ${theme.text(report.totalOutputTokens.toLocaleString())}\n`);
-                    write(`  Önbellek (Cache)     : ${theme.accent(report.totalCachedTokens.toLocaleString())}\n`);
-                    write(`  Budanan Şemalar      : ${theme.accent(report.totalPrunedSchemaTokens.toLocaleString())}\n`);
-                    write(`  Sıkıştırılmış Geçmiş : ${theme.accent(report.totalCompressedHistoryTokens.toLocaleString())}\n`);
-                    write(`  Toplam Tasarruf      : ${theme.brand(report.totalSavedTokens.toLocaleString())} tok\n`);
-                    write(`  Tasarruf Oranı       : ${theme.brand(`%${report.savingsPercent}`)}\n`);
-                    write(`  Oturum Turu          : ${theme.dim(String(report.turnsCount))}\n\n`);
-                    continue;
-                }
-                if (command === '/memory') {
-                    const mem = getMemoryStats();
-                    write(`\n  ${theme.bold('💾 Bellek & RAM Koruma Durumu')}\n`);
-                    write(`  ${theme.dim('─'.repeat(48))}\n`);
-                    const ratioStr = mem.heapTotalMB > 0 ? ` (%${((mem.heapUsedMB / mem.heapTotalMB) * 100).toFixed(1)})` : '';
-                    write(`  Heap Kullanımı : ${theme.cyan(`${mem.heapUsedMB} MB`)} / ${theme.dim(`${mem.heapTotalMB} MB`)}${ratioStr}\n`);
-                    write(`  RSS (Fiziksel) : ${theme.muted(`${mem.rssMB} MB`)}\n`);
-                    const statusColor = mem.pressure === 'low' ? theme.success : mem.pressure === 'moderate' ? theme.accent : theme.danger;
-                    write(`  Baskı Düzeyi   : ${statusColor(mem.pressure.toUpperCase())}\n\n`);
-                    continue;
-                }
-                if (command === '/gc') {
-                    const before = getMemoryStats();
-                    if (typeof global.gc === 'function') {
-                        global.gc();
-                    }
-                    const after = getMemoryStats();
-                    const freed = Math.max(0, before.heapUsedMB - after.heapUsedMB).toFixed(1);
-                    write(`\n  ${theme.success('✓')} ${theme.brand('Bellek temizlendi (Garbage Collection)')}\n`);
-                    write(`  Kazanılan RAM: ${theme.cyan(`${freed} MB`)} (Şu an: ${after.heapUsedMB} MB)\n\n`);
-                    continue;
-                }
-                if (command === '/bot') {
-                    const bStatus = getTelegramBotStatus();
-                    write(`\n  ${theme.bold('🤖 Telegram Bot Canlı Durumu')}\n`);
-                    write(`  ${theme.dim('─'.repeat(48))}\n`);
-                    write(`  Durum         : ${bStatus.running ? theme.success('EVET (Aktif)') : theme.muted('HAYIR (Pasif)')}\n`);
-                    if (bStatus.username)
-                        write(`  Kullanıcı Adı : ${theme.cyan(`@${bStatus.username}`)}\n`);
-                    if (bStatus.allowedChats && bStatus.allowedChats.length > 0) {
-                        write(`  İzinli Sohbet : ${theme.text(bStatus.allowedChats.join(', '))}\n`);
-                    }
-                    if (bStatus.handledCount !== undefined) {
-                        write(`  İşlenen Mesaj : ${theme.text(String(bStatus.handledCount))}\n`);
-                    }
-                    write('\n');
-                    continue;
-                }
-                if (command === '/remember') {
-                    const remMatch = input.match(/^\/remember\s+([^=]+)=\s*(.+)$/i);
-                    if (remMatch) {
-                        const key = remMatch[1].trim();
-                        const val = remMatch[2].trim();
-                        try {
-                            const { rememberFact } = await import('./memory.js');
-                            await rememberFact(options.workspace, key, val);
-                            write(`\n  ${theme.success('✓')} ${theme.brand('Kalıcı Belleğe Kaydedildi:')} ${theme.cyan(key)} = ${theme.text(val)}\n\n`);
-                        }
-                        catch (err) {
-                            write(`\n  ${theme.error(`Kayıt hatası: ${err instanceof Error ? err.message : String(err)}`)}\n\n`);
-                        }
-                        continue;
-                    }
-                    write(`\n  ${theme.muted('Kullanım:')} ${theme.cyan('/remember <anahtar> = <değer>')}\n\n`);
-                    continue;
-                }
                 if (command === '/clear') {
                     await options.onCommand?.(input, setYolo);
                     if (interactive)
                         process.stdout.write('\x1b[2J\x1b[H');
-                    write(`${theme.muted('Sohbet geçmişi ve ekran temizlendi.')}\n`);
+                    write(`${theme.muted('Sohbet Geçmişi ve Ekran Temizlendi.')}\n`);
                     continue;
                 }
                 if (['/goal', '/plan', '/subagents', '/mcp', '/frontenddesign', '/backend', '/codereview', '/debuganalysis', '/imagegen'].includes(command ?? '') && options.onWorkflow) {
                     controller = new AbortController();
-                    eventPrinter.startThinking('İş akışı yürütülüyor…');
+                    eventPrinter.startThinking('İş Akışı Yürütülüyor…');
                     try {
                         await options.onWorkflow(command, input.slice(command.length).trim(), eventPrinter.emit, approve, controller.signal, suspendUi);
                     }
                     catch (error) {
                         eventPrinter.finishStream();
-                        write(`${theme.error(controller.signal.aborted ? 'İptal edildi.' : `Hata: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`);
+                        write(`${theme.error(controller.signal.aborted ? 'İptal Edildi.' : `Hata: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`);
                     }
                     finally {
                         controller = undefined;
@@ -489,17 +563,17 @@ export async function startTui(options) {
                 catch (error) {
                     result = `Hata: ${error instanceof Error ? error.message : String(error)}`;
                 }
-                write(`${safe(result ?? 'Bilinmeyen komut. Komutlar için /help yazın.')}\n`);
+                write(`${safe(result ?? 'Bilinmeyen Komut. Komutlar İçin /help Yazın.')}\n`);
                 continue;
             }
             controller = new AbortController();
-            eventPrinter.startThinking('Düşünüyor…');
+            eventPrinter.startThinking('Düşünülüyor…');
             try {
                 await options.onSubmit(input, eventPrinter.emit, approve, controller.signal);
             }
             catch (error) {
                 eventPrinter.finishStream();
-                write(`${theme.error(controller.signal.aborted ? 'İptal edildi.' : `Hata: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`);
+                write(`${theme.error(controller.signal.aborted ? 'İptal Edildi.' : `Hata: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`);
             }
             finally {
                 controller = undefined;

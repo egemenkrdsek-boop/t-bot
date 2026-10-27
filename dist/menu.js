@@ -18,7 +18,7 @@ export async function selectOption(title, choices) {
             return active ? theme.accent(text) : theme.muted(text);
         });
         const footer = choices.length > height ? `  ${selected + 1}/${choices.length} · ` : '  ';
-        process.stdout.write(`${theme.bold(clean(title))}\n${rows.join('\n')}\n${theme.muted(`${footer}↑/↓ select · Enter confirm · Esc cancel`)}\n`);
+        process.stdout.write(`${theme.bold(clean(title))}\n${rows.join('\n')}\n${theme.muted(`${footer}↑/↓ Seç · Enter Onayla · Esc İptal`)}\n`);
         rendered = rows.length + 2;
     };
     return new Promise(resolve => {

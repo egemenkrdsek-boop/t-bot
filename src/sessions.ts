@@ -144,7 +144,7 @@ export class SessionStore {
         if (!session || (workspace && workspaceKey(session.workspace) !== workspaceKey(workspace))) continue;
         const first = session.messages.find(message => message.role === 'user' && typeof message.content === 'string');
         metadata.push({ id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt,
-          title: (first?.content.replace(/\s+/g, ' ').trim().slice(0, 80) || 'New session'), messageCount: session.messages.length });
+          title: (first?.content.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Yeni Oturum'), messageCount: session.messages.length });
       } catch { /* A damaged session must not prevent listing the rest. */ }
     }
     return metadata.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, MAX_LIST);

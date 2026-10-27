@@ -19,8 +19,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
+    "start": "node --expose-gc dist/index.js",
+    "dev": "tsx --expose-gc src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "node -e \"try { require('node:child_process').execSync('npm run build', { stdio: 'ignore' }); } catch {}\""
   },
