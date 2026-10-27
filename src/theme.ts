@@ -1,5 +1,5 @@
 /** Small ANSI palette; all styling disappears for redirected output or NO_COLOR. */
-const color = Boolean(process.stdout.isTTY && !process.env.NO_COLOR && process.env.TERM !== 'dumb');
+const color = Boolean(process.stdout.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb');
 const paint = (code: string) => (value: string): string => color ? `\x1b[${code}m${value}\x1b[0m` : value;
 
 export const theme = {

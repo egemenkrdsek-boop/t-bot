@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
 import { symbols, theme } from './theme.js';
+import { logo } from './logo.js';
 // Do not allow control sequences from a tool or provider to operate the terminal.
 const safe = (text) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 const write = (text) => { process.stdout.write(text); };
@@ -110,7 +111,7 @@ export async function startTui(options) {
     };
     if (interactive) {
         const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
-        write(`\n${theme.brand('  T BOT')} ${theme.muted(`${symbols.bullet} Your terminal assistant`)}\n`);
+        write(`\n${logo(process.stdout.columns || 70).join('\n')}\n`);
         write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
         write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
         write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);

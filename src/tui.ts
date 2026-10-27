@@ -1,6 +1,7 @@
 import { createInterface } from 'node:readline';
 import type { AgentEvent, ApprovalRequest, Message, Provider } from './types.js';
 import { symbols, theme } from './theme.js';
+import { logo } from './logo.js';
 
 export interface TuiOptions {
   workspace: string;
@@ -80,7 +81,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
 
   if (interactive) {
     const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
-    write(`\n${theme.brand('  T BOT')} ${theme.muted(`${symbols.bullet} Your terminal assistant`)}\n`);
+    write(`\n${logo(process.stdout.columns || 70).join('\n')}\n`);
     write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
     write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
     write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);
