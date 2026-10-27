@@ -1,3 +1,7 @@
+export declare class SecretStorageError extends Error {
+    readonly code: 'security' | 'encrypt' | 'decrypt' | 'read' | 'save';
+    constructor(code: 'security' | 'encrypt' | 'decrypt' | 'read' | 'save');
+}
 export interface SecretStorageStatus {
     method: 'dpapi' | 'file';
     warning?: string;

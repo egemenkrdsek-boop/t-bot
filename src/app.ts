@@ -3,8 +3,8 @@ import { stdin, stdout } from 'node:process';
 import { resolve } from 'node:path';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP } from './cli.js';
-import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, type AppConfig } from './config.js';
-import { setApiKey, getApiKeySource, prepareApiKey } from './secrets.js';
+import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, type AppConfig, type ResolvedProviderConfig } from './config.js';
+import { setApiKey, getApiKeySource, prepareApiKey, SecretStorageError } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
@@ -32,7 +32,9 @@ async function configure(config: AppConfig, onboarding = false, presetProvider =
   const spec = PROVIDER_CATALOG.find(p => p.id === id);
   if (!spec) throw new Error('Sağlayıcı bulunamadı.');
   const selectedConfig = { ...config, provider: id, ...(id === config.provider && config.baseUrl ? { baseUrl: config.baseUrl } : { baseUrl: undefined }) };
-  let apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
+  let apiKey: string | undefined;
+  try { apiKey = (await resolveProviderConfig(selectedConfig)).apiKey; }
+  catch (error) { if (!(error instanceof SecretStorageError) || !['read', 'decrypt'].includes(error.code)) throw error; console.log('Kayıtlı anahtar okunamadı; yeni anahtar girin.'); }
   if (spec.requiresApiKey && (!apiKey?.trim() || (!onboarding && !modelOnly))) {
     let replace = !apiKey?.trim();
     if (!replace) {
@@ -96,7 +98,14 @@ export async function main(argv: string[]): Promise<void> {
   const store = new SessionStore(configDirectory());
   const session = options.resume ? await store.get(options.resume, workspace) : createSession(workspace);
   if (!session) throw new Error('Oturum bulunamadı.');
-  let resolved = await resolveProviderConfig(config, workspace);
+  let resolved: ResolvedProviderConfig;
+  try { resolved = await resolveProviderConfig(config, workspace); }
+  catch (error) {
+    if (!(error instanceof SecretStorageError) || !['read', 'decrypt'].includes(error.code) || !stdin.isTTY || !stdout.isTTY) throw error;
+    console.log('Kayıtlı anahtar okunamadı; yeni anahtar ile yapılandırın.');
+    config = await configure(config, true, true);
+    resolved = await resolveProviderConfig(config, workspace);
+  }
   const spec = PROVIDER_CATALOG.find(p => p.id === resolved.id);
   if (!spec) throw new Error(`Bilinmeyen sağlayıcı: ${safe(resolved.id)}. Seçenekler için tbot providers, ayarlamak için tbot config kullanın.`);
   if (spec.requiresApiKey && !resolved.apiKey?.trim()) {

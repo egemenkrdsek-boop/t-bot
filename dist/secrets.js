@@ -3,6 +3,14 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
+export class SecretStorageError extends Error {
+    code;
+    constructor(code) {
+        super(`Secret storage failed (${code}).`);
+        this.code = code;
+        this.name = 'SecretStorageError';
+    }
+}
 export const normalizeKey = (key) => {
     const trim = (value) => value.replace(/^[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+|[\s\u200B-\u200D\u2060\uFEFF\x00-\x1F\x7F]+$/g, '');
     const unquote = (value) => value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) ? trim(value.slice(1, -1)) : value;
@@ -17,6 +25,7 @@ export function prepareApiKey(key) {
         throw new Error('API key is empty or contains invalid characters');
     return value;
 }
+const powershellPath = () => join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const secretDir = () => join(configDirectory(), 'secrets');
 function secretPath(id) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id))
@@ -41,21 +50,26 @@ async function secureDirectory() {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     if (process.platform === 'win32') {
         // Replace inherited and explicit access with a rule for the current user only.
-        const script = "$ErrorActionPreference='Stop'; $p=[Console]::In.ReadToEnd(); $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.AddAccessRule($r); Set-Acl -LiteralPath $p -AclObject $a";
-        await run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], dir);
+        const script = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false); $p=[Console]::In.ReadToEnd(); $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.AddAccessRule($r); (New-Object System.IO.DirectoryInfo($p)).SetAccessControl($a)";
+        await run(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], dir);
     }
     else
         await chmod(dir, 0o700);
 }
 async function dpapi(input, decrypt) {
     const action = decrypt ? 'Unprotect' : 'Protect';
-    const script = `$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Security; $s=[Console]::In.ReadToEnd(); $b=[Convert]::FromBase64String($s); $r=[Security.Cryptography.ProtectedData]::${action}($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Convert]::ToBase64String($r))`;
-    return run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], input);
+    const script = `$ErrorActionPreference='Stop'; [Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false); Add-Type -AssemblyName System.Security; $s=[Console]::In.ReadToEnd(); $b=[Convert]::FromBase64String($s); $r=[Security.Cryptography.ProtectedData]::${action}($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Convert]::ToBase64String($r))`;
+    return run(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], input);
 }
 export async function setApiKey(id, key) {
     const target = secretPath(id);
     key = prepareApiKey(key);
-    await secureDirectory();
+    try {
+        await secureDirectory();
+    }
+    catch {
+        throw new SecretStorageError('security');
+    }
     let method = 'file';
     let value = key;
     if (process.platform === 'win32') {
@@ -63,12 +77,17 @@ export async function setApiKey(id, key) {
             value = await dpapi(Buffer.from(key, 'utf8').toString('base64'), false);
             method = 'dpapi';
         }
-        catch { /* Fall back to the restricted directory. */ }
+        catch {
+            throw new SecretStorageError('encrypt');
+        }
     }
     const temp = join(secretDir(), `.secret-${randomUUID()}.tmp`);
     try {
         await writeFile(temp, JSON.stringify({ method, value }), { mode: 0o600, flag: 'wx' });
         await rename(temp, target);
+    }
+    catch {
+        throw new SecretStorageError('save');
     }
     finally {
         await unlink(temp).catch(() => undefined);
@@ -84,18 +103,30 @@ async function readSavedKey(id) {
     catch (error) {
         if (error.code === 'ENOENT')
             return undefined;
-        throw error;
+        throw new SecretStorageError('read');
     }
-    const entry = JSON.parse(raw);
+    let entry;
+    try {
+        entry = JSON.parse(raw);
+    }
+    catch {
+        throw new SecretStorageError('read');
+    }
     if (!entry || typeof entry !== 'object' || !('method' in entry) || !('value' in entry) || typeof entry.value !== 'string')
-        throw new Error('Invalid secret storage format');
+        throw new SecretStorageError('read');
     let value;
     if (entry.method === 'file')
         value = entry.value;
-    else if (entry.method === 'dpapi' && process.platform === 'win32')
-        value = Buffer.from(await dpapi(entry.value, true), 'base64').toString('utf8');
+    else if (entry.method === 'dpapi' && process.platform === 'win32') {
+        try {
+            value = Buffer.from(await dpapi(entry.value, true), 'base64').toString('utf8');
+        }
+        catch {
+            throw new SecretStorageError('decrypt');
+        }
+    }
     else
-        throw new Error('Cannot decrypt the stored API key on this platform');
+        throw new SecretStorageError('decrypt');
     return normalizeKey(value) || undefined;
 }
 async function resolveApiKey(id) {

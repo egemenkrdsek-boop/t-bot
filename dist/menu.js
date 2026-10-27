@@ -1,4 +1,5 @@
 import { theme, symbols } from './theme.js';
+import { StringDecoder } from 'node:string_decoder';
 /** Select a fixed choice with arrow keys. Returns undefined when cancelled or not a TTY. */
 export async function selectOption(title, choices) {
     if (!process.stdin.isTTY || !process.stdout.isTTY || choices.length === 0)
@@ -94,11 +95,17 @@ export async function inputSecret(prompt) {
         const wasPaused = stdin.isPaused();
         let value = '';
         let done = false;
+        let pending = '';
+        let pasting = false;
+        let escapeTimer;
+        const decoder = new StringDecoder('utf8');
         process.stdout.write(`${clean}: `);
         const finish = (result) => {
             if (done)
                 return;
             done = true;
+            if (escapeTimer)
+                clearTimeout(escapeTimer);
             stdin.removeListener('data', onData);
             stdin.removeListener('end', onEnd);
             stdin.removeListener('error', onEnd);
@@ -111,22 +118,52 @@ export async function inputSecret(prompt) {
         };
         const onEnd = () => finish();
         const onData = (chunk) => {
-            for (const char of chunk.toString()) {
-                if (char === '\x03' || char === '\x04' || char === '\x1b') {
+            if (escapeTimer) {
+                clearTimeout(escapeTimer);
+                escapeTimer = undefined;
+            }
+            pending += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+            while (pending) {
+                const marker = pasting ? '\x1b[201~' : '\x1b[200~';
+                if (pending.startsWith('\x1b')) {
+                    if (marker.startsWith(pending) && pending.length < marker.length) {
+                        escapeTimer = setTimeout(() => { pending = ''; if (!pasting)
+                            finish(); }, 100);
+                        return;
+                    }
+                    if (pending.startsWith(marker)) {
+                        pending = pending.slice(marker.length);
+                        pasting = !pasting;
+                        continue;
+                    }
+                    if (!pasting) {
+                        finish();
+                        return;
+                    }
+                    pending = pending.slice(1);
+                    continue;
+                }
+                const code = pending.codePointAt(0);
+                const char = String.fromCodePoint(code);
+                pending = pending.slice(char.length);
+                if (char === '\x03' || char === '\x04') {
                     finish();
                     return;
                 }
                 if (char === '\r' || char === '\n') {
-                    finish(value);
-                    return;
+                    if (!pasting) {
+                        finish(value);
+                        return;
+                    }
+                    continue;
                 }
                 if (char === '\x7f' || char === '\b') {
-                    if (value.length) {
-                        value = value.slice(0, -1);
+                    if (!pasting && value.length) {
+                        value = Array.from(value).slice(0, -1).join('');
                         process.stdout.write('\b \b');
                     }
                 }
-                else if (char >= ' ' && char !== '\x7f') {
+                else if (code >= 32 && !(code >= 127 && code <= 159)) {
                     value += char;
                     process.stdout.write('*');
                 }
