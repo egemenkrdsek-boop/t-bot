@@ -6,8 +6,10 @@
 
 set -e
 
-# Renk Ayarları (Terminal ve NO_COLOR Kontrolü)
+# Renk Ayarları (Parlak Beyaz/Cyan ANSI Renkleri ve NO_COLOR Kontrolü)
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  BRIGHT_WHITE="\033[97;1m"
+  BRIGHT_CYAN="\033[96;1m"
   CYAN="\033[36m"
   GREEN="\033[32;1m"
   YELLOW="\033[33m"
@@ -16,6 +18,8 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   DIM="\033[2m"
   RESET="\033[0m"
 else
+  BRIGHT_WHITE=""
+  BRIGHT_CYAN=""
   CYAN=""
   GREEN=""
   YELLOW=""
@@ -27,15 +31,16 @@ fi
 
 show_header() {
   printf "\n"
-  printf "${CYAN}    ______     ____        __   ___     ____ ${RESET}\n"
-  printf "${CYAN}   /_  __/    / __ )____  / /_ |__ \\   / __ \\ ${RESET}\n"
-  printf "${CYAN}    / /      / __  / __ \\/ __/ __/ /  / / / / ${RESET}\n"
-  printf "${CYAN}   / /      / /_/ / /_/ / /_  / __/__/ /_/ /  ${RESET}\n"
-  printf "${CYAN}  /_/      /_____/\\____/\\__/ /____(_)____/   ${RESET}\n"
+  printf "${BRIGHT_WHITE}    ████████╗    ██████╗  ██████╗ ████████╗${RESET}\n"
+  printf "${BRIGHT_CYAN}    ╚══██╔══╝    ██╔══██╗██╔═══██╗╚══██╔══╝${RESET}\n"
+  printf "${BRIGHT_CYAN}       ██║       ██████╔╝██║   ██║   ██║   ${RESET}\n"
+  printf "${BRIGHT_WHITE}       ██║       ██╔══██╗██║   ██║   ██║   ${RESET}\n"
+  printf "${BRIGHT_CYAN}       ██║       ██████╔╝╚██████╔╝   ██║   ${RESET}\n"
+  printf "${BRIGHT_WHITE}       ╚═╝       ╚═════╝  ╚═════╝    ╚═╝   ${RESET}\n"
   printf "\n"
-  printf "${BOLD}${GREEN}  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway${RESET}\n"
-  printf "${DIM}  https://github.com/egemenkrdsek-boop/t-bot${RESET}\n"
-  printf "${DIM}  ─────────────────────────────────────────────────────────────${RESET}\n"
+  printf "${BRIGHT_WHITE}  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Crystal-Ice Edition)${RESET}\n"
+  printf "${BRIGHT_CYAN}  https://github.com/egemenkrdsek-boop/t-bot${RESET}\n"
+  printf "${CYAN}  ──────────────────────────────────────────────────────────────────────────────${RESET}\n"
   printf "\n"
 }
 
@@ -53,7 +58,7 @@ show_header
 # ------------------------------------------------------------------------------
 # Adım 1: Sistem Gereksinimleri Kontrolü (Node.js >= 20.3, npm, git)
 # ------------------------------------------------------------------------------
-printf "${BOLD}${CYAN}[1/3] Sistem gereksinimleri kontrol ediliyor...${RESET}\n"
+printf "${BRIGHT_CYAN}[1/3] Sistem gereksinimleri kontrol ediliyor...${RESET}\n"
 
 # Node.js Kontrolü
 if ! command -v node >/dev/null 2>&1; then
@@ -100,7 +105,7 @@ printf "\n"
 # ------------------------------------------------------------------------------
 # Adım 2: T Bot 2.0 Global Kurulumu
 # ------------------------------------------------------------------------------
-printf "${BOLD}${CYAN}[2/3] T Bot 2.0 paketi kuruluyor...${RESET}\n"
+printf "${BRIGHT_CYAN}[2/3] T Bot 2.0 paketi kuruluyor...${RESET}\n"
 
 REPO_URL="git+https://github.com/egemenkrdsek-boop/t-bot.git"
 IS_LOCAL=0
@@ -112,18 +117,18 @@ if [ -f "package.json" ]; then
 fi
 
 if [ "$IS_LOCAL" -eq 1 ]; then
-  printf "  ${DIM}Yerel kaynak dizini algılandı. Yerel paket derlenip global yükleniyor...${RESET}\n"
-  if ! npm install -g . ; then
+  printf "  ${BRIGHT_WHITE}Yerel kaynak dizini algılandı. Yerel paket derlenip global yükleniyor...${RESET}\n"
+  if ! npm install -g --force . ; then
     show_error_and_exit \
       "Yerel paket kurulumu başarısız oldu." \
-      "Eğer EACCES izin hatası aldıysanız komutu 'sudo npm install -g .' ile çalıştırın veya npm global prefix ayarlarınızı yapılandırın."
+      "Eğer EACCES izin hatası aldıysanız komutu 'sudo npm install -g --force .' ile çalıştırın veya npm global prefix ayarlarınızı yapılandırın."
   fi
 else
-  printf "  ${DIM}GitHub deposu klonlanıp global olarak yükleniyor (%s)...${RESET}\n" "$REPO_URL"
-  if ! npm install -g "$REPO_URL" ; then
+  printf "  ${BRIGHT_WHITE}GitHub deposu klonlanıp global olarak yükleniyor (%s)...${RESET}\n" "$REPO_URL"
+  if ! npm install -g --force "$REPO_URL" ; then
     show_error_and_exit \
       "npm install komutu başarısız oldu." \
-      "Eğer izin hatası (EACCES) aldıysanız:\n        sudo npm install -g git+https://github.com/egemenkrdsek-boop/t-bot.git\n        veya npm global dizinini kullanıcı izinli yapın: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"
+      "Eğer izin hatası (EACCES) aldıysanız:\n        sudo npm install -g --force git+https://github.com/egemenkrdsek-boop/t-bot.git\n        veya npm global dizinini kullanıcı izinli yapın: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"
   fi
 fi
 
@@ -132,7 +137,7 @@ printf "  ${GREEN}[OK]${RESET} Paket başarıyla yüklendi.\n\n"
 # ------------------------------------------------------------------------------
 # Adım 3: Doğrulama (tbot --help) ve PATH Kontrolü
 # ------------------------------------------------------------------------------
-printf "${BOLD}${CYAN}[3/3] Kurulum doğrulanıyor...${RESET}\n"
+printf "${BRIGHT_CYAN}[3/3] Kurulum doğrulanıyor...${RESET}\n"
 
 # Oturum PATH'ine npm Global Bin Ekleme Kontrolü
 NPM_PREFIX=$(npm prefix -g 2>/dev/null || echo "")
@@ -145,29 +150,29 @@ fi
 
 if command -v tbot >/dev/null 2>&1; then
   TBOT_PATH=$(command -v tbot)
-  printf "  ${GREEN}[OK]${RESET} 'tbot' yürütülebilir dosyası bulundu: ${DIM}%s${RESET}\n" "$TBOT_PATH"
+  printf "  ${GREEN}[OK]${RESET} 'tbot' yürütülebilir dosyası bulundu: ${BRIGHT_WHITE}%s${RESET}\n" "$TBOT_PATH"
   if tbot --help >/dev/null 2>&1; then
     printf "  ${GREEN}[OK]${RESET} 'tbot --help' doğrulaması başarılı.\n"
   fi
 else
   printf "  ${YELLOW}[BİLGİ] 'tbot' komutu mevcut oturumda anında bulunamadı.${RESET}\n"
-  printf "  ${DIM}npm global bin dizini PATH değişkeninizde yer almıyor olabilir.${RESET}\n"
+  printf "  ${BRIGHT_WHITE}npm global bin dizini PATH değişkeninizde yer almıyor olabilir.${RESET}\n"
   if [ -n "$NPM_PREFIX" ]; then
-    printf "  ${DIM}Kabuk profilinize (~/.bashrc veya ~/.zshrc) şunu ekleyin:${RESET}\n"
-    printf "    ${CYAN}export PATH=\"%s/bin:\$PATH\"${RESET}\n" "$NPM_PREFIX"
+    printf "  ${BRIGHT_WHITE}Kabuk profilinize (~/.bashrc veya ~/.zshrc) şunu ekleyin:${RESET}\n"
+    printf "    ${BRIGHT_CYAN}export PATH=\"%s/bin:\$PATH\"${RESET}\n" "$NPM_PREFIX"
   fi
 fi
 
 printf "\n"
-printf "${GREEN}========================================================================${RESET}\n"
-printf "${GREEN}[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın.${RESET}\n"
-printf "${GREEN}========================================================================${RESET}\n"
+printf "${BRIGHT_CYAN}========================================================================${RESET}\n"
+printf "${BRIGHT_WHITE}[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın.${RESET}\n"
+printf "${BRIGHT_CYAN}========================================================================${RESET}\n"
 printf "\n"
-printf "  ${BOLD}Hızlı Başlangıç İpuçları:${RESET}\n"
-printf "    ${CYAN}tbot${RESET}                  ${DIM}Etkileşimli Siber-Minimalist TUI oturumu başlatır${RESET}\n"
-printf "    ${CYAN}tbot config${RESET}           ${DIM}Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla${RESET}\n"
-printf "    ${CYAN}tbot doctor${RESET}           ${DIM}Ortam ve sistem sağlığını denetle${RESET}\n"
-printf "    ${CYAN}tbot --bot${RESET}            ${DIM}Sıfır-Backend Telegram Bot ağ geçidini başlat${RESET}\n"
-printf "    ${CYAN}tbot --ultracode${RESET}      ${DIM}4-Aşamalı Öz-Onarımlı otonom kodlama modunu aç${RESET}\n"
-printf "    ${CYAN}tbot --help${RESET}           ${DIM}Tüm komutları ve bayrakları listele${RESET}\n"
+printf "  ${BRIGHT_WHITE}Hızlı Başlangıç İpuçları:${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot${RESET}                  ${BRIGHT_WHITE}Etkileşimli Crystal-Ice Cyber-Zen TUI oturumu başlatır${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot config${RESET}           ${BRIGHT_WHITE}Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot doctor${RESET}           ${BRIGHT_WHITE}Ortam ve sistem sağlığını denetle${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot --bot${RESET}            ${BRIGHT_WHITE}Sıfır-Backend Telegram Bot ağ geçidini başlat${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot --ultracode${RESET}      ${BRIGHT_WHITE}4-Aşamalı Öz-Onarımlı otonom kodlama modunu aç${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot --help${RESET}           ${BRIGHT_WHITE}Tüm komutları ve bayrakları listele${RESET}\n"
 printf "\n"

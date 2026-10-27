@@ -6,19 +6,21 @@
 [CmdletBinding()]
 param()
 
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
 function Show-Header {
     Write-Host ""
-    Write-Host "    ______     ____        __   ___     ____ " -ForegroundColor Cyan
-    Write-Host "   /_  __/    / __ )____  / /_ |__ \   / __ \ " -ForegroundColor Cyan
-    Write-Host "    / /      / __  / __ \/ __/ __/ /  / / / / " -ForegroundColor Cyan
-    Write-Host "   / /      / /_/ / /_/ / /_  / __/__/ /_/ /  " -ForegroundColor Cyan
-    Write-Host "  /_/      /_____/\____/\__/ /____(_)____/   " -ForegroundColor Cyan
+    Write-Host "    ████████╗    ██████╗  ██████╗ ████████╗" -ForegroundColor White
+    Write-Host "    ╚══██╔══╝    ██╔══██╗██╔═══██╗╚══██╔══╝" -ForegroundColor Cyan
+    Write-Host "       ██║       ██████╔╝██║   ██║   ██║   " -ForegroundColor Cyan
+    Write-Host "       ██║       ██╔══██╗██║   ██║   ██║   " -ForegroundColor White
+    Write-Host "       ██║       ██████╔╝╚██████╔╝   ██║   " -ForegroundColor Cyan
+    Write-Host "       ╚═╝       ╚═════╝  ╚═════╝    ╚═╝   " -ForegroundColor White
     Write-Host ""
-    Write-Host "  T Bot 2.0 - Tri-Core Local AI Agent and Autonomous Gateway" -ForegroundColor Green
-    Write-Host "  https://github.com/egemenkrdsek-boop/t-bot" -ForegroundColor DarkGray
-    Write-Host "  -------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Crystal-Ice Edition)" -ForegroundColor White
+    Write-Host "  https://github.com/egemenkrdsek-boop/t-bot" -ForegroundColor Cyan
+    Write-Host "  ──────────────────────────────────────────────────────────────────────────────" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -30,7 +32,7 @@ function Show-ErrorAndExit {
     Write-Host ""
     Write-Host "[HATA] $Message" -ForegroundColor Red
     if ($Resolution) {
-        Write-Host "Cozum: $Resolution" -ForegroundColor Yellow
+        Write-Host "Çözüm: $Resolution" -ForegroundColor Yellow
     }
     Write-Host ""
     exit 1
@@ -47,8 +49,8 @@ Write-Host "[1/3] Sistem gereksinimleri kontrol ediliyor..." -ForegroundColor Cy
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
 if (-not $nodeCmd) {
     Show-ErrorAndExit `
-        -Message "Node.js sisteminizde kurulu degil veya PATH cevre degiskenine eklenmemis." `
-        -Resolution "T Bot 2.0 icin Node.js 20.3 veya uzeri gereklidir.`n        Hizli kurulum: winget install OpenJS.NodeJS.LTS`n        veya https://nodejs.org adresinden LTS surumunu indirebilirsiniz."
+        -Message "Node.js sisteminizde kurulu değil veya PATH çevre değişkenine eklenmemiş." `
+        -Resolution "T Bot 2.0 için Node.js 20.3 veya üzeri gereklidir.`n        Hızlı kurulum: winget install OpenJS.NodeJS.LTS`n        veya https://nodejs.org adresinden LTS sürümünü indirebilirsiniz."
 }
 
 try {
@@ -58,8 +60,8 @@ try {
         $nodeMinor = [int]$Matches[2]
         if ($nodeMajor -lt 20 -or ($nodeMajor -eq 20 -and $nodeMinor -lt 3)) {
             Show-ErrorAndExit `
-                -Message "Mevcut Node.js surumunuz ($nodeVerRaw) gereksinimleri karsilamiyor." `
-                -Resolution "T Bot 2.0 icin en az Node.js 20.3 veya uzeri gereklidir.`n        Guncellemek icin: winget install OpenJS.NodeJS.LTS"
+                -Message "Mevcut Node.js sürümünüz ($nodeVerRaw) gereksinimleri karşılamıyor." `
+                -Resolution "T Bot 2.0 için en az Node.js 20.3 veya üzeri gereklidir.`n        Güncellemek için: winget install OpenJS.NodeJS.LTS"
         }
     }
     Write-Host "  [OK] Node.js: $nodeVerRaw" -ForegroundColor Green
@@ -81,8 +83,8 @@ Write-Host "  [OK] npm: v$npmVer" -ForegroundColor Green
 $gitCmd = Get-Command git -ErrorAction SilentlyContinue
 if (-not $gitCmd) {
     Show-ErrorAndExit `
-        -Message "Git sisteminizde bulunamadi veya PATH ortam degiskeninde yer almiyor." `
-        -Resolution "T Bot 2.0'i GitHub uzerinden kurabilmek icin Git gereklidir.`n        Yuklemek icin terminalde: winget install Git.Git`n        veya https://git-scm.com adresini ziyaret edin."
+        -Message "Git sisteminizde bulunamadı veya PATH ortam değişkeninde yer almıyor." `
+        -Resolution "T Bot 2.0'ı GitHub üzerinden kurabilmek için Git gereklidir.`n        Yüklemek için terminalde: winget install Git.Git`n        veya https://git-scm.com adresini ziyaret edin."
 }
 $gitVer = (git --version).Trim()
 Write-Host "  [OK] Git: $gitVer" -ForegroundColor Green
@@ -109,26 +111,26 @@ if (Test-Path "package.json") {
 }
 
 if ($isLocalRepo) {
-    Write-Host "  Yerel kaynak dizini algilandi. Yerel paket derlenip global yukleniyor..." -ForegroundColor DarkGray
-    npm install -g .
+    Write-Host "  Yerel kaynak dizini algılandı. Yerel paket derlenip global yükleniyor..." -ForegroundColor White
+    npm install -g --force .
 } else {
-    Write-Host "  GitHub deposu klonlanip global olarak yukleniyor ($repoUrl)..." -ForegroundColor DarkGray
-    npm install -g $repoUrl
+    Write-Host "  GitHub deposu klonlanıp global olarak yükleniyor ($repoUrl)..." -ForegroundColor White
+    npm install -g --force $repoUrl
 }
 
 if ($LASTEXITCODE -ne 0) {
     Show-ErrorAndExit `
-        -Message "npm install komutu basarisiz oldu (Hata kodu: $LASTEXITCODE)." `
-        -Resolution "Depoya erisim yetkinizi, internet baglantinizi veya PowerShell'i Yonetici olarak calistirmayi deneyin."
+        -Message "npm install komutu başarısız oldu (Hata kodu: $LASTEXITCODE)." `
+        -Resolution "Depoya erişim yetkinizi, internet bağlantınızı veya PowerShell'i Yönetici olarak çalıştırmayı deneyin."
 }
 
-Write-Host "  [OK] Paket basariyla yuklendi." -ForegroundColor Green
+Write-Host "  [OK] Paket başarıyla yüklendi." -ForegroundColor Green
 Write-Host ""
 
 # ------------------------------------------------------------------------------
-# Adım 3: Doğrulama (tbot --help) ve PATH Senkronizasyonu
+# Adım 3: Doğrulama (tbot --help) ve Kalıcı PATH Senkronizasyonu
 # ------------------------------------------------------------------------------
-Write-Host "[3/3] Kurulum dogrulaniyor..." -ForegroundColor Cyan
+Write-Host "[3/3] Kurulum doğrulanıyor ve PATH yapılandırılıyor..." -ForegroundColor Cyan
 
 try {
     $npmPrefix = (npm prefix -g).Trim()
@@ -145,8 +147,18 @@ try {
             $env:Path = "$appDataNpm;$env:Path"
         }
     }
+
+    # Kalıcı User PATH ortam değişkeni kaydı
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ([string]::IsNullOrWhiteSpace($userPath)) {
+        [Environment]::SetEnvironmentVariable('Path', $npmBinPath, 'User')
+        Write-Host "  [OK] '$npmBinPath' kullanıcı PATH değişkenine kalıcı olarak eklendi." -ForegroundColor Green
+    } elseif ($userPath -notlike "*$npmBinPath*") {
+        [Environment]::SetEnvironmentVariable('Path', "$userPath;$npmBinPath", 'User')
+        Write-Host "  [OK] '$npmBinPath' kullanıcı PATH değişkenine kalıcı olarak eklendi." -ForegroundColor Green
+    }
 } catch {
-    # PATH zenginlestirme hatasi yutulabilir
+    # PATH zenginleştirme hatası yutulabilir
 }
 
 $tbotCmd = Get-Command tbot -ErrorAction SilentlyContinue
@@ -158,27 +170,27 @@ if ($tbotCmd) {
         $helpOutput = tbot --help 2>&1
         if ($LASTEXITCODE -eq 0) {
             $helpCheckOk = $true
-            Write-Host "  [OK] 'tbot --help' dogrulamasi basarili." -ForegroundColor Green
+            Write-Host "  [OK] 'tbot --help' doğrulaması başarılı." -ForegroundColor Green
         }
     } catch {
-        # Dogrulama hatasi
+        # Doğrulama hatası
     }
 } else {
     Write-Host "  [BİLGİ] 'tbot' komutu mevcut oturumda anında bulunamadı." -ForegroundColor Yellow
-    Write-Host "  npm global ikili dizini PATH değişkeninize yeni eklenmiş olabilir." -ForegroundColor DarkGray
-    Write-Host "  Lütfen terminalinizi kapatıp yeniden açın veya PATH'inizi tazeleyin." -ForegroundColor DarkGray
+    Write-Host "  npm global ikili dizini PATH değişkeninize yeni eklenmiş olabilir." -ForegroundColor White
+    Write-Host "  Lütfen terminalinizi kapatıp yeniden açın veya PATH'inizi tazeleyin." -ForegroundColor White
 }
 
 Write-Host ""
-Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın." -ForegroundColor Green
-Write-Host "========================================================================" -ForegroundColor Green
+Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın." -ForegroundColor White
+Write-Host "========================================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Hızlı Başlangıç İpuçları:" -ForegroundColor White
-Write-Host "    tbot                  Etkilesimli Siber-Minimalist TUI oturumu baslatir" -ForegroundColor Cyan
-Write-Host "    tbot config           Saglayici (Gemini, OpenAI, Anthropic, OpenRouter) ayarla" -ForegroundColor Cyan
-Write-Host "    tbot doctor           Ortam ve sistem sagligini denetle" -ForegroundColor Cyan
-Write-Host "    tbot --bot            Sifir-Backend Telegram Bot ag gecidini baslat" -ForegroundColor Cyan
-Write-Host "    tbot --ultracode      4-Asamali Oz-Onarimli otonom kodlama modunu ac" -ForegroundColor Cyan
-Write-Host "    tbot --help           Tum komutlari ve bayraklari listele" -ForegroundColor Cyan
+Write-Host "    tbot                  Etkileşimli Crystal-Ice Cyber-Zen TUI oturumu başlatır" -ForegroundColor Cyan
+Write-Host "    tbot config           Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla" -ForegroundColor Cyan
+Write-Host "    tbot doctor           Ortam ve sistem sağlığını denetle" -ForegroundColor Cyan
+Write-Host "    tbot --bot            Sıfır-Backend Telegram Bot ağ geçidini başlat" -ForegroundColor Cyan
+Write-Host "    tbot --ultracode      4-Aşamalı Öz-Onarımlı otonom kodlama modunu aç" -ForegroundColor Cyan
+Write-Host "    tbot --help           Tüm komutları ve bayrakları listele" -ForegroundColor Cyan
 Write-Host ""

@@ -1,67 +1,125 @@
 import type { Message, ToolDefinition } from './types.js';
 
+// Pre-compiled BPE approximation regex moved outside estimateTokens for zero re-compilation overhead
+const tokenRegex = /'s|'t|'re|'ve|'m|'ll|'d|\p{Lu}\p{Ll}+|\p{Lu}+(?!\p{Ll})|\p{Ll}+|\p{N}+|===|!==|==|!=|<=|>=|=>|->|\+\+|--|&&|\|\||\+=|-=|\*=|\/=|::|[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']|\r\n|\r|\n|\s+|\P{M}\p{M}+|[^\s\p{L}\p{N}]/gu;
+
+const MAX_STRING_CACHE_SIZE = 600;
+export const stringTokenCache = new Map<string, number>();
+export const messageTokenCache = new WeakMap<Message, { contentRef: string; tokens: number }>();
+export const toolTokenCache = new WeakMap<ToolDefinition, number>();
+const minifiedToolCache = new WeakMap<ToolDefinition, ToolDefinition>();
+export const compressedToolOutputCache = new WeakMap<Message, string>();
+
 /**
- * Fast, dependency-free BPE token estimator.
- * Mimics modern LLM tokenizers (cl100k_base / o200k / Llama / Claude)
- * taking into account punctuation, code syntax, indentation, and Turkish/multibyte Unicode characters.
+ * Fast, dependency-free BPE token estimator with 600-entry LRU memoization and charCodeAt fast-paths.
+ * Mimics modern LLM tokenizers (cl100k_base / o200k / Llama / Claude).
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
 
-  // Regex matching tokens: word parts, numbers, operators, punctuation, newlines, whitespace runs
-  const tokenRegex = /'s|'t|'re|'ve|'m|'ll|'d|\p{Lu}\p{Ll}+|\p{Lu}+(?!\p{Ll})|\p{Ll}+|\p{N}+|===|!==|==|!=|<=|>=|=>|->|\+\+|--|&&|\|\||\+=|-=|\*=|\/=|::|[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']|\r\n|\r|\n|\s+|\P{M}\p{M}+|[^\s\p{L}\p{N}]/gu;
+  if (text.length <= 24_000) {
+    const cached = stringTokenCache.get(text);
+    if (cached !== undefined) {
+      // Refresh LRU order
+      stringTokenCache.delete(text);
+      stringTokenCache.set(text, cached);
+      return cached;
+    }
+  }
 
+  tokenRegex.lastIndex = 0;
   let tokens = 0;
   let match: RegExpExecArray | null;
 
   while ((match = tokenRegex.exec(text)) !== null) {
     const chunk = match[0];
     const len = chunk.length;
+    const firstCode = chunk.charCodeAt(0);
 
-    // Whitespace / Indentation
-    if (/^\s+$/.test(chunk)) {
-      if (chunk.includes('\n')) {
-        const lines = chunk.split('\n');
-        tokens += lines.length - 1;
-        const trailingSpaces = lines[lines.length - 1].length;
-        if (trailingSpaces > 0) {
-          tokens += Math.ceil(trailingSpaces / 4);
+    // 1. Whitespace / Indentation fast check via charCodeAt (' ', '\t', '\n', '\r', NBSP)
+    if (
+      firstCode === 32 ||
+      firstCode === 9 ||
+      firstCode === 10 ||
+      firstCode === 13 ||
+      firstCode === 160
+    ) {
+      let newlines = 0;
+      let trailingSpaces = 0;
+      for (let i = 0; i < len; i++) {
+        const c = chunk.charCodeAt(i);
+        if (c === 10) {
+          newlines++;
+          trailingSpaces = 0;
+        } else if (c !== 13) {
+          trailingSpaces++;
         }
+      }
+      if (newlines > 0) {
+        tokens += newlines + (trailingSpaces > 0 ? Math.ceil(trailingSpaces / 4) : 0);
       } else {
         tokens += Math.max(1, Math.ceil(len / 4));
       }
       continue;
     }
 
-    // Numbers: 1-3 digits per token
-    if (/^\d+$/.test(chunk)) {
+    // 2. Numbers ('0'..'9')
+    if (firstCode >= 48 && firstCode <= 57) {
       tokens += Math.max(1, Math.ceil(len / 2.7));
       continue;
     }
 
-    // Punctuation / Code operators: usually 1 token per operator/char
-    if (/^[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']+$|^===|^!==|^==|^!=|^<=|^>=|^=>|^->|^\+\+|^\-\-|^&&|^\|\||^\+=|^\-=|^\*=|^\/=|::$/.test(chunk)) {
-      if (chunk.length <= 3) {
-        tokens += 1;
-      } else {
-        tokens += Math.ceil(chunk.length / 2);
-      }
+    // 3. Punctuation / Code operators via ASCII ranges (excluding contractions like 's, 't, 're)
+    const isAsciiPunct =
+      (firstCode >= 33 && firstCode <= 47) ||
+      (firstCode >= 58 && firstCode <= 64) ||
+      (firstCode >= 91 && firstCode <= 96) ||
+      (firstCode >= 123 && firstCode <= 126);
+
+    if (isAsciiPunct && !(firstCode === 39 && len > 1 && chunk.charCodeAt(1) >= 97)) {
+      tokens += len <= 3 ? 1 : Math.ceil(len / 2);
       continue;
     }
 
-    // Words / Letters: detect Turkish/Unicode multibyte characters which take extra subword tokens
-    const turkishChars = chunk.match(/[çğıöşüÇĞİÖŞÜ]/g);
-    const turkishExtra = turkishChars ? turkishChars.length * 0.45 : 0;
-
-    // Standard subword splitting for words (e.g. ~3.7 chars per token)
+    // 4. Words / Letters: detect multibyte / Turkish characters via charCodeAt (> 127)
+    let multibyteCount = 0;
+    for (let i = 0; i < len; i++) {
+      if (chunk.charCodeAt(i) > 127) {
+        multibyteCount++;
+      }
+    }
+    const turkishExtra = multibyteCount > 0 ? multibyteCount * 0.45 : 0;
     tokens += Math.max(1, Math.ceil(len / 3.7 + turkishExtra));
+  }
+
+  if (text.length <= 24_000) {
+    if (stringTokenCache.size >= MAX_STRING_CACHE_SIZE) {
+      const oldestKey = stringTokenCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        stringTokenCache.delete(oldestKey);
+      }
+    }
+    stringTokenCache.set(text, tokens);
   }
 
   return tokens;
 }
 
+function estimateSingleToolTokens(tool: ToolDefinition): number {
+  const cached = toolTokenCache.get(tool);
+  if (cached !== undefined) return cached;
+
+  let t = 12 + estimateTokens(tool.name);
+  if (tool.description) t += estimateTokens(tool.description);
+  if (tool.parameters) t += estimateTokens(JSON.stringify(tool.parameters));
+
+  toolTokenCache.set(tool, t);
+  return t;
+}
+
 /**
  * Calculates estimated token count across messages, tool calls, response items, system prompt and tool definitions.
+ * Uses WeakMap memoization on Message and ToolDefinition objects.
  */
 export function estimateMessagesTokens(
   messages: Message[],
@@ -71,66 +129,137 @@ export function estimateMessagesTokens(
   let total = 0;
 
   if (systemPrompt) {
-    total += estimateTokens(systemPrompt) + 4; // <|im_start|>system...<|im_end|>
+    total += estimateTokens(systemPrompt) + 4;
   }
 
   for (const message of messages) {
-    total += 4; // message role wrapper overhead
+    const cachedMsg = messageTokenCache.get(message);
+    if (cachedMsg && cachedMsg.contentRef === message.content) {
+      total += cachedMsg.tokens;
+      continue;
+    }
+
+    let msgTokens = 4; // message role wrapper overhead
     if (message.content) {
-      total += estimateTokens(message.content);
+      msgTokens += estimateTokens(message.content);
     }
     if (message.images?.length) {
-      // Vision model token budget per image (average low-res/tile estimate)
-      total += message.images.length * 256;
+      msgTokens += message.images.length * 256;
     }
     if (message.toolCalls?.length) {
       for (const call of message.toolCalls) {
-        total += 8; // tool call structure overhead
-        total += estimateTokens(call.name);
+        msgTokens += 8 + estimateTokens(call.name);
         if (call.arguments) {
-          total += estimateTokens(JSON.stringify(call.arguments));
+          msgTokens += estimateTokens(JSON.stringify(call.arguments));
         }
         if (call.id) {
-          total += estimateTokens(call.id);
+          msgTokens += estimateTokens(call.id);
         }
       }
     }
     if (message.toolCallId) {
-      total += estimateTokens(message.toolCallId) + 2;
+      msgTokens += estimateTokens(message.toolCallId) + 2;
     }
     if (message.responseItems?.length) {
-      total += estimateTokens(JSON.stringify(message.responseItems));
+      msgTokens += estimateTokens(JSON.stringify(message.responseItems));
     }
+
+    messageTokenCache.set(message, { contentRef: message.content, tokens: msgTokens });
+    total += msgTokens;
   }
 
   if (tools?.length) {
     for (const tool of tools) {
-      total += 12; // function declaration overhead
-      total += estimateTokens(tool.name);
-      if (tool.description) {
-        total += estimateTokens(tool.description);
-      }
-      if (tool.parameters) {
-        total += estimateTokens(JSON.stringify(tool.parameters));
-      }
+      total += estimateSingleToolTokens(tool);
     }
   }
 
   return total;
 }
 
-/** Always preserved core tools that must never be pruned. */
+/** Always preserved 9 core tools that must never be pruned. */
 export const CORE_TOOLS = new Set([
-  'file_read', 'file_write', 'file_patch', 'file_outline', 'file_search',
-  'shell', 'process_list', 'process_output', 'process_stop',
-  'git_status', 'git_diff', 'git_log', 'git_add', 'git_commit', 'git_branch', 'git_push',
-  'memory_save', 'memory_recall', 'mcp_catalog', 'mcp_call'
+  'file_read',
+  'file_outline',
+  'file_patch',
+  'file_write',
+  'file_search',
+  'file_glob',
+  'shell',
+  'memory_recall',
+  'delegate_task',
 ]);
 
 /**
- * Cleans boilerplate filler words from tool descriptions without losing semantic meaning.
+ * Sticky intent groups activated during the current session.
+ * Once an intent group is activated, it stays active for the rest of the session
+ * so the `tools` array prefix remains stable and never invalidates the provider Prompt Cache.
  */
-function compressToolDescription(desc: string): string {
+export const activeIntentGroups = new Set<string>();
+
+export function resetActiveIntentGroups(): void {
+  activeIntentGroups.clear();
+}
+
+const INTENT_GROUP_KEYWORDS: Record<string, string[]> = {
+  git: [
+    'git', 'commit', 'branch', 'push', 'pull', 'merge', 'diff',
+    'status', 'stash', 'checkout', 'rebase', 'log', 'repo', 'pr',
+  ],
+  process: [
+    'process', 'arka plan', 'arkaplan', 'background', 'daemon',
+    'sunucu', 'server', 'pid', 'kill', 'stop', 'port', 'watch',
+  ],
+  memory: [
+    'hatırla', 'hatirla', 'unut', 'hafıza', 'hafiza', 'bellek',
+    'memory', 'remember', 'forget', 'tercih', 'preference', 'not al',
+  ],
+  skill: [
+    'skill', 'beceri', 'yetenek', 'şablon', 'sablon', 'workflow',
+    'skill_create', 'skill_list',
+  ],
+  browser: [
+    'web', 'tarayıcı', 'tarayici', 'url', 'http', 'https', 'localhost',
+    'scrape', 'sayfa', 'browser', 'ui testi', 'site', 'playwright', 'dom',
+  ],
+  computer: [
+    'masaüstü', 'masaustu', 'ekran', 'pencere', 'mouse', 'fare',
+    'klavye', 'desktop', 'screen', 'window', 'click', 'screenshot', 'computer',
+  ],
+  image: [
+    'görsel', 'gorsel', 'resim', 'logo', 'ikon', 'icon',
+    'çiz', 'ciz', 'image', 'picture', 'draw', 'banner',
+  ],
+  mcp: [
+    'github', 'supabase', 'vercel', 'deploy', 'database',
+    'veritabanı', 'veritabani', 'postgres', 'sql', 'mcp', 'migration',
+  ],
+};
+
+function classifyToolIntentGroup(toolName: string): string | null {
+  if (CORE_TOOLS.has(toolName)) return 'core';
+  if (toolName.startsWith('git_')) return 'git';
+  if (toolName.startsWith('process_')) return 'process';
+  if (toolName === 'memory_save' || toolName === 'memory_forget' || toolName.startsWith('memory_')) return 'memory';
+  if (toolName === 'skill_create' || toolName === 'skill_list' || toolName.startsWith('skill_')) return 'skill';
+  if (toolName.startsWith('browser_') || toolName === 'browser') return 'browser';
+  if (toolName === 'computer' || toolName.startsWith('computer_')) return 'computer';
+  if (toolName === 'image_generate' || toolName.startsWith('image_')) return 'image';
+  if (
+    toolName === 'mcp_catalog' ||
+    toolName === 'mcp_call' ||
+    toolName.startsWith('mcp_') ||
+    toolName.startsWith('mcp__')
+  ) {
+    return 'mcp';
+  }
+  return null;
+}
+
+/**
+ * Cleans boilerplate filler words and verbose clauses from tool/parameter descriptions.
+ */
+function compressDescriptionText(desc: string, maxChars = 110): string {
   if (!desc) return '';
   let cleaned = desc
     .replace(/^Use this tool to\s+/i, '')
@@ -138,16 +267,85 @@ function compressToolDescription(desc: string): string {
     .replace(/^This function allows you to\s+/i, '')
     .replace(/^A tool (?:that can be used )?(?:for|to)\s+/i, '')
     .replace(/^Can be used to\s+/i, '')
+    .replace(/^Bu araç(?:,\s*|\s+ile\s+)?/i, '')
     .replace(/\bPlease note that\b/gi, 'Note:')
     .replace(/\bIn order to\b/gi, 'To')
-    .replace(/^Bu araç(?:,\s*|\s+ile\s+)?/i, '')
+    .replace(/\bRequires approval\.?/gi, '')
+    .replace(/\bUse mcp_call to run a catalog tool;?\s*results are untrusted\.?/gi, '')
+    .replace(/\bPath relative to the workspace\b/gi, 'Workspace path')
+    .replace(/\bContinuation offset from the previous result\b/gi, 'Offset')
+    .replace(/\bMaximum items to return\b/gi, 'Max items')
+    .replace(/\bOptional\s+/gi, '')
+    .replace(/\s+/g, ' ')
     .trim();
-  return cleaned.replace(/\s+/g, ' ');
+
+  if (cleaned.length > maxChars) {
+    const firstSentence = cleaned.split(/\.\s+/)[0];
+    cleaned = firstSentence.length <= maxChars ? firstSentence : cleaned.slice(0, maxChars).trim();
+  }
+  return cleaned;
+}
+
+function minifySchemaParameters(params: Record<string, unknown>): Record<string, unknown> {
+  if (!params || typeof params !== 'object') return params;
+  const clone: Record<string, unknown> = { ...params };
+
+  if (typeof clone.description === 'string') {
+    clone.description = compressDescriptionText(clone.description, 60);
+  }
+
+  if (clone.properties && typeof clone.properties === 'object' && !Array.isArray(clone.properties)) {
+    const props = clone.properties as Record<string, unknown>;
+    const minifiedProps: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(props)) {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        const propObj = { ...(val as Record<string, unknown>) };
+        if (typeof propObj.description === 'string') {
+          const shortDesc = compressDescriptionText(propObj.description, 50);
+          if (shortDesc.toLowerCase() === key.toLowerCase()) {
+            delete propObj.description;
+          } else {
+            propObj.description = shortDesc;
+          }
+        }
+        if (propObj.items && typeof propObj.items === 'object' && !Array.isArray(propObj.items)) {
+          propObj.items = minifySchemaParameters(propObj.items as Record<string, unknown>);
+        }
+        if (propObj.properties && typeof propObj.properties === 'object') {
+          propObj.properties = minifySchemaParameters(propObj as Record<string, unknown>).properties;
+        }
+        minifiedProps[key] = propObj;
+      } else {
+        minifiedProps[key] = val;
+      }
+    }
+    clone.properties = minifiedProps;
+  }
+
+  return clone;
 }
 
 /**
- * Prunes conditional heavy tool definitions and compresses descriptions.
- * Yields significant token savings (often 40-70% of schema tokens).
+ * Compresses both `tool.description` and nested `parameters.properties.*.description` fields,
+ * caching the minified ToolDefinition in a WeakMap.
+ */
+export function minifyToolSchema(tool: ToolDefinition): ToolDefinition {
+  const cached = minifiedToolCache.get(tool);
+  if (cached) return cached;
+
+  const minified: ToolDefinition = {
+    name: tool.name,
+    description: compressDescriptionText(tool.description, 100),
+    parameters: minifySchemaParameters(tool.parameters),
+  };
+
+  minifiedToolCache.set(tool, minified);
+  return minified;
+}
+
+/**
+ * Prunes conditional heavy tool definitions with Prompt-Cache-safe sticky activation
+ * and deep schema minification.
  */
 export function pruneToolDefinitions(
   tools: ToolDefinition[],
@@ -155,95 +353,209 @@ export function pruneToolDefinitions(
   activeSkills: string[] = [],
   history: Message[] = []
 ): { tools: ToolDefinition[]; savedTokens: number; prunedCount: number } {
-  const originalTokens = tools.reduce((acc, t) =>
-    acc + 12 + estimateTokens(t.name) + estimateTokens(t.description) + estimateTokens(JSON.stringify(t.parameters)), 0);
+  const originalTokens = tools.reduce((acc, t) => acc + estimateSingleToolTokens(t), 0);
 
-  // Analyze context: query, recent 2 messages, active skills
-  const recentHistoryTexts = history.slice(-2).map(m => m.content).join(' ');
+  const recentHistoryTexts = history.slice(-4).map(m => m.content || '').join(' ');
   const combinedContext = `${userQuery} ${recentHistoryTexts}`.toLowerCase();
   const skillsSet = new Set(activeSkills.map(s => s.toLowerCase()));
 
-  // Intent patterns
-  const browserKeywords = ['web', 'tarayıcı', 'tarayici', 'url', 'http', 'https', 'localhost', 'scrape', 'sayfa', 'browser', 'ui testi', 'site'];
-  const computerKeywords = ['masaüstü', 'masaustu', 'ekran', 'pencere', 'mouse', 'fare', 'klavye', 'desktop', 'screen', 'window', 'click', 'screenshot'];
-  const imageKeywords = ['görsel', 'gorsel', 'resim', 'logo', 'ikon', 'icon', 'çiz', 'ciz', 'image', 'picture', 'draw', 'banner'];
-  const mcpKeywords = ['github', 'supabase', 'vercel', 'deploy', 'database', 'veritabanı', 'veritabani', 'postgres', 'sql', 'mcp'];
+  // Check intent groups from current query, recent messages, and active skills
+  for (const [group, keywords] of Object.entries(INTENT_GROUP_KEYWORDS)) {
+    if (keywords.some(kw => combinedContext.includes(kw))) {
+      activeIntentGroups.add(group);
+    }
+  }
 
-  const needsBrowser = browserKeywords.some(kw => combinedContext.includes(kw)) ||
-    [...skillsSet].some(s => s.includes('browser') || s.includes('web') || s.includes('playwright'));
+  for (const skill of skillsSet) {
+    if (skill.includes('browser') || skill.includes('web') || skill.includes('playwright')) {
+      activeIntentGroups.add('browser');
+    }
+    if (skill.includes('computer') || skill.includes('desktop')) {
+      activeIntentGroups.add('computer');
+    }
+    if (skill.includes('image')) {
+      activeIntentGroups.add('image');
+    }
+    if (skill.includes('git') || skill.includes('pr') || skill.includes('review')) {
+      activeIntentGroups.add('git');
+    }
+    if (skill.includes('mcp') || skill.includes('github') || skill.includes('supabase')) {
+      activeIntentGroups.add('mcp');
+    }
+    if (skill.includes('skill')) {
+      activeIntentGroups.add('skill');
+    }
+  }
 
-  const needsComputer = computerKeywords.some(kw => combinedContext.includes(kw)) ||
-    [...skillsSet].some(s => s.includes('computer') || s.includes('desktop'));
+  // Also activate groups for any tool already called in conversation history
+  for (const msg of history) {
+    if (msg.toolCalls?.length) {
+      for (const tc of msg.toolCalls) {
+        const grp = classifyToolIntentGroup(tc.name);
+        if (grp && grp !== 'core') {
+          activeIntentGroups.add(grp);
+        }
+      }
+    }
+  }
 
-  const needsImage = imageKeywords.some(kw => combinedContext.includes(kw)) ||
-    skillsSet.has('imagegen') || skillsSet.has('image_generate') || skillsSet.has('image');
+  // Check service-specific remote MCP names in context
+  for (const tool of tools) {
+    if (tool.name.startsWith('mcp_') || tool.name.startsWith('mcp__')) {
+      const serviceName = tool.name.startsWith('mcp__')
+        ? tool.name.split('__')[1]?.toLowerCase()
+        : tool.name.split('_')[1]?.toLowerCase();
+      if (serviceName && serviceName !== 'catalog' && serviceName !== 'call' && combinedContext.includes(serviceName)) {
+        activeIntentGroups.add('mcp');
+      }
+    }
+  }
 
-  const needsMcp = mcpKeywords.some(kw => combinedContext.includes(kw));
-
+  // Keep tools in a deterministic order so the Prompt Cache prefix never shifts
   const keptTools: ToolDefinition[] = [];
 
   for (const tool of tools) {
-    const name = tool.name;
-
-    // 1. Core tools are always kept
-    if (CORE_TOOLS.has(name)) {
-      keptTools.push({
-        ...tool,
-        description: compressToolDescription(tool.description)
-      });
+    const group = classifyToolIntentGroup(tool.name);
+    if (group === 'core') {
+      keptTools.push(minifyToolSchema(tool));
       continue;
     }
-
-    // 2. Browser tools
-    if (name.startsWith('browser_') || name === 'browser') {
-      if (needsBrowser) {
-        keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
+    if (group !== null) {
+      if (activeIntentGroups.has(group)) {
+        keptTools.push(minifyToolSchema(tool));
       }
       continue;
     }
-
-    // 3. Computer tool
-    if (name === 'computer' || name.startsWith('computer_')) {
-      if (needsComputer) {
-        keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
+    // Keep file_list only when explicitly needed or when no file_glob is present
+    if (tool.name === 'file_list') {
+      const hasFileGlob = tools.some(t => t.name === 'file_glob');
+      if (!hasFileGlob || combinedContext.includes('file_list') || combinedContext.includes('dizin') || combinedContext.includes('klasör')) {
+        keptTools.push(minifyToolSchema(tool));
       }
       continue;
     }
-
-    // 4. Image generate tool
-    if (name === 'image_generate' || name.startsWith('image_')) {
-      if (needsImage) {
-        keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
-      }
-      continue;
-    }
-
-    // 5. Directly connected remote MCP tools (mcp_* or mcp__*)
-    if (name.startsWith('mcp_') || name.startsWith('mcp__')) {
-      const serviceName = name.startsWith('mcp__')
-        ? name.split('__')[1]?.toLowerCase()
-        : name.split('_')[1]?.toLowerCase();
-      if (needsMcp || (serviceName && combinedContext.includes(serviceName))) {
-        keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
-      }
-      continue;
-    }
-
-    // Fallback: If unknown tool, keep it but compress description
-    keptTools.push({ ...tool, description: compressToolDescription(tool.description) });
+    keptTools.push(minifyToolSchema(tool));
   }
 
   const prunedCount = tools.length - keptTools.length;
-  const prunedTokens = keptTools.reduce((acc, t) =>
-    acc + 12 + estimateTokens(t.name) + estimateTokens(t.description) + estimateTokens(JSON.stringify(t.parameters)), 0);
-
+  const prunedTokens = keptTools.reduce((acc, t) => acc + estimateSingleToolTokens(t), 0);
   const savedTokens = Math.max(0, originalTokens - prunedTokens);
 
   return {
     tools: keptTools,
     savedTokens,
-    prunedCount
+    prunedCount,
   };
+}
+
+const ANSI_ESCAPE_REGEX = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07/g;
+const LOCK_OR_DIST_DIFF_REGEX = /^diff --git a\/([^\s]+) b\/([^\s]+)/;
+const NOISE_DIFF_PATH_REGEX = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|Cargo\.lock|dist\/.+|build\/.+|\.next\/.+)$/i;
+const ERROR_SIGNAL_LINE_REGEX = /(?:error|fail|failed|exception|TS\d+|ERR!|fatal|panic| syntaxerror|referenceerror|typeerror)/i;
+
+function stripAnsiAndSpinners(raw: string): string {
+  const withoutAnsi = raw.replace(ANSI_ESCAPE_REGEX, '');
+  const normalizedNewlines = withoutAnsi.replace(/\r\n/g, '\n');
+  if (!normalizedNewlines.includes('\r')) return normalizedNewlines;
+
+  return normalizedNewlines
+    .split('\n')
+    .map(line => (line.includes('\r') ? line.split('\r').pop() ?? '' : line))
+    .join('\n');
+}
+
+function collapseGitDiffNoise(diffText: string): string {
+  if (!diffText.includes('diff --git ')) return diffText;
+  const lines = diffText.split('\n');
+  const out: string[] = [];
+  let skippingBlock = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = LOCK_OR_DIST_DIFF_REGEX.exec(line);
+    if (match) {
+      const fileA = match[1];
+      const fileB = match[2];
+      if (NOISE_DIFF_PATH_REGEX.test(fileA) || NOISE_DIFF_PATH_REGEX.test(fileB)) {
+        out.push(line);
+        out.push('[Otomatik gizlendi: derleme/kilit dosyası diff bloğu]');
+        skippingBlock = true;
+      } else {
+        skippingBlock = false;
+        out.push(line);
+      }
+      continue;
+    }
+    if (!skippingBlock) {
+      out.push(line);
+    }
+  }
+
+  return out.join('\n');
+}
+
+/**
+ * Smart tool output truncation:
+ * - Strips ANSI escape sequences and carriage-return (\r) spinner lines.
+ * - For `shell` and `process_output` exceeding `maxChars`: keeps first 1,400 chars + middle error/warning lines (up to 1,600 chars) + last 3,500 chars (preserving Exit code & stack trace).
+ * - For `git_diff`: collapses lockfiles and dist/ diff blocks into a 1-line placeholder before applying `maxChars`.
+ */
+export function smartTruncateToolOutput(
+  toolName: string,
+  output: string,
+  maxChars = 8000
+): { text: string; savedTokens: number } {
+  if (!output) return { text: '', savedTokens: 0 };
+
+  const initialTokens = estimateTokens(output);
+  let cleaned = stripAnsiAndSpinners(output);
+
+  if (toolName === 'git_diff') {
+    cleaned = collapseGitDiffNoise(cleaned);
+  }
+
+  if (cleaned.length <= maxChars) {
+    const savedTokens = Math.max(0, initialTokens - estimateTokens(cleaned));
+    return { text: cleaned, savedTokens };
+  }
+
+  if (toolName === 'shell' || toolName === 'process_output') {
+    const scale = maxChars >= 6500 ? 1 : maxChars / 6800;
+    const headBudget = Math.max(100, Math.floor(1400 * scale));
+    const midBudget = Math.max(100, Math.floor(1600 * scale));
+    const tailBudget = Math.max(200, Math.floor(3500 * scale));
+
+    const head = cleaned.slice(0, headBudget);
+    const tailStart = Math.max(headBudget, cleaned.length - tailBudget);
+    const tail = cleaned.slice(tailStart);
+    const middleRaw = cleaned.slice(headBudget, tailStart);
+
+    const middleErrorLines: string[] = [];
+    let midChars = 0;
+    for (const line of middleRaw.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (ERROR_SIGNAL_LINE_REGEX.test(trimmed)) {
+        if (midChars + trimmed.length + 1 > midBudget) break;
+        middleErrorLines.push(trimmed);
+        midChars += trimmed.length + 1;
+      }
+    }
+
+    const middleSection = middleErrorLines.length > 0
+      ? `\n...[Ara çıktı budandı; tespit edilen hata/uyarı satırları (${middleErrorLines.length} satır)]:\n${middleErrorLines.join('\n')}\n...[Son bölüm]:\n`
+      : `\n...[${middleRaw.length} karakterlik ara çıktı budandı]...\n`;
+
+    const combined = `${head}${middleSection}${tail}`;
+    const savedTokens = Math.max(0, initialTokens - estimateTokens(combined));
+    return { text: combined, savedTokens };
+  }
+
+  const headBudget = Math.floor(maxChars * 0.5);
+  const tailBudget = Math.floor(maxChars * 0.42);
+  const truncated = `${cleaned.slice(0, headBudget)}\n...[${cleaned.length - headBudget - tailBudget} karakter budandı]...\n${cleaned.slice(cleaned.length - tailBudget)}`;
+  const savedTokens = Math.max(0, initialTokens - estimateTokens(truncated));
+  return { text: truncated, savedTokens };
 }
 
 const MAX_TOOL_RESULT_CHARS = 12_000;
@@ -255,25 +567,20 @@ const MAX_TOOL_RESULT_CHARS = 12_000;
 function extractStructuralEvidence(content: string): string {
   if (content.length <= 400) return content;
 
-  // 1. Extract file paths
   const fileRegex = /(?:[a-zA-Z]:[\\/]|(?:\.{1,2}[\\/])|\/)[a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9_]+/g;
   const files = Array.from(new Set(content.match(fileRegex) || [])).slice(0, 8);
 
-  // 2. Extract signatures (functions, classes, interfaces, types, exports)
   const sigRegex = /(?:export\s+)?(?:async\s+)?(?:function\s+[a-zA-Z0-9_$]+|[a-zA-Z0-9_$]+\s*\(.*?\)\s*(?::|\{)|class\s+[a-zA-Z0-9_$]+|interface\s+[a-zA-Z0-9_$]+|type\s+[a-zA-Z0-9_$]+\s*=|def\s+[a-zA-Z0-9_$]+)/g;
   const signatures = Array.from(new Set(content.match(sigRegex) || [])).slice(0, 6);
 
-  // 3. Extract errors, exceptions, stack traces
   const lines = content.split('\n');
   const errorLines = lines
     .filter(l => /(?:error|exception|fail|failed|fatal|reject|denied|timeout|panic|warn|warning|traceback|at\s+[a-zA-Z0-9_$.]+\s*\()/i.test(l))
     .map(l => l.trim())
     .slice(0, 5);
 
-  // 4. Extract diff ranges / line numbers
   const diffRanges = Array.from(new Set(content.match(/@@\s*-\d+,\d+\s*\+\d+,\d+\s*@@|lines?\s*\d+(?:-\d+)?/gi) || [])).slice(0, 4);
 
-  // 5. Head and Tail snippet
   const head = lines.slice(0, 2).map(l => l.trim()).filter(Boolean).join(' ');
   const tail = lines.slice(-2).map(l => l.trim()).filter(Boolean).join(' ');
 
@@ -287,12 +594,17 @@ function extractStructuralEvidence(content: string): string {
   return `[Kanıt Özeti (${content.length} karakterden sıkıştırıldı):\n${parts.join('\n')}]`;
 }
 
+function getCachedEvidenceSummary(msg: Message): string {
+  const cached = compressedToolOutputCache.get(msg);
+  if (cached !== undefined) return cached;
+  const summary = extractStructuralEvidence(msg.content);
+  compressedToolOutputCache.set(msg, summary);
+  return summary;
+}
+
 /**
- * Compresses conversation history to fit budget while preserving:
- * - Full output of the last 3 tool batches when under budget (MAX_TOOL_RESULT_CHARS = 12_000)
- * - Structural evidence of older tool outputs (bIdx < batches.length - 3) or when budget exceeds 85%
- * - Images only in the latest 2 messages
- * - Initial user goal summary when dropping overflow turns
+ * Epoch-based conversation history compression with WeakMap memoization on older tool messages
+ * so the Prompt Cache prefix stays stable across turns.
  */
 export function compressConversationHistory(
   messages: Message[],
@@ -301,7 +613,6 @@ export function compressConversationHistory(
   const initialTokens = estimateMessagesTokens(messages);
   if (messages.length === 0) return { messages: [], savedTokens: 0 };
 
-  // 1. Identify tool batches (each assistant toolCalls round followed by its tool results)
   const batches: { assistantIndex: number; toolIndices: number[] }[] = [];
   let currentBatch: { assistantIndex: number; toolIndices: number[] } | null = null;
 
@@ -326,15 +637,11 @@ export function compressConversationHistory(
     }
   });
 
-  // 2. Strip images from all but the last 2 messages
   const imageCutoffIndex = Math.max(0, messages.length - 2);
 
-  // 3. Compress older tool batches into structural evidence summaries,
-  // and preserve recent 3 tool batches up to MAX_TOOL_RESULT_CHARS
   let compressed: Message[] = messages.map((m, idx) => {
     const msg = { ...m };
 
-    // Image pruning: keep only in last 2 messages
     if (idx < imageCutoffIndex && msg.images?.length) {
       msg.images = undefined;
     }
@@ -344,14 +651,11 @@ export function compressConversationHistory(
       const isRecentBatch = bIdx >= batches.length - 3;
 
       if (isRecentBatch) {
-        // Keep raw output up to MAX_TOOL_RESULT_CHARS
         if (msg.content.length > MAX_TOOL_RESULT_CHARS) {
-          const half = Math.floor(MAX_TOOL_RESULT_CHARS / 2);
-          msg.content = `${msg.content.slice(0, half)}\n...[Tool output truncated to ${MAX_TOOL_RESULT_CHARS} chars]...\n${msg.content.slice(-half)}`;
+          msg.content = smartTruncateToolOutput('tool', msg.content, MAX_TOOL_RESULT_CHARS).text;
         }
       } else {
-        // Older tool message: transform into deterministic structural evidence summary
-        msg.content = extractStructuralEvidence(msg.content);
+        msg.content = getCachedEvidenceSummary(m);
       }
     }
 
@@ -360,14 +664,13 @@ export function compressConversationHistory(
 
   let currentTokens = estimateMessagesTokens(compressed);
 
-  // 4. If total tokens exceed maxTokenBudget * 0.85, summarize earlier tool batches in the recent window
   if (currentTokens > maxTokenBudget * 0.85 && batches.length > 1) {
     for (let bIdx = Math.max(0, batches.length - 3); bIdx < batches.length - 1; bIdx++) {
       const batch = batches[bIdx];
       if (!batch) continue;
       for (const toolIdx of batch.toolIndices) {
         if (compressed[toolIdx] && compressed[toolIdx].role === 'tool') {
-          compressed[toolIdx].content = extractStructuralEvidence(compressed[toolIdx].content);
+          compressed[toolIdx].content = getCachedEvidenceSummary(messages[toolIdx]);
         }
       }
       currentTokens = estimateMessagesTokens(compressed);
@@ -377,13 +680,12 @@ export function compressConversationHistory(
     }
   }
 
-  // 5. If total tokens still exceed maxTokenBudget, drop older turns while preserving initial user goal
   if (currentTokens > maxTokenBudget) {
     const firstUserMsg = compressed.find(m => m.role === 'user');
     const initialUserGoal = firstUserMsg ? firstUserMsg.content.slice(0, 600) : '';
 
     const turns: Message[][] = [];
-    let systemMsgs: Message[] = [];
+    const systemMsgs: Message[] = [];
 
     for (const msg of compressed) {
       if (msg.role === 'system') {
@@ -422,7 +724,7 @@ export function compressConversationHistory(
     if (selectedTurns.length < turns.length && initialUserGoal) {
       reconstructed.push({
         role: 'user',
-        content: `[Önceki Konuşma Özeti - Orijinal Kullanıcı Hedefi]: ${initialUserGoal}\n(Eski konuşma turları token bütçesi (${maxTokenBudget}) koruması için sıkıştırıldı)`
+        content: `[Önceki Konuşma Özeti - Orijinal Kullanıcı Hedefi]: ${initialUserGoal}\n(Eski konuşma turları token bütçesi (${maxTokenBudget}) koruması için sıkıştırıldı)`,
       });
     }
 
@@ -435,18 +737,24 @@ export function compressConversationHistory(
 
   return {
     messages: compressed,
-    savedTokens
+    savedTokens,
   };
 }
 
 export interface TokenSavingsReport {
   totalRawTokens: number;
   totalSentInputTokens: number;
+  totalUncachedInputTokens: number;
   totalOutputTokens: number;
   totalCachedTokens: number;
   totalPrunedSchemaTokens: number;
   totalCompressedHistoryTokens: number;
+  totalContextCacheSavedTokens: number;
   totalSavedTokens: number;
+  turnSavedTokens: number;
+  turnCachedTokens: number;
+  cachedTokens: number;
+  savedTokens: number;
   savingsPercent: number;
   turnsCount: number;
 }
@@ -454,11 +762,22 @@ export interface TokenSavingsReport {
 export class TokenSessionTracker {
   private totalRawTokens = 0;
   private totalSentInputTokens = 0;
+  private totalUncachedInputTokens = 0;
   private totalOutputTokens = 0;
   private totalCachedTokens = 0;
   private totalPrunedSchemaTokens = 0;
   private totalCompressedHistoryTokens = 0;
+  private totalContextCacheSavedTokens = 0;
+  private pendingContextCacheSavedTokens = 0;
+  private lastTurnSavedTokens = 0;
+  private lastTurnCachedTokens = 0;
   private turnsCount = 0;
+
+  recordContextCacheSaving(savedTokens: number): void {
+    const valid = Math.max(0, Math.floor(savedTokens || 0));
+    this.totalContextCacheSavedTokens += valid;
+    this.pendingContextCacheSavedTokens += valid;
+  }
 
   recordTurn(data: {
     rawTokens: number;
@@ -469,35 +788,69 @@ export class TokenSessionTracker {
     compressedHistoryTokens?: number;
   }): TokenSavingsReport {
     this.turnsCount++;
-    this.totalRawTokens += data.rawTokens;
-    this.totalSentInputTokens += data.sentInputTokens;
-    this.totalOutputTokens += data.outputTokens;
-    const cached = data.cachedTokens ?? 0;
-    const pruned = data.prunedSchemaTokens ?? 0;
-    const compressed = data.compressedHistoryTokens ?? 0;
+    const inputTokens = Math.max(0, data.sentInputTokens || 0);
+    const cached = Math.max(0, Math.min(inputTokens || Number.MAX_SAFE_INTEGER, data.cachedTokens ?? 0));
+    const uncachedInput = Math.max(0, inputTokens - cached);
+    const pruned = Math.max(0, data.prunedSchemaTokens ?? 0);
+    const compressed = Math.max(0, data.compressedHistoryTokens ?? 0);
+    const contextSavedThisTurn = this.pendingContextCacheSavedTokens;
+    this.pendingContextCacheSavedTokens = 0;
 
+    // Provider prompt cache saves ~90% of input token cost/budget
+    const turnCacheSavings = Math.round(cached * 0.9);
+    const turnSaved = pruned + compressed + contextSavedThisTurn + turnCacheSavings;
+
+    this.totalSentInputTokens += inputTokens;
+    this.totalUncachedInputTokens += uncachedInput;
+    this.totalOutputTokens += Math.max(0, data.outputTokens || 0);
     this.totalCachedTokens += cached;
     this.totalPrunedSchemaTokens += pruned;
     this.totalCompressedHistoryTokens += compressed;
+    this.totalRawTokens += Math.max(
+      data.rawTokens || 0,
+      uncachedInput + cached + pruned + compressed + contextSavedThisTurn
+    );
+
+    this.lastTurnCachedTokens = cached;
+    this.lastTurnSavedTokens = turnSaved;
 
     return this.getReport();
   }
 
   getReport(): TokenSavingsReport {
-    const totalSavedTokens = this.totalPrunedSchemaTokens + this.totalCompressedHistoryTokens + this.totalCachedTokens;
-    const totalPotentialTokens = this.totalSentInputTokens + totalSavedTokens;
-    const savingsPercent = totalPotentialTokens > 0
-      ? Math.min(100, Math.max(0, Number(((totalSavedTokens / totalPotentialTokens) * 100).toFixed(1))))
+    const cacheCostSavings = Math.round(this.totalCachedTokens * 0.9);
+    const totalSavedTokens =
+      this.totalPrunedSchemaTokens +
+      this.totalCompressedHistoryTokens +
+      this.totalContextCacheSavedTokens +
+      cacheCostSavings;
+
+    // Avoid double-counting cachedTokens: totalBaseline = uncachedInput + cachedTokens + pre-request savings
+    const totalBaselineTokens =
+      this.totalUncachedInputTokens +
+      this.totalCachedTokens +
+      this.totalPrunedSchemaTokens +
+      this.totalCompressedHistoryTokens +
+      this.totalContextCacheSavedTokens;
+
+    const savingsPercent = totalBaselineTokens > 0
+      ? Math.min(100, Math.max(0, Number(((totalSavedTokens / totalBaselineTokens) * 100).toFixed(1))))
       : 0;
 
     return {
       totalRawTokens: this.totalRawTokens,
       totalSentInputTokens: this.totalSentInputTokens,
+      totalUncachedInputTokens: this.totalUncachedInputTokens,
       totalOutputTokens: this.totalOutputTokens,
       totalCachedTokens: this.totalCachedTokens,
       totalPrunedSchemaTokens: this.totalPrunedSchemaTokens,
       totalCompressedHistoryTokens: this.totalCompressedHistoryTokens,
+      totalContextCacheSavedTokens: this.totalContextCacheSavedTokens,
       totalSavedTokens,
+      turnSavedTokens: this.lastTurnSavedTokens,
+      turnCachedTokens: this.lastTurnCachedTokens,
+      cachedTokens: this.lastTurnCachedTokens || this.totalCachedTokens,
+      savedTokens: totalSavedTokens,
       savingsPercent,
       turnsCount: this.turnsCount,
     };
@@ -506,11 +859,17 @@ export class TokenSessionTracker {
   reset(): void {
     this.totalRawTokens = 0;
     this.totalSentInputTokens = 0;
+    this.totalUncachedInputTokens = 0;
     this.totalOutputTokens = 0;
     this.totalCachedTokens = 0;
     this.totalPrunedSchemaTokens = 0;
     this.totalCompressedHistoryTokens = 0;
+    this.totalContextCacheSavedTokens = 0;
+    this.pendingContextCacheSavedTokens = 0;
+    this.lastTurnSavedTokens = 0;
+    this.lastTurnCachedTokens = 0;
     this.turnsCount = 0;
+    activeIntentGroups.clear();
   }
 }
 

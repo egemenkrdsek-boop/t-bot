@@ -18,6 +18,7 @@ export const imageToolDefinitions: ToolDefinition[] = [{
     properties: {
       prompt: { type: 'string', description: 'Description of the image to create or edit.' },
       source_image: { type: 'string', description: 'Optional local image path in workspace to edit or reference for image-to-image generation.' },
+      model: { type: 'string', description: 'Optional image generation model override.' },
     },
     required: ['prompt'],
     additionalProperties: false,
@@ -25,9 +26,44 @@ export const imageToolDefinitions: ToolDefinition[] = [{
 }];
 
 export const IMAGE_MODELS = {
-  openai: { default: 'gpt-image-2.5-flare', choices: ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-2-2026-04-21', 'gpt-image-2.5-flare-2026-09-08', 'gpt-image-2.5-sunburst-2026-09-08'] },
-  gemini: { default: 'gemini-3.1-flash-image', choices: ['gemini-nano-banana-2.1', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-3-pro-image', 'gemini-2.5-flash-image'] },
-  openrouter: { default: 'google/gemini-3.1-flash-image', choices: ['google/gemini-3.1-flash-image', 'google/gemini-3.1-flash-lite-image', 'google/gemini-3-pro-image', 'openai/gpt-5-image'] },
+  openai: {
+    default: 'gpt-image-2.5-flare',
+    choices: [
+      'gpt-image-2.5-flare',
+      'gpt-image-2.5-sunburst',
+      'gpt-image-2',
+      'gpt-image-2-2026-04-21',
+      'gpt-image-2.5-flare-2026-09-08',
+      'gpt-image-2.5-sunburst-2026-09-08',
+      'gpt-image-1',
+      'dall-e-3',
+    ],
+  },
+  gemini: {
+    default: 'gemini-3.1-flash-image',
+    choices: [
+      'gemini-nano-banana-2.1',
+      'gemini-3.1-flash-image',
+      'gemini-3.1-flash-lite-image',
+      'gemini-3-pro-image',
+      'gemini-2.5-flash-image',
+      'imagen-3.0-generate-002',
+      'gemini-2.0-flash-preview-image-generation',
+    ],
+  },
+  openrouter: {
+    default: 'google/gemini-3.1-flash-image',
+    choices: [
+      'google/gemini-3.1-flash-image',
+      'google/gemini-3.1-flash-lite-image',
+      'google/gemini-3-pro-image',
+      'openai/gpt-5-image',
+      'openai/gpt-image-1',
+      'openai/dall-e-3',
+      'google/imagen-3.0-generate-002',
+      'google/gemini-2.0-flash-preview-image-generation',
+    ],
+  },
 } as const;
 const maxImage = 20 * 1024 * 1024;
 const maxResponse = 30 * 1024 * 1024;
@@ -91,8 +127,14 @@ export async function handleImageTool(name: string, args: Record<string, unknown
   const sourceImage = typeof args.source_image === 'string' && args.source_image.trim() ? args.source_image.trim() : undefined;
   const config = context.imageProvider;
   if (!config || !['openai', 'gemini', 'openrouter'].includes(config.provider) || !config.apiKey?.trim()) throw new Error('No compatible image provider configured. Choose a configured OpenAI, Gemini, or OpenRouter provider with an API key. Anthropic does not generate images.');
-  const model = config.model ?? IMAGE_MODELS[config.provider].default;
-  if (!(IMAGE_MODELS[config.provider].choices as readonly string[]).includes(model)) throw new Error('Unsupported image model. Select a supported image-generation model in the image provider settings.');
+  const rawModel =
+    typeof args.model === 'string' && args.model.trim()
+      ? args.model.trim()
+      : config.model?.trim() || IMAGE_MODELS[config.provider].default;
+  if (!/^[A-Za-z0-9._:/-]{1,120}$/.test(rawModel)) {
+    throw new Error('Unsupported image model. Select a supported image-generation model in the image provider settings.');
+  }
+  const model = rawModel;
   if (context.signal?.aborted) throw new Error('Image generation cancelled.');
 
   let sourceImageBytes: Buffer | undefined;

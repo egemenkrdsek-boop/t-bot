@@ -4,8 +4,12 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$dllPath = Join-Path ([System.IO.Path]::GetTempPath()) "tbot-desktop-native-v2.dll"
-if (Test-Path $dllPath) {
+$binDir = Join-Path $env:APPDATA "TBot\bin"
+if (-not (Test-Path -LiteralPath $binDir)) {
+  New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+}
+$dllPath = Join-Path $binDir "tbot-desktop-native-v2.dll"
+if (Test-Path -LiteralPath $dllPath) {
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 } else {
   $source = @"

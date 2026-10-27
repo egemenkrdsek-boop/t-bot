@@ -17,6 +17,7 @@ import { runAgent } from './agent.js';
 import { runUltracode } from './ultracode.js';
 import { startGoal, runGoal, getGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal } from './workflows.js';
 import { SessionStore } from './sessions.js';
+import { handleComputerTool } from './tools/computer.js';
 
 /**
  * Options required to initialize and run the zero-backend Telegram Bot Bridge.
@@ -66,9 +67,17 @@ interface TelegramMessage {
   text?: string;
 }
 
+interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 // Module-level bridge state
@@ -103,9 +112,50 @@ async function sendChatAction(token: string, chatId: string, action = 'typing'):
 }
 
 /**
+ * Answers a Telegram inline keyboard callback query.
+ */
+async function answerCallbackQuery(token: string, callbackQueryId: string, text?: string): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        callback_query_id: callbackQueryId,
+        ...(text ? { text } : {}),
+      }),
+    });
+  } catch {
+    // Ignore transient callback query errors
+  }
+}
+
+/**
+ * Merges TELEGRAM_ALLOWED_CHATS environment variable into config.telegramAllowedChatIds.
+ */
+function syncEnvAllowedChats(config: Config): string[] {
+  if (!Array.isArray(config.telegramAllowedChatIds)) {
+    config.telegramAllowedChatIds = [];
+  }
+  const envRaw = process.env.TELEGRAM_ALLOWED_CHATS;
+  if (envRaw && envRaw.trim()) {
+    for (const id of envRaw.split(/[,\s;]+/).map((s) => s.trim()).filter(Boolean)) {
+      if (!config.telegramAllowedChatIds.includes(id)) {
+        config.telegramAllowedChatIds.push(id);
+      }
+    }
+  }
+  return config.telegramAllowedChatIds;
+}
+
+/**
  * Sends a raw text message chunk, falling back to plain text if Markdown parsing fails.
  */
-async function sendRawTelegramChunk(token: string, chatId: string, text: string): Promise<boolean> {
+async function sendRawTelegramChunk(
+  token: string,
+  chatId: string,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<boolean> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -114,6 +164,7 @@ async function sendRawTelegramChunk(token: string, chatId: string, text: string)
         chat_id: chatId,
         text,
         parse_mode: 'Markdown',
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
     });
     if (res.ok) return true;
@@ -125,6 +176,7 @@ async function sendRawTelegramChunk(token: string, chatId: string, text: string)
       body: JSON.stringify({
         chat_id: chatId,
         text,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
     });
     return fallback.ok;
@@ -136,19 +188,24 @@ async function sendRawTelegramChunk(token: string, chatId: string, text: string)
 /**
  * Splits text into chunks conforming to Telegram's 4096 character limit and sends each chunk.
  */
-export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
+export async function sendTelegramMessage(
+  token: string,
+  chatId: string,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<void> {
   const MAX_CHUNK = 4000;
   if (!text) return;
 
   if (text.length <= MAX_CHUNK) {
-    await sendRawTelegramChunk(token, chatId, text);
+    await sendRawTelegramChunk(token, chatId, text, replyMarkup);
     return;
   }
 
   let remaining = text;
   while (remaining.length > 0) {
     if (remaining.length <= MAX_CHUNK) {
-      await sendRawTelegramChunk(token, chatId, remaining);
+      await sendRawTelegramChunk(token, chatId, remaining, replyMarkup);
       break;
     }
     let splitIdx = remaining.lastIndexOf('\n', MAX_CHUNK);
@@ -257,16 +314,17 @@ async function collectGeneratedImages(workspace: string, startTime: number): Pro
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isFile()) continue;
+        if (entry.isSymbolicLink() || !entry.isFile()) continue;
         const lower = entry.name.toLowerCase();
-        if (dir === workspace && !lower.startsWith('screenshot-') && !lower.endsWith('.png')) {
+        if (dir === workspace && (!lower.startsWith('screenshot-') || !/\.(png|jpg|jpeg|webp)$/.test(lower))) {
           continue;
         }
         if (!/\.(png|jpg|jpeg|webp)$/i.test(lower)) continue;
 
         const fullPath = path.join(dir, entry.name);
         try {
-          const stats = await fs.stat(fullPath);
+          const stats = await fs.lstat(fullPath);
+          if (stats.isSymbolicLink() || !stats.isFile()) continue;
           if (stats.mtimeMs >= startTime - 2000) {
             discovered.push(fullPath);
           }
@@ -308,9 +366,16 @@ ${request.description ? `*Açıklama:* ${request.description}\n` : ''}*Argümanl
 ${truncatedArgs}
 \`\`\`
 
-Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın (60sn)`;
+Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki butonları kullanın (60sn)`;
 
-  await sendTelegramMessage(token, chatId, promptText);
+  const reply_markup = {
+    inline_keyboard: [[
+      { text: '✓ Onayla', callback_data: 'approve_yes' },
+      { text: '✗ Reddet', callback_data: 'approve_no' },
+    ]],
+  };
+
+  await sendTelegramMessage(token, chatId, promptText, reply_markup);
 
   return new Promise<boolean>((resolve) => {
     const timeoutId = setTimeout(async () => {
@@ -371,7 +436,10 @@ async function executeAgentTurn(
           computer: '[DURUM] Bilgisayar İşlemi Yürütülüyor...',
           image_generate: '[DURUM] Görsel Üretimi Başlatıldı...',
           browser_navigate: '[DURUM] Web Tarayıcısı Başlatılıyor...',
-          bash: '[DURUM] Sistem Komutu Yürütülüyor...',
+          shell: '[DURUM] Sistem Komutu Yürütülüyor...',
+          file_glob: '[DURUM] Dosyalar Taranıyor...',
+          delegate_task: '[DURUM] Alt Ajan Görevi Çalıştırılıyor...',
+          skill_create: '[DURUM] Yeni Beceri Oluşturuluyor...',
         };
         if (majorTools[name] && lastReportedTool !== name) {
           lastReportedTool = name;
@@ -479,7 +547,7 @@ async function handleIncomingMessage(
   const text = (msg.text || '').trim();
   if (!text) return;
 
-  const allowed = options.config.telegramAllowedChatIds || [];
+  const allowed = syncEnvAllowedChats(options.config);
 
   // Register first user automatically if allowed list is empty
   if (allowed.length === 0) {
@@ -538,6 +606,7 @@ T Bot yerel terminal ajanı ile doğrudan Telegram üzerinden iletişimdesiniz. 
 
 *[KOMUTLAR] Kullanılabilir Komutlar:*
 • \`/status\` - Sistem Durumu (Sağlayıcı, RAM, Token Tasarrufu, Grounding)
+• \`/screenshot\` - Anlık Masaüstü Ekran Görüntüsü Al ve Gönder
 • \`/goal <hedef>\` - Otonom Hedefi Başlat, Durumunu Gör veya Yönet
 • \`/ultracode <görev>\` - Ultracode Çoklu Ajan Akışı ile Araştır, Uygula ve İncele
 • \`/memory\` - Proje Hafızasındaki Bilgileri Listele
@@ -548,6 +617,35 @@ T Bot yerel terminal ajanı ile doğrudan Telegram üzerinden iletişimdesiniz. 
 *[BİLGİ] Doğrudan İstek:*
 Herhangi bir metin göndererek doğrudan T Bot ajanını çalıştırabilirsiniz. Oluşan ekran görüntüleri ve üretilen görseller doğrudan telefonunuza gönderilir.`;
     await sendTelegramMessage(token, chatId, helpText);
+    return;
+  }
+
+  // 2.5. /screenshot
+  if (text === '/screenshot' || text.toLowerCase() === '/screenshot') {
+    try {
+      await sendTelegramMessage(token, chatId, '[DURUM] Masaüstü ekran görüntüsü alınıyor...');
+      const raw = await handleComputerTool('computer', { action: 'screenshot' }, { workspace: options.workspace, signal });
+      let shotPath: string | undefined;
+      try {
+        const parsed = JSON.parse(raw) as { path?: string };
+        if (typeof parsed.path === 'string') {
+          shotPath = path.resolve(options.workspace, parsed.path);
+        }
+      } catch {
+        const match = raw.match(/([a-zA-Z]:[\\/][^"'\r\n]+\.png)/i);
+        if (match && match[1]) shotPath = match[1];
+      }
+      if (shotPath) {
+        const sent = await sendTelegramPhoto(token, chatId, shotPath, `[EKRAN GÖRÜNTÜSÜ] \`${path.basename(shotPath)}\``);
+        if (!sent) {
+          await sendTelegramMessage(token, chatId, `[HATA] Ekran görüntüsü dosyası gönderilemedi: \`${shotPath}\``);
+        }
+      } else {
+        await sendTelegramMessage(token, chatId, '[HATA] Ekran görüntüsü yolu alınamadı.');
+      }
+    } catch (err) {
+      await sendTelegramMessage(token, chatId, `*[HATA]* Ekran görüntüsü alınamadı: ${escapeMarkdown(err instanceof Error ? err.message : String(err))}`);
+    }
     return;
   }
 
@@ -733,7 +831,7 @@ async function runPollingLoop(
           offset,
           timeout: 25,
           limit: 100,
-          allowed_updates: ['message'],
+          allowed_updates: ['message', 'callback_query'],
         }),
         signal: AbortSignal.any([signal, AbortSignal.timeout(35_000)]),
       });
@@ -753,6 +851,29 @@ async function runPollingLoop(
       for (const update of data.result) {
         if (update.update_id >= offset) {
           offset = update.update_id + 1;
+        }
+        if (update.callback_query) {
+          const cq = update.callback_query;
+          const cqChatId = String(cq.message?.chat.id ?? cq.from.id);
+          const allowed = syncEnvAllowedChats(options.config);
+          if (allowed.includes(cqChatId)) {
+            await answerCallbackQuery(token, cq.id);
+            const pendingApproval = activeApproval;
+            if (pendingApproval && pendingApproval.chatId === cqChatId && (cq.data === 'approve_yes' || cq.data === 'approve_no')) {
+              const approved = cq.data === 'approve_yes';
+              clearTimeout(pendingApproval.timeoutId);
+              const { resolve, tool } = pendingApproval;
+              activeApproval = null;
+              if (approved) {
+                await sendTelegramMessage(token, cqChatId, `*[ONAYLANDI]* \`${tool}\` çalıştırılıyor...`);
+              } else {
+                await sendTelegramMessage(token, cqChatId, `*[REDDEDİLDİ]* \`${tool}\` işlemi iptal edildi.`);
+              }
+              resolve(approved);
+            }
+          } else {
+            await answerCallbackQuery(token, cq.id, 'Yetkisiz erişim.');
+          }
         }
         if (update.message) {
           handledCount++;
@@ -793,6 +914,8 @@ export async function startTelegramBotBridge(options: {
   if (isRunning) {
     return { ok: true, username: currentBotUsername };
   }
+
+  syncEnvAllowedChats(options.config);
 
   // Retrieve token securely stored via Windows DPAPI or environment variable
   const token = (await getCustomSecret('telegram_bot_token')) || process.env.TELEGRAM_BOT_TOKEN;

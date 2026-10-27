@@ -21,10 +21,12 @@ export interface McpOptions {
   url?: string;
   command?: string;
   args?: string[];
+  workspace?: string;
 }
 
 export type McpServiceInput =
   | McpService
+  | (string & {})
   | McpServerDefinition
   | { id?: string; name?: string; url?: string; command?: string; args?: string[]; [key: string]: unknown };
 
@@ -153,8 +155,11 @@ export async function connectMcp(service: McpServiceInput, token?: string, optio
           const escapedToken = effectiveToken ? JSON.stringify(effectiveToken).slice(1, -1) : '';
           const serialized = escapedToken ? JSON.stringify(result).split(escapedToken).join('[REDACTED]') : JSON.stringify(result);
           return serialized.length > 24_000 ? `${serialized.slice(0, 24_000)}\n[Output truncated]` : serialized;
-        } catch {
-          return signal?.aborted ? 'MCP request cancelled.' : 'MCP request failed or timed out.';
+        } catch (err) {
+          if (signal?.aborted) return 'MCP request cancelled.';
+          const detail = err instanceof Error ? err.message : String(err);
+          const safeDetail = effectiveToken ? detail.split(effectiveToken).join('[REDACTED]') : detail;
+          return `MCP request failed or timed out: ${safeDetail}`;
         }
       },
       async close() {
@@ -162,9 +167,11 @@ export async function connectMcp(service: McpServiceInput, token?: string, optio
         await adapter?.server.close();
       },
     };
-  } catch {
+  } catch (err) {
     await client.close().catch(() => {});
     await adapter?.server.close().catch(() => {});
-    throw new Error(`${serviceName} MCP connection failed. Check token, permissions, scope and network.`);
+    const detail = err instanceof Error ? err.message : String(err);
+    const safeDetail = effectiveToken ? detail.split(effectiveToken).join('[REDACTED]') : detail;
+    throw new Error(`${serviceName} MCP connection failed (${safeDetail}). Check token, permissions, scope and network.`);
   }
 }

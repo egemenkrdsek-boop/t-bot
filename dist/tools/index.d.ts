@@ -7,9 +7,12 @@ export interface ToolContext {
     signal?: AbortSignal;
     mcpTools?: McpConnection[];
     imageProvider?: ImageProviderConfig;
+    [key: string]: unknown;
 }
+export declare function isToolResultOk(name: string, output: string): boolean;
 export declare const localToolDefinitions: ToolDefinition[];
 export declare const toolDefinitions: ToolDefinition[];
 export declare const READ_ONLY_TOOLS: Set<string>;
 export declare function getToolDefinitions(connectionsOrPolicy?: McpConnection[] | 'all' | 'read-only', policy?: 'all' | 'read-only'): ToolDefinition[];
+export declare const APPROVAL_REQUIRED_TOOLS: string[];
 export declare function executeTool(call: ToolCall, context: ToolContext): Promise<string>;

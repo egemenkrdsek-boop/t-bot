@@ -146,24 +146,6 @@ export async function deleteApiKey(id: string): Promise<void> {
   try { await unlink(secretPath(id)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
 }
 
-export async function getSecret(id: ProviderId | string): Promise<string | undefined> {
-  if (secretCache.has(id)) return secretCache.get(id);
-  const key = await getApiKey(id);
-  if (key) secretCache.set(id, key);
-  return key;
-}
-
-export async function setSecret(id: ProviderId | string, key: string): Promise<SecretStorageStatus> {
-  const result = await setApiKey(id, key);
-  secretCache.set(id, prepareApiKey(key));
-  return result;
-}
-
-export async function deleteSecret(id: ProviderId | string): Promise<void> {
-  secretCache.delete(id);
-  await deleteApiKey(id);
-}
-
 function toCustomId(name: string): string {
   const clean = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
   if (!clean) throw new Error('Invalid secret name');
@@ -207,4 +189,27 @@ export async function deleteCustomSecret(name: string): Promise<void> {
   if (rawId && rawId !== id) {
     await deleteApiKey(rawId).catch(() => undefined);
   }
+}
+
+function toMcpSecretId(service: string): string {
+  const clean = service.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  if (!clean) throw new Error('Invalid MCP service name');
+  return clean.startsWith('mcp-') ? clean : `mcp-${clean}`;
+}
+
+export async function getMcpSecret(service: string): Promise<string | undefined> {
+  return readSavedKey(toMcpSecretId(service));
+}
+
+export async function setMcpSecret(service: string, token: string): Promise<SecretStorageStatus> {
+  return setApiKey(toMcpSecretId(service), token);
+}
+
+export async function deleteMcpSecret(service: string): Promise<void> {
+  await deleteApiKey(toMcpSecretId(service));
+}
+
+export async function hasMcpSecret(service: string): Promise<boolean> {
+  const val = await getMcpSecret(service);
+  return Boolean(val);
 }

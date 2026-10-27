@@ -1,7 +1,8 @@
-import { mkdir, open, readFile, rename, writeFile, unlink, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { acquireFileLock } from './lock.js';
 import { getApiKey } from './secrets.js';
 import { EFFORT_LEVELS } from './effort.js';
 export const configDirectory = () => join(process.env.APPDATA || join(homedir(), '.config'), 'TBot');
@@ -9,55 +10,6 @@ const revisions = new WeakMap();
 const remember = (config, revision) => { revisions.set(config, revision); return config; };
 export const DEFAULT_CONFIG = { provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} };
 const defaultConfig = () => ({ ...DEFAULT_CONFIG, workspacePermissions: {} });
-function isProcessAlive(pid) {
-    if (!pid || isNaN(pid) || pid <= 0)
-        return false;
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch (error) {
-        return error.code === 'EPERM';
-    }
-}
-async function acquireLock(lockPath) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            const handle = await open(lockPath, 'wx', 0o600);
-            await handle.writeFile(String(process.pid));
-            return handle;
-        }
-        catch (error) {
-            if (error.code === 'EEXIST') {
-                let isStale = false;
-                try {
-                    const stats = await stat(lockPath);
-                    if (Date.now() - stats.mtimeMs > 30_000) {
-                        isStale = true;
-                    }
-                    else {
-                        const content = await readFile(lockPath, 'utf8').catch(() => '');
-                        const pid = parseInt(content.trim(), 10);
-                        if (!pid || !isProcessAlive(pid)) {
-                            isStale = true;
-                        }
-                    }
-                }
-                catch {
-                    isStale = true;
-                }
-                if (isStale) {
-                    await unlink(lockPath).catch(() => undefined);
-                    continue;
-                }
-            }
-            throw error;
-        }
-    }
-    const handle = await open(lockPath, 'wx', 0o600);
-    await handle.writeFile(String(process.pid));
-    return handle;
-}
 function validBaseUrl(value) {
     if (typeof value !== 'string' || !value.trim())
         return false;
@@ -70,7 +22,8 @@ function validBaseUrl(value) {
         return false;
     }
 }
-export function normalizeConfig(input) {
+export function normalizeConfig(rawInput) {
+    const input = (typeof rawInput === 'string' ? JSON.parse(rawInput) : rawInput);
     const defaults = DEFAULT_CONFIG;
     const permissions = {};
     if (input.workspacePermissions && typeof input.workspacePermissions === 'object' && !Array.isArray(input.workspacePermissions)) {
@@ -108,9 +61,9 @@ async function cleanInvalidBaseUrl(raw) {
     const dir = configDirectory();
     const path = join(dir, 'config.json');
     const lockPath = join(dir, 'config.lock');
-    let lock;
+    let releaseLock;
     try {
-        lock = await acquireLock(lockPath);
+        releaseLock = await acquireFileLock(lockPath);
     }
     catch (error) {
         if (error.code === 'EEXIST')
@@ -131,14 +84,8 @@ async function cleanInvalidBaseUrl(raw) {
     }
     finally {
         await unlink(temp).catch(() => undefined);
-        if (lock) {
-            try {
-                await lock.close();
-            }
-            finally {
-                await unlink(lockPath).catch(() => undefined);
-            }
-        }
+        if (releaseLock)
+            await releaseLock();
     }
 }
 export async function loadConfig() {
@@ -159,7 +106,6 @@ export async function loadConfig() {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new Error('Invalid T Bot config');
     const input = value;
-    const defaults = defaultConfig();
     if (input.provider !== undefined && typeof input.provider !== 'string')
         throw new Error('Invalid provider in config');
     if (input.model !== undefined && typeof input.model !== 'string')
@@ -168,29 +114,11 @@ export async function loadConfig() {
         throw new Error('Invalid base URL in config');
     if (input.workspacePermissions !== undefined && (!input.workspacePermissions || typeof input.workspacePermissions !== 'object' || Array.isArray(input.workspacePermissions)))
         throw new Error('Invalid workspace permissions in config');
-    const permissions = {};
-    for (const [key, permission] of Object.entries((input.workspacePermissions || {}))) {
+    for (const permission of Object.values((input.workspacePermissions || {}))) {
         if (permission !== 'ask' && permission !== 'allow')
             throw new Error('Invalid workspace permission in config');
-        permissions[key] = permission;
     }
-    const efforts = {};
-    if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
-        for (const [key, level] of Object.entries(input.efforts))
-            if (typeof level === 'string' && EFFORT_LEVELS.includes(level))
-                efforts[key] = level;
-    }
-    const telegramBotToken = typeof input.telegramBotToken === 'boolean' ? input.telegramBotToken : undefined;
-    const telegramAllowedChatIds = Array.isArray(input.telegramAllowedChatIds) ? input.telegramAllowedChatIds.filter((id) => typeof id === 'string') : undefined;
-    return remember({
-        provider: input.provider ?? defaults.provider,
-        model: input.model ?? defaults.model,
-        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
-        workspacePermissions: permissions,
-        efforts,
-        ...(telegramBotToken !== undefined ? { telegramBotToken } : {}),
-        ...(telegramAllowedChatIds ? { telegramAllowedChatIds } : {})
-    }, raw);
+    return remember(normalizeConfig(input), raw);
 }
 export async function saveConfig(config) {
     const dir = configDirectory();
@@ -201,9 +129,9 @@ export async function saveConfig(config) {
         throw new Error('Load configuration before saving it');
     if (config.baseUrl !== undefined && !validBaseUrl(config.baseUrl))
         throw new Error('Invalid base URL in config');
-    let lock;
+    let releaseLock;
     try {
-        lock = await acquireLock(lockPath);
+        releaseLock = await acquireFileLock(lockPath);
     }
     catch (error) {
         if (error.code === 'EEXIST')
@@ -240,14 +168,8 @@ export async function saveConfig(config) {
     }
     finally {
         await unlink(temp).catch(() => undefined);
-        if (lock) {
-            try {
-                await lock.close();
-            }
-            finally {
-                await unlink(lockPath).catch(() => undefined);
-            }
-        }
+        if (releaseLock)
+            await releaseLock();
     }
 }
 function workspaceKey(workspace) { const path = resolve(workspace); return process.platform === 'win32' ? path.toLowerCase() : path; }

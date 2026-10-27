@@ -19,7 +19,7 @@ export interface ResolvedProviderConfig {
 }
 export declare const configDirectory: () => string;
 export declare const DEFAULT_CONFIG: AppConfig;
-export declare function normalizeConfig(input: Partial<AppConfig> | Record<string, unknown>): AppConfig;
+export declare function normalizeConfig(rawInput: Partial<AppConfig> | Record<string, unknown> | string): AppConfig;
 export declare function loadConfig(): Promise<AppConfig>;
 export declare function saveConfig(config: AppConfig): Promise<void>;
 export declare function getWorkspacePermission(config: AppConfig, workspace: string): WorkspacePermission;

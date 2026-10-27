@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolDefinition } from '../types.js';
 import { globalGroundingLedger, validateFileSyntax } from '../grounding.js';
+import { extractFileAstOutline } from '../repo-map.js';
+import { globalContextCache } from '../context-cache.js';
 import { handleShellTool } from './shell.js';
 
 const string = (args: Record<string, unknown>, key: string): string => {
@@ -25,6 +27,21 @@ const limitParam = { type: 'integer', minimum: 1, description: 'Maximum items to
 const numberArg = (value: unknown, fallback: number, max: number): number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? Math.min(value, max) : fallback;
 
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.tbot',
+  '__pycache__',
+  '.venv',
+  'target',
+]);
+
+const LAZY_PLACEHOLDER_REGEX =
+  /(?:\/\/|\/\*+|#)\s*\.\.\.\s*(?:existing\s+code|rest\s+of|previous\s+code|remaining\s+code|unchanged|omitted|existing|gerisi|mevcut\s+kod)/i;
+
 export const fileToolDefinitions: ToolDefinition[] = [
   {
     name: 'file_read',
@@ -42,7 +59,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'file_outline',
-    description: 'Extract an outline of symbols (classes, functions, methods, interfaces, types, exports, markdown headings) with line numbers.',
+    description: 'Extract an AST outline of symbols (classes, functions, methods, interfaces, types, exports, markdown headings) with start and end line numbers.',
     parameters: schema({ path: p }, ['path']),
   },
   {
@@ -51,9 +68,32 @@ export const fileToolDefinitions: ToolDefinition[] = [
     parameters: schema({ path: p, offset: offsetParam, limit: limitParam }, []),
   },
   {
+    name: 'file_glob',
+    description: 'Fast file path finder using glob pattern matching (e.g. "**/*.ts", "src/**/*.js").',
+    parameters: schema(
+      {
+        pattern: { type: 'string', description: 'Glob pattern to match file paths (e.g. "**/*.ts")' },
+        path: p,
+        limit: limitParam,
+      },
+      ['pattern']
+    ),
+  },
+  {
     name: 'file_search',
-    description: 'Search UTF-8 workspace files for literal text.',
-    parameters: schema({ path: p, query: { type: 'string' }, offset: offsetParam, limit: limitParam }, ['query']),
+    description: 'Search UTF-8 workspace files for literal text or regex pattern.',
+    parameters: schema(
+      {
+        path: p,
+        query: { type: 'string' },
+        regex: { type: 'boolean', description: 'Treat query as a regular expression' },
+        file_pattern: { type: 'string', description: 'Optional glob pattern to filter searched files (e.g. "*.ts")' },
+        context_lines: { type: 'integer', minimum: 0, maximum: 10, description: 'Optional number of context lines before and after each match' },
+        offset: offsetParam,
+        limit: limitParam,
+      },
+      ['query']
+    ),
   },
   {
     name: 'file_write',
@@ -116,6 +156,7 @@ async function resolveSafe(workspace: string, input: string): Promise<string> {
 }
 
 async function atomicWrite(target: string, content: string, workspace: string, input: string, signal?: AbortSignal, expected?: string): Promise<void> {
+  await fs.mkdir(path.dirname(target), { recursive: true });
   const temp = path.join(path.dirname(target), `.tbot-${randomUUID()}.tmp`);
   let mode: number | undefined;
   try {
@@ -137,41 +178,77 @@ async function atomicWrite(target: string, content: string, workspace: string, i
   }
 }
 
-function extractSymbols(lines: string[]): string[] {
-  const symbols: string[] = [];
-  const isOutlineSymbol = (trimmed: string): boolean => {
-    if (!trimmed) return false;
-    if (trimmed.startsWith('#')) return true; // Markdown
-    if (/^(?:export\s+(?:default\s+)?)?(?:abstract\s+)?class\s+\w+/.test(trimmed)) return true;
-    if (/^(?:export\s+)?interface\s+\w+/.test(trimmed)) return true;
-    if (/^(?:export\s+)?type\s+\w+\s*=/.test(trimmed)) return true;
-    if (/^(?:export\s+)?enum\s+\w+/.test(trimmed)) return true;
-    if (/^(?:export\s+(?:default\s+)?)?(?:async\s+)?function(?:\s*\*|\s+)\w+/.test(trimmed)) return true;
-    if (/^(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>/.test(trimmed)) return true;
-    if (/^(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*function\b/.test(trimmed)) return true;
-    if (/^(?:(?:public|private|protected|static|readonly|async|\*)\s+)*(?:get\s+|set\s+)?[#a-zA-Z0-9_$]+\s*\([^)]*\)\s*(?::\s*[^;{]+)?\s*\{?$/.test(trimmed)) return true;
-    if (/^(?:def|class)\s+\w+/.test(trimmed)) return true; // Python
-    if (/^export\s+(?:\{|\*)/.test(trimmed)) return true; // export { ... } or export *
-    return false;
+function globToMatcher(pattern: string): (relPath: string, fileName: string) => boolean {
+  const norm = pattern.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').trim();
+  const hasSlash = norm.includes('/');
+
+  const toRegexStr = (glob: string): string => {
+    let out = '^';
+    let i = 0;
+    while (i < glob.length) {
+      const c = glob[i];
+      if (c === '*') {
+        if (glob[i + 1] === '*') {
+          if (glob[i + 2] === '/') {
+            out += '(?:.*/)?';
+            i += 3;
+            continue;
+          }
+          out += '.*';
+          i += 2;
+          continue;
+        }
+        out += '[^/]*';
+        i++;
+        continue;
+      }
+      if (c === '?') {
+        out += '[^/]';
+        i++;
+        continue;
+      }
+      if (c === '{') {
+        const close = glob.indexOf('}', i);
+        if (close > i) {
+          const parts = glob
+            .slice(i + 1, close)
+            .split(',')
+            .map(s => s.replace(/[.+^$|()[\]\\]/g, '\\$&'));
+          out += `(?:${parts.join('|')})`;
+          i = close + 1;
+          continue;
+        }
+      }
+      if (/[.+^$|()[\]\\]/.test(c)) {
+        out += `\\${c}`;
+      } else {
+        out += c;
+      }
+      i++;
+    }
+    out += '$';
+    return out;
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (isOutlineSymbol(trimmed)) {
-      const display = trimmed.length > 120 ? trimmed.slice(0, 117) + '...' : trimmed;
-      symbols.push(`L${i + 1}: ${display}`);
-      if (symbols.length >= 120) break;
-    }
-  }
-  return symbols;
+  const re = new RegExp(toRegexStr(norm), process.platform === 'win32' ? 'i' : '');
+  return (relPath: string, fileName: string): boolean => {
+    const cleanRel = relPath.replace(/\\/g, '/');
+    return hasSlash ? re.test(cleanRel) : re.test(fileName) || re.test(cleanRel);
+  };
 }
 
-function applyPatchHunk(content: string, oldText: string, newText: string): string {
+function applyPatchHunk(content: string, oldText: string, newText: string): { content: string; line: number } {
+  const lineAtOffset = (text: string, index: number): number =>
+    text.slice(0, index).split(/\r?\n/).length;
+
   // 1. Direct match
   const at = content.indexOf(oldText);
   if (at >= 0) {
     if (content.indexOf(oldText, at + 1) >= 0) throw new Error('old_text must occur exactly once');
-    return content.slice(0, at) + newText + content.slice(at + oldText.length);
+    return {
+      content: content.slice(0, at) + newText + content.slice(at + oldText.length),
+      line: lineAtOffset(content, at),
+    };
   }
 
   // 2. CRLF -> LF and LF -> CRLF tolerance
@@ -180,7 +257,10 @@ function applyPatchHunk(content: string, oldText: string, newText: string): stri
   if (atCRLF >= 0) {
     if (content.indexOf(oldCRLF, atCRLF + 1) >= 0) throw new Error('old_text must occur exactly once');
     const newCRLF = newText.replace(/(?<!\r)\n/g, '\r\n');
-    return content.slice(0, atCRLF) + newCRLF + content.slice(atCRLF + oldCRLF.length);
+    return {
+      content: content.slice(0, atCRLF) + newCRLF + content.slice(atCRLF + oldCRLF.length),
+      line: lineAtOffset(content, atCRLF),
+    };
   }
 
   const oldLF = oldText.replace(/\r\n/g, '\n');
@@ -188,18 +268,63 @@ function applyPatchHunk(content: string, oldText: string, newText: string): stri
   if (atLF >= 0) {
     if (content.indexOf(oldLF, atLF + 1) >= 0) throw new Error('old_text must occur exactly once');
     const newLF = newText.replace(/\r\n/g, '\n');
-    return content.slice(0, atLF) + newLF + content.slice(atLF + oldLF.length);
+    return {
+      content: content.slice(0, atLF) + newLF + content.slice(atLF + oldLF.length),
+      line: lineAtOffset(content, atLF),
+    };
   }
 
   // 3. Fallback: normalize both content and oldText to LF and restore dominant newline
+  const isCRLF = (content.match(/\r\n/g)?.length ?? 0) > (content.match(/[^\r]\n/g)?.length ?? 0);
   const contentLF = content.replace(/\r\n/g, '\n');
   const atNorm = contentLF.indexOf(oldLF);
   if (atNorm >= 0) {
     if (contentLF.indexOf(oldLF, atNorm + 1) >= 0) throw new Error('old_text must occur exactly once');
     const newLF = newText.replace(/\r\n/g, '\n');
     const replacedLF = contentLF.slice(0, atNorm) + newLF + contentLF.slice(atNorm + oldLF.length);
-    const isCRLF = (content.match(/\r\n/g)?.length ?? 0) > (content.match(/[^\r]\n/g)?.length ?? 0);
-    return isCRLF ? replacedLF.replace(/(?<!\r)\n/g, '\r\n') : replacedLF;
+    return {
+      content: isCRLF ? replacedLF.replace(/(?<!\r)\n/g, '\r\n') : replacedLF,
+      line: lineAtOffset(contentLF, atNorm),
+    };
+  }
+
+  // 4. Trailing whitespace tolerant line-by-line match (trimEnd normalization)
+  const contentLines = contentLF.split('\n');
+  const oldLines = oldLF.split('\n');
+  const oldTrimmed = oldLines.map(l => l.trimEnd());
+
+  if (oldLines.length > 0 && oldLines.length <= contentLines.length) {
+    const matchIndices: number[] = [];
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      let ok = true;
+      for (let j = 0; j < oldLines.length; j++) {
+        if (contentLines[i + j].trimEnd() !== oldTrimmed[j]) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        matchIndices.push(i);
+      }
+    }
+
+    if (matchIndices.length > 1) {
+      throw new Error('old_text must occur exactly once');
+    }
+    if (matchIndices.length === 1) {
+      const startIdx = matchIndices[0];
+      const newLines = newText.replace(/\r\n/g, '\n').split('\n');
+      const updatedLines = [
+        ...contentLines.slice(0, startIdx),
+        ...newLines,
+        ...contentLines.slice(startIdx + oldLines.length),
+      ];
+      const joinedLF = updatedLines.join('\n');
+      return {
+        content: isCRLF ? joinedLF.replace(/(?<!\r)\n/g, '\r\n') : joinedLF,
+        line: startIdx + 1,
+      };
+    }
   }
 
   throw new Error('old_text was not found in file');
@@ -220,16 +345,16 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     const stat = await fs.stat(target);
     if (!stat.isFile()) throw new Error('Not a regular file');
     const content = await fs.readFile(target, 'utf8');
-    const lines = content.split(/\r?\n/);
-    const symbols = extractSymbols(lines);
+    const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
+    const outline = extractFileAstOutline(relPath, content);
     globalGroundingLedger.markFileInspected(target, workspace);
-    const summary = `Total lines: ${lines.length} | Outline symbols: ${symbols.length}${symbols.length >= 120 ? ' (showing first 120)' : ''}\n`;
-    return summary + symbols.join('\n');
+    return outline.formatted;
   }
 
   if (name === 'file_read') {
     const stat = await fs.stat(target);
     if (!stat.isFile()) throw new Error('Not a regular file');
+    const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
 
     // Line range mode
     if (args.start_line !== undefined || args.end_line !== undefined) {
@@ -238,9 +363,10 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       const start = typeof args.start_line === 'number' && Number.isInteger(args.start_line) ? Math.max(1, args.start_line) : 1;
       const end = typeof args.end_line === 'number' && Number.isInteger(args.end_line) ? Math.min(allLines.length, Math.max(start, args.end_line)) : allLines.length;
       const selected = allLines.slice(start - 1, end);
-      const formatted = selected.map((line, idx) => `${start + idx}: ${line}`).join('\n');
+      const formatted = selected.map((line, idx) => `${start + idx}: ${line}`).join('\n') || '(empty line range)';
       globalGroundingLedger.markFileInspected(target, workspace);
-      return formatted || '(empty line range)';
+      const diff = globalContextCache.checkAndRecordRead(workspace, relPath, content, start, end, formatted);
+      return diff.output;
     }
 
     // Default offset / max_bytes mode
@@ -259,7 +385,14 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       const decoder = new StringDecoder('utf8');
       const text = decoder.write(buffer.subarray(0, consumed)) + decoder.end();
       globalGroundingLedger.markFileInspected(target, workspace);
-      return JSON.stringify({ content: text, offset, next_offset: bytesRead > consumed ? offset + consumed : null });
+
+      const nextOffset = bytesRead > consumed ? offset + consumed : null;
+      if (offset === 0 && nextOffset === null) {
+        const lineCount = text.length === 0 ? 1 : text.split(/\r?\n/).length;
+        const diff = globalContextCache.checkAndRecordRead(workspace, relPath, text, 1, lineCount, text);
+        return JSON.stringify({ content: diff.output, offset, next_offset: null });
+      }
+      return JSON.stringify({ content: text, offset, next_offset: nextOffset });
     } finally {
       await handle.close();
     }
@@ -279,6 +412,53 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     });
   }
 
+  if (name === 'file_glob') {
+    const pattern = string(args, 'pattern');
+    const root = await fs.realpath(workspace);
+    const limit = Math.max(1, numberArg(args.limit, 100, 500));
+    const matcher = globToMatcher(pattern);
+    const matches: string[] = [];
+    let visited = 0;
+    let capped = false;
+
+    async function walkGlob(dir: string): Promise<void> {
+      signal?.throwIfAborted();
+      if (matches.length >= limit || capped) return;
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        signal?.throwIfAborted();
+        if (++visited > 20000) {
+          capped = true;
+          return;
+        }
+        if (entry.isSymbolicLink() || SKIP_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walkGlob(full);
+          if (matches.length >= limit || capped) return;
+        } else if (entry.isFile()) {
+          const relFromRoot = path.relative(root, full).replace(/\\/g, '/');
+          const relFromTarget = path.relative(target, full).replace(/\\/g, '/');
+          if (matcher(relFromTarget, entry.name) || matcher(relFromRoot, entry.name)) {
+            matches.push(relFromRoot);
+            if (matches.length >= limit) return;
+          }
+        }
+      }
+    }
+
+    const stat = await fs.stat(target);
+    if (!stat.isDirectory()) throw new Error('Glob search path must be a directory');
+    await walkGlob(target);
+
+    return JSON.stringify({
+      files: matches,
+      count: matches.length,
+      truncated: matches.length >= limit || capped,
+    });
+  }
+
   if (name === 'file_write') {
     if (typeof args.content !== 'string') throw new Error('content must be a string');
     if (Buffer.byteLength(args.content) > 1_000_000) throw new Error('Content exceeds 1 MB');
@@ -295,30 +475,40 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       exists = false;
     }
 
-    // Grounding check for existing files
+    // 1. Read-Before-Write Grounding Gate (throws on failure so executeTool records ok: false)
     if (exists) {
       const check = globalGroundingLedger.verifyCanModifyFile(target, exists, workspace);
       if (!check.allowed) {
-        return JSON.stringify({ ok: false, output: check.error! });
+        throw new Error(check.error!);
       }
+    }
+
+    // 2. Anti-Truncation Guard
+    if (LAZY_PLACEHOLDER_REGEX.test(args.content)) {
+      throw new Error(
+        '[KESİLME ENGELİ] Mevcut büyük dosyayı kısaltarak veya yer tutucu yorumlarla ezemezsiniz. Cerrahi değişiklik için file_patch kullanın.'
+      );
+    }
+    if (exists && oldContent !== null) {
+      const oldLineCount = oldContent.split(/\r?\n/).length;
+      const newLineCount = args.content.split(/\r?\n/).length;
+      if (oldLineCount > 100 && newLineCount < oldLineCount * 0.5) {
+        throw new Error(
+          '[KESİLME ENGELİ] Mevcut büyük dosyayı kısaltarak veya yer tutucu yorumlarla ezemezsiniz. Cerrahi değişiklik için file_patch kullanın.'
+        );
+      }
+    }
+
+    // 3. Validate-Before-Write (in-memory AST & Grounding check BEFORE touching disk)
+    const syntax = await validateFileSyntax(target, args.content, workspace);
+    if (!syntax.valid) {
+      throw new Error(`Sözdizimi/Grounding Doğrulama Hatası: ${syntax.error}`);
     }
 
     await atomicWrite(target, args.content, workspace, input, signal);
 
-    // Validate syntax immediately after write
-    const syntax = await validateFileSyntax(target, args.content, workspace);
-    if (!syntax.valid) {
-      if (oldContent !== null) {
-        await fs.writeFile(target, oldContent, 'utf8');
-      } else {
-        await fs.unlink(target).catch(() => {});
-      }
-      return JSON.stringify({
-        ok: false,
-        output: 'Sözdizimi/Grounding Doğrulama Hatası (Değişiklik geri alındı): ' + syntax.error,
-      });
-    }
-
+    const relPath = path.relative(workspace, target).replace(/\\/g, '/');
+    globalContextCache.invalidateFile(workspace, relPath);
     globalGroundingLedger.markFileModified(target, workspace);
     return 'File written.';
   }
@@ -351,36 +541,64 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       throw e;
     }
 
-    // Grounding check before modifying file
+    // 1. Read-Before-Write Grounding Gate (throws on failure so executeTool records ok: false)
     const check = globalGroundingLedger.verifyCanModifyFile(target, exists, workspace);
     if (!check.allowed) {
-      return JSON.stringify({ ok: false, output: check.error! });
+      throw new Error(check.error!);
     }
 
     let nextContent = oldContent;
-    for (const p of patches) {
-      nextContent = applyPatchHunk(nextContent, p.old_text, p.new_text);
+    let added = 0;
+    let removed = 0;
+    let firstPatchLine = 1;
+
+    for (let i = 0; i < patches.length; i++) {
+      const p = patches[i];
+      if (LAZY_PLACEHOLDER_REGEX.test(p.new_text)) {
+        throw new Error(
+          '[KESİLME ENGELİ] Mevcut büyük dosyayı kısaltarak veya yer tutucu yorumlarla ezemezsiniz. Cerrahi değişiklik için file_patch kullanın.'
+        );
+      }
+      const applied = applyPatchHunk(nextContent, p.old_text, p.new_text);
+      nextContent = applied.content;
+      if (i === 0) {
+        firstPatchLine = applied.line;
+      }
+      added += p.new_text.split(/\r?\n/).length;
+      removed += p.old_text.split(/\r?\n/).length;
     }
     if (Buffer.byteLength(nextContent) > 1_000_000) throw new Error('Result exceeds 1 MB');
 
-    await atomicWrite(target, nextContent, workspace, input, signal, oldContent);
-
-    // Validate syntax immediately after patch
+    // 2. Validate-Before-Write (in-memory AST & Grounding check BEFORE touching disk)
     const syntax = await validateFileSyntax(target, nextContent, workspace);
     if (!syntax.valid) {
-      await fs.writeFile(target, oldContent, 'utf8');
-      return JSON.stringify({
-        ok: false,
-        output: 'Sözdizimi/Grounding Doğrulama Hatası (Değişiklik geri alındı): ' + syntax.error,
-      });
+      throw new Error(`Sözdizimi/Grounding Doğrulama Hatası: ${syntax.error}`);
     }
 
+    await atomicWrite(target, nextContent, workspace, input, signal, oldContent);
+
+    const rel = path.relative(workspace, target).replace(/\\/g, '/') || input;
+    globalContextCache.invalidateFile(workspace, rel);
     globalGroundingLedger.markFileModified(target, workspace);
-    return 'File patched.';
+    return `File patched: ${rel} (+${added}/-${removed} lines, around L${firstPatchLine})`;
   }
 
   if (name === 'file_search') {
     const query = string(args, 'query');
+    const useRegex = args.regex === true;
+    const filePattern = typeof args.file_pattern === 'string' && args.file_pattern.trim() ? args.file_pattern.trim() : undefined;
+    const contextLines = numberArg(args.context_lines, 0, 10);
+    const fileMatcher = filePattern ? globToMatcher(filePattern) : undefined;
+
+    let queryRegex: RegExp | undefined;
+    if (useRegex) {
+      try {
+        queryRegex = new RegExp(query);
+      } catch (e) {
+        throw new Error(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     const root = await fs.realpath(workspace);
     const found: string[] = [];
     const offset = numberArg(args.offset, 0, 100000);
@@ -402,34 +620,61 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
           capped = true;
           return;
         }
-        if (entry.isSymbolicLink() || ['.git', 'node_modules'].includes(entry.name)) continue;
+        if (entry.isSymbolicLink() || SKIP_DIRS.has(entry.name)) continue;
         const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) await walk(full);
-        else if (entry.isFile()) {
+        if (entry.isDirectory()) {
+          await walk(full);
+        } else if (entry.isFile()) {
+          const relFile = path.relative(root, full);
+          if (fileMatcher && !fileMatcher(relFile, entry.name)) continue;
+
           const stat = await fs.stat(full);
           if (stat.size > 1_000_000) continue;
           const content = await fs.readFile(full, 'utf8');
           if (content.includes('\0')) continue;
-          let fileMatched = false;
-          for (const [i, line] of content.split(/\r?\n/).entries()) {
-            if (line.includes(query)) {
-              fileMatched = true;
+          const lines = content.split(/\r?\n/);
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            let matchIdx = -1;
+            let matchLen = query.length;
+
+            if (queryRegex) {
+              const m = queryRegex.exec(line);
+              if (m) {
+                matchIdx = m.index;
+                matchLen = Math.max(1, m[0].length);
+              }
+            } else {
+              matchIdx = line.indexOf(query);
+            }
+
+            if (matchIdx >= 0) {
               if (matches++ >= offset) {
-                const start = Math.max(0, line.indexOf(query) - 100);
-                found.push(
-                  `${path.relative(root, full)}:${i + 1}: ${start ? '…' : ''}${line.slice(start, start + Math.max(300, query.length))}${
-                    line.length > start + Math.max(300, query.length) ? '…' : ''
-                  }`
-                );
+                const start = Math.max(0, matchIdx - 100);
+                const sliceLen = Math.max(300, matchLen);
+                const snippet = `${start ? '…' : ''}${line.slice(start, start + sliceLen)}${
+                  line.length > start + sliceLen ? '…' : ''
+                }`;
+
+                if (contextLines > 0) {
+                  const ctxStart = Math.max(0, i - contextLines);
+                  const ctxEnd = Math.min(lines.length - 1, i + contextLines);
+                  const block: string[] = [];
+                  for (let c = ctxStart; c <= ctxEnd; c++) {
+                    const prefix = c === i ? '>' : ' ';
+                    block.push(`${prefix} ${relFile}:${c + 1}: ${lines[c].slice(0, 300)}`);
+                  }
+                  found.push(block.join('\n'));
+                } else {
+                  found.push(`${relFile}:${i + 1}: ${snippet}`);
+                }
               }
               if (found.length > limit) {
                 stopped = true;
                 return;
               }
             }
-          }
-          if (fileMatched) {
-            globalGroundingLedger.markFileInspected(full, workspace);
           }
         }
       }
@@ -439,8 +684,11 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     if (stat.isDirectory()) await walk(target);
     else throw new Error('Search path must be a directory');
 
-    globalGroundingLedger.markFileInspected(target, workspace);
-    return JSON.stringify({ matches: found.slice(0, limit), next_offset: found.length > limit ? offset + limit : null, scan_limit_reached: capped });
+    return JSON.stringify({
+      matches: found.slice(0, limit),
+      next_offset: found.length > limit ? offset + limit : null,
+      scan_limit_reached: capped,
+    });
   }
 
   throw new Error(`Unknown file tool: ${name}`);

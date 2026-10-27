@@ -1,11 +1,21 @@
 import { createInterface } from 'node:readline';
 import type { AgentEvent, ApprovalRequest, Message, Provider } from './types.js';
-import { symbols, theme, toTurkishTitleCase, unicode } from './theme.js';
+import {
+  formatDuration,
+  renderProgressBar,
+  symbols,
+  theme,
+  toTurkishTitleCase,
+  truncateAnsi,
+  unicode,
+} from './theme.js';
 import { animateLogo, logo } from './logo.js';
 import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
 import { getMemoryStats } from './memory-guard.js';
 import { getTelegramBotStatus } from './bot.js';
+
+export { logo };
 
 export interface HudConfig {
   model?: string;
@@ -17,8 +27,8 @@ export interface HudConfig {
 }
 
 /**
- * Renders the single-line Cyber-Minimalist HUD status bar:
- * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]
+ * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export function renderHudBar(config: HudConfig): string {
   const model = config.model || 'Model';
@@ -27,7 +37,7 @@ export function renderHudBar(config: HudConfig): string {
   const report = globalTokenTracker.getReport();
   const savingsPct = report.savingsPercent || 0;
   const savedTokens = report.totalSavedTokens > 0 ? report.totalSavedTokens.toLocaleString() : '0';
-  const savingsStr = theme.brand(`Tasarruf: %${savingsPct} (${savedTokens} Tok)`);
+  const savingsStr = theme.brightMint(`Tasarruf: %${savingsPct} (${savedTokens} Tok)`);
 
   const gStatus = globalGroundingLedger.getStatus();
   const groundingStr = gStatus.warnings.length === 0
@@ -35,17 +45,19 @@ export function renderHudBar(config: HudConfig): string {
     : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
 
   const mem = getMemoryStats();
-  const ramStr = theme.cyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`);
+  const ramStr = theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`);
 
   const botStatus = getTelegramBotStatus();
   const botPart = botStatus.running
     ? theme.success(`Bot: ${botStatus.username ? `@${botStatus.username}` : 'Aktif'}`)
     : (config.mcpCount && config.mcpCount > 0
-        ? theme.dim(`MCP: ${config.mcpCount}`)
+        ? theme.softLavender(`MCP: ${config.mcpCount}`)
         : theme.dim('Bot: Pasif'));
 
   const sep = theme.dim(symbols.hudSep);
-  return `${theme.muted(unicode ? '╭─[' : '[[')} ${theme.cyan(`Model: ${model}`)}${sep}${theme.amber(`Efor: ${effort}`)}${sep}${savingsStr}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${theme.muted(unicode ? ']' : ']]')}`;
+  const left = theme.muted(unicode ? '╭─[' : '[[');
+  const right = theme.muted(unicode ? ']─╮' : ']]');
+  return `${left} ${theme.cyan(`Model: ${model}`)}${sep}${theme.amber(`Efor: ${effort}`)}${sep}${savingsStr}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${right}`;
 }
 
 export interface EventPrinterOptions {
@@ -58,16 +70,18 @@ export interface EventPrinter {
   emit: (event: AgentEvent) => void;
   finishStream: () => void;
   startThinking: (label?: string) => void;
+  stopThinking: () => void;
   stopSpinner: () => void;
 }
 
-const TOOL_TITLE_MAP: Record<string, string> = {
+export const TOOL_TITLE_MAP: Record<string, string> = {
   // T Bot Yerel Araçları (T Bot Native Tools)
   file_read: 'Dosya Okuma',
   file_write: 'Dosya Yazma',
   file_patch: 'Dosya Yamalama',
   file_list: 'Dosya Listeleme',
   file_search: 'Dosya Arama',
+  file_glob: 'Dosya Bulma',
   file_outline: 'Dosya Özeti',
   shell: 'Komut Satırı',
   process_list: 'İşlem Listesi',
@@ -83,33 +97,22 @@ const TOOL_TITLE_MAP: Record<string, string> = {
   browser_navigate: 'Tarayıcı Gezinme',
   browser_click: 'Tarayıcı Tıklama',
   browser_type: 'Tarayıcı Yazma',
+  browser_fill: 'Form Doldurma',
   browser_press: 'Tarayıcı Tuş Basımı',
   browser_scroll: 'Tarayıcı Kaydırma',
+  browser_inspect: 'Sayfa İnceleme',
+  browser_tabs: 'Sekme Yönetimi',
   browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
   computer: 'Bilgisayar Kontrolü',
   image_generate: 'Görsel Üretimi',
   memory_save: 'Bellek Kaydetme',
   memory_recall: 'Bellek Hatırlama',
+  memory_forget: 'Hafıza Silme',
+  skill_create: 'Yetenek Oluşturma',
+  skill_list: 'Yetenek Listesi',
+  delegate_task: 'Alt Ajan Görevlendirme',
   mcp_catalog: 'MCP Kataloğu',
   mcp_call: 'MCP Çağrısı',
-
-  // Destekleyici ve Geriye Dönük Eşlemeler
-  read_file: 'Dosya Okuma',
-  write_file: 'Dosya Yazma',
-  edit_file: 'Dosya Düzenleme',
-  run_command: 'Komut Çalıştırma',
-  search_web: 'Web Araması',
-  browse_web: 'Web Gezinme',
-  read_url_content: 'URL İçeriği Okuma',
-  manage_task: 'Görev Yönetimi',
-  list_dir: 'Dizin Listeleme',
-  directory_list: 'Dizin Listeleme',
-  notebook_edit: 'Notebook Düzenleme',
-  schedule: 'Zamanlama',
-  call_mcp_tool: 'MCP Araç Çağrısı',
-  read_resource: 'Kaynak Okuma',
-  list_resources: 'Kaynakları Listeleme',
-  send_message: 'Mesaj Gönderme',
 };
 
 export function formatToolTitle(toolName: string): string {
@@ -135,12 +138,12 @@ function extractToolTarget(args: unknown): string {
   }
 
   const priorityKeys = [
-    'path', 'filePath', 'file', 'filename', 'AbsolutePath', 'Path',
-    'command', 'cmd', 'CommandLine',
+    'path', 'filePath', 'file', 'filename', 'pattern',
+    'command', 'cmd',
     'query', 'q',
-    'url', 'Url',
-    'action', 'Action',
-    'key', 'prompt', 'Prompt'
+    'url', 'selector',
+    'action', 'role', 'task',
+    'key', 'name', 'prompt',
   ];
 
   for (const key of priorityKeys) {
@@ -161,21 +164,63 @@ function extractToolTarget(args: unknown): string {
   return '';
 }
 
-function extractResultSummary(result: unknown): { isError: boolean; summary: string } {
+function extractResultSummary(
+  result: unknown,
+  toolName?: string,
+): { isError: boolean; summary: string; astBadge?: string } {
   if (result === undefined || result === null) {
     return { isError: false, summary: '' };
   }
   const str = typeof result === 'string' ? result : JSON.stringify(result);
   const trimmed = str.trim();
 
-  const isError = trimmed.startsWith('Tool error:') ||
-                  trimmed.startsWith('Araç hatası:') ||
-                  trimmed.startsWith('Hata:');
+  const isError =
+    /^(tool error:|araç hatası:|hata:|error:)/i.test(trimmed) ||
+    /"ok"\s*:\s*false/i.test(trimmed);
 
   if (isError) {
     const firstLine = trimmed.split('\n')[0] || trimmed;
     const shortErr = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
     return { isError: true, summary: shortErr };
+  }
+
+  // file_patch veya file_write başarılı tamamlandığında (+X/-Y lines) veya satır bilgisi varsa yeşil rozetle vurgula
+  if (toolName === 'file_patch' || toolName === 'file_write') {
+    const diffMatch =
+      trimmed.match(/\(\+(\d+)\s*\/\s*-(\d+)\s*(?:lines?|satır)?\)/i) ||
+      trimmed.match(/\+(\d+)\s*\/\s*-(\d+)\s*(?:lines?|satır)?/i);
+    if (diffMatch) {
+      const plus = diffMatch[1]!;
+      const minus = diffMatch[2]!;
+      const astBadge = theme.success(`+${plus} / -${minus} satır · AST Doğrulandı ${symbols.check}`);
+      const cleanLine = (trimmed.split('\n')[0] || '').replace(/\s*\(\+\d+\s*\/\s*-\d+[^)]*\)/i, '').trim();
+      return {
+        isError: false,
+        summary: cleanLine.length > 50 ? `${cleanLine.slice(0, 47)}...` : cleanLine,
+        astBadge,
+      };
+    }
+
+    const lineCountMatch =
+      trimmed.match(/\((\d+)\s*(?:lines?|satır)\)/i) ||
+      trimmed.match(/(\d+)\s*(?:lines?|satır)\b/i);
+    if (lineCountMatch) {
+      const lineCount = lineCountMatch[1]!;
+      const astBadge = theme.success(`+${lineCount} / -0 satır · AST Doğrulandı ${symbols.check}`);
+      const cleanLine = (trimmed.split('\n')[0] || '').trim();
+      return {
+        isError: false,
+        summary: cleanLine.length > 50 ? `${cleanLine.slice(0, 47)}...` : cleanLine,
+        astBadge,
+      };
+    }
+
+    const firstLine = (trimmed.split('\n')[0] || '').trim();
+    return {
+      isError: false,
+      summary: firstLine.length > 50 ? `${firstLine.slice(0, 47)}...` : firstLine,
+      astBadge: theme.success(`AST Doğrulandı ${symbols.check}`),
+    };
   }
 
   const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
@@ -189,6 +234,46 @@ function extractResultSummary(result: unknown): { isError: boolean; summary: str
   return { isError: false, summary };
 }
 
+/**
+ * 4-aşamalı görsel Ultracode Hattı Stepper satırı üretir:
+ * ╭─ ◆ ULTRACODE  ✓ 1. Araştırma ──▶ ◉ 2. Denetim ──▶ ○ 3. Öz-Onarım ──▶ ○ 4. Özet
+ */
+function renderUltracodeStepper(activeStage: number): string {
+  const stages = ['1. Araştırma', '2. Denetim', '3. Öz-Onarım', '4. Özet'];
+  const renderedStages = stages.map((label, idx) => {
+    const stepNum = idx + 1;
+    if (stepNum < activeStage) {
+      return theme.success(`${symbols.check} ${label}`);
+    }
+    if (stepNum === activeStage) {
+      return theme.brightMint(`◉ ${label}`);
+    }
+    return theme.dim(`○ ${label}`);
+  });
+  const arrow = ` ${theme.dim('──▶')} `;
+  return `  ${theme.muted('╭─')} ${theme.brightMint('◆ ULTRACODE')}  ${renderedStages.join(arrow)}`;
+}
+
+/**
+ * Kod blokları dışında satır içi **kalın** -> theme.bold ve `kod` -> theme.cyan vurgulaması uygular.
+ */
+function formatInlineMarkdown(text: string): string {
+  const tokenRegex = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const parts = text.split(tokenRegex);
+  return parts
+    .map((part) => {
+      if (!part) return '';
+      if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+        return theme.cyan(part);
+      }
+      if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+        return theme.bold(part.slice(2, -2));
+      }
+      return theme.text(part);
+    })
+    .join('');
+}
+
 const BRAILLE_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const WAVE_BARS = ['━━━───', '─━━━──', '──━━━─', '───━━━', '────━━', '━────━'];
 
@@ -196,47 +281,65 @@ const WAVE_BARS = ['━━━───', '─━━━──', '──━━━�
 const safe = (text: string): string => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 
 /**
- * Creates an event printer with animated braille spinner, wave bar thinking animation,
- * streaming syntax/diff highlighting, and token/grounding/memory HUD reporting.
+ * Sıfır-Kırpışmalı (DEC ?2026h/?2026l), Sıfır-Taşmalı (truncateAnsi),
+ * Görsel Görev Ağacı ve Ultracode Stepper destekli Cyber-Zen EventPrinter.
  */
 export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
   const write = options.write ?? ((t: string) => { process.stdout.write(t); });
   let streaming = false;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
-  let spinnerStartTime = 0;
+  let thinkingStartedAt = 0;
   let spinnerFrame = 0;
   let waveFrame = 0;
   let currentSpinnerLabel = '';
   let lineBuffer = '';
   let inCodeBlock = false;
+  let cursorHidden = false;
 
   let toolStartTime = 0;
   let stepCount = 0;
 
-  const stopSpinner = (): void => {
+  const renderSpinnerLine = (): string => {
+    const elapsed = formatDuration(Date.now() - thinkingStartedAt);
+    const stepPrefix = stepCount > 0 ? `${theme.softLavender(`[Adım ${stepCount}]`)} ` : '';
+    const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${theme.crystalCyan(WAVE_BARS[waveFrame]!)} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)}`;
+    const maxCols = Math.max(40, (process.stdout.columns || 100) - 2);
+    return truncateAnsi(rawLine, maxCols);
+  };
+
+  const stopThinking = (): void => {
     if (spinnerTimer) {
       clearInterval(spinnerTimer);
       spinnerTimer = undefined;
-      if (options.interactive) {
-        process.stdout.write('\r\x1b[2K');
-      }
+    }
+    if (options.interactive && cursorHidden) {
+      cursorHidden = false;
+      process.stdout.write('\x1b[?2026h\r\x1b[2K\x1b[?2026l\x1b[?25h');
     }
   };
 
+  const stopSpinner = stopThinking;
+
   const startThinking = (label = 'Düşünülüyor…'): void => {
-    currentSpinnerLabel = label;
+    currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
     if (!options.interactive) return;
-    stopSpinner();
-    spinnerStartTime = Date.now();
+    if (spinnerTimer) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = undefined;
+    }
+    thinkingStartedAt = Date.now();
     spinnerFrame = 0;
     waveFrame = 0;
-    process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[0]!)} ${theme.cyan(WAVE_BARS[0]!)} ${theme.text(label)} ${theme.dim('0.0sn')}`);
+    cursorHidden = true;
+    const firstLine = renderSpinnerLine();
+    process.stdout.write(`\x1b[?25l\x1b[?2026h\r\x1b[2K${firstLine}\x1b[?2026l`);
+
     spinnerTimer = setInterval(() => {
       spinnerFrame = (spinnerFrame + 1) % BRAILLE_SPINNER.length;
       waveFrame = (waveFrame + 1) % WAVE_BARS.length;
-      const elapsed = `${((Date.now() - spinnerStartTime) / 1000).toFixed(1)}sn`;
-      process.stdout.write(`\r\x1b[2K  ${theme.accent(BRAILLE_SPINNER[spinnerFrame]!)} ${theme.cyan(WAVE_BARS[waveFrame]!)} ${theme.text(currentSpinnerLabel)} ${theme.dim(elapsed)}`);
-    }, 80);
+      const line = renderSpinnerLine();
+      process.stdout.write(`\x1b[?2026h\r\x1b[2K${line}\x1b[?2026l`);
+    }, 90);
   };
 
   const highlightLine = (line: string): string => {
@@ -258,47 +361,33 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
     if (/^>\s/.test(line)) return theme.dim(line);
     if (/^\s*[-*]\s/.test(line)) {
       const spaceIdx = line.indexOf(' ');
-      return `${theme.accent(line.slice(0, spaceIdx + 1))}${theme.text(line.slice(spaceIdx + 1))}`;
+      return `${theme.accent(line.slice(0, spaceIdx + 1))}${formatInlineMarkdown(line.slice(spaceIdx + 1))}`;
     }
-    return theme.text(line);
+    return formatInlineMarkdown(line);
   };
 
   const finishStream = (): void => {
-    stopSpinner();
+    stopThinking();
     if (streaming) {
       if (lineBuffer.length > 0) {
         write(highlightLine(lineBuffer));
         lineBuffer = '';
       }
       inCodeBlock = false;
-      write('\n');
+      write('\n\n');
       streaming = false;
 
-      // Alt bilgi satırı: ↳ Token Tasarrufu: %XX │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY)
-      const report = globalTokenTracker.getReport();
-      const gStatus = globalGroundingLedger.getStatus();
-      const mem = getMemoryStats();
-      const gBadge = gStatus.warnings.length === 0
-        ? theme.success('Doğrulama: Doğrulandı')
-        : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
-
-      const sep = theme.dim(' │ ');
-      const footer = `  ${theme.dim(symbols.arrow)} ${theme.brand(`Token Tasarrufu: %${report.savingsPercent}`)}${sep}${gBadge}${sep}${theme.cyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`)}\n`;
-      write(footer);
-
-      if (options.interactive) {
-        write(`  ${renderHudBar(options.getHudConfig())}\n`);
-      }
-      write('\n');
+      // Tekilleştirilmiş zarif Cyber-HUD çubuğu (mükerrer footer kaldırıldı)
+      write(`  ${renderHudBar(options.getHudConfig())}\n\n`);
     }
   };
 
   const emit = (event: AgentEvent): void => {
     switch (event.type) {
       case 'text':
-        stopSpinner();
+        stopThinking();
         if (!streaming) {
-          write(`\n${theme.accent(symbols.prompt)} ${theme.bold('T Bot')}\n\n`);
+          write(`\n${theme.brightMint(symbols.prompt)} ${theme.iceWhite('T Bot')}\n\n`);
           streaming = true;
         }
         lineBuffer += safe(event.text);
@@ -311,40 +400,79 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
         break;
 
       case 'tool_start': {
-        stopSpinner();
+        stopThinking();
         finishStream();
         stepCount++;
         toolStartTime = Date.now();
         const toolTitle = formatToolTitle(event.call.name);
         const targetInfo = extractToolTarget(event.call.arguments);
-        const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.cyan(targetInfo)}` : '';
-        write(`\n  ${theme.muted('╭─')} ${theme.accent('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
-        startThinking(`Adım ${stepCount} · ${toolTitle} Çalıştırılıyor`);
+        const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.crystalCyan(targetInfo)}` : '';
+        write(`\n  ${theme.muted('╭─')} ${theme.brightMint('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
+        startThinking(`${toolTitle} Çalıştırılıyor`);
         break;
       }
 
       case 'tool_end': {
-        stopSpinner();
-        const elapsed = `${((Date.now() - toolStartTime) / 1000).toFixed(2)}sn`;
+        stopThinking();
+        const elapsed = formatDuration(Date.now() - toolStartTime);
         const toolTitle = formatToolTitle(event.call.name);
-        const { isError, summary } = extractResultSummary(event.result);
+        const { isError, summary, astBadge } = extractResultSummary(event.result, event.call.name);
         if (isError) {
           write(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}\n`);
         } else {
+          const badgePart = astBadge ? ` ${theme.dim('·')} ${astBadge}` : '';
           const summaryStr = summary ? ` ${theme.dim('·')} ${theme.muted(summary)}` : '';
-          write(`  ${theme.muted('╰─')} ${theme.success(symbols.check)} ${theme.text(`${toolTitle} Tamamlandı`)} ${theme.dim(`(${elapsed})`)}${summaryStr}\n`);
+          write(`  ${theme.muted('╰─')} ${theme.success(symbols.check)} ${theme.text(`${toolTitle} Tamamlandı`)} ${theme.dim(`(${elapsed})`)}${badgePart}${summaryStr}\n`);
         }
         startThinking('Yanıt Hazırlanıyor…');
         break;
       }
 
       case 'status': {
-        stopSpinner();
+        stopThinking();
         finishStream();
         const msg = safe(event.message);
-        const isWorkflowStatus = /^\[.+\]|Ultracode|Aşama|Adım|Hedef|Plan|MCP/i.test(msg);
+
+        // 1. Ultracode [Aşama X/4] -> 4-Aşamalı Görsel Stepper
+        const ultraMatch = msg.match(/Ultracode\s*\[Aşama\s*(\d+)\s*\/\s*4\](?:\s*:?\s*(.*))?/i);
+        if (ultraMatch) {
+          const stageNum = Math.max(1, Math.min(4, parseInt(ultraMatch[1]!, 10)));
+          const detail = ultraMatch[2]?.trim();
+          write(`${renderUltracodeStepper(stageNum)}\n`);
+          if (detail) {
+            write(`  ${theme.muted('╰─')} ${theme.crystalCyan('▸')} ${theme.text(detail)}\n`);
+          }
+          startThinking(msg);
+          break;
+        }
+
+        // 2. Otonom Hedef [Adım X/Y] -> Görsel İlerleme Çubuğu
+        const goalMatch = msg.match(/Otonom Hedef\s*\[Adım\s*(\d+)\s*\/\s*(\d+)\](?:\s*:?\s*(.*))?/i);
+        if (goalMatch) {
+          const stepX = parseInt(goalMatch[1]!, 10);
+          const totalY = Math.max(1, parseInt(goalMatch[2]!, 10));
+          const pct = Math.max(0, Math.min(100, Math.round((stepX / totalY) * 100)));
+          const detail = goalMatch[3]?.trim();
+          const bar = renderProgressBar(pct, 18);
+          const detailSuffix = detail ? ` ${theme.dim('·')} ${theme.text(detail)}` : '';
+          write(`  ${theme.muted('╭─')} ${theme.brightMint('◆ Otonom Hedef')} ${theme.dim(`[Adım ${stepX}/${totalY}]`)} ${bar} ${theme.crystalCyan(`%${pct}`)}${detailSuffix}\n`);
+          startThinking(msg);
+          break;
+        }
+
+        // 3. Paralel Alt Ajanlar ([Rol] ...) -> Düzenli Ağaç Dalı
+        const roleMatch = msg.match(/^\[([^\]]+)\]\s*(.*)$/);
+        if (roleMatch) {
+          const role = roleMatch[1]!.trim();
+          const rest = roleMatch[2]!.trim();
+          write(`  ├─ ◈ ${theme.brightMint(`[${role}]`)} ${theme.text(rest)}\n`);
+          startThinking(msg);
+          break;
+        }
+
+        const isWorkflowStatus = /Ultracode|Aşama|Adım|Hedef|Plan|MCP|Alt Ajan/i.test(msg);
         if (isWorkflowStatus) {
-          write(`  ▪ ${theme.badge('AKIŞ')} ${theme.text(msg)}\n`);
+          write(`  ├─ ${theme.badge('◈ AKIŞ')} ${theme.text(msg)}\n`);
           startThinking(msg);
         } else {
           write(`${theme.muted(msg)}\n`);
@@ -353,7 +481,7 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
       }
 
       case 'error':
-        stopSpinner();
+        stopThinking();
         finishStream();
         write(`${theme.error(`Hata: ${safe(event.error)}`)}\n`);
         break;
@@ -364,13 +492,13 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
     }
   };
 
-  return { emit, finishStream, startThinking, stopSpinner };
+  return { emit, finishStream, startThinking, stopThinking, stopSpinner };
 }
 
 /** Print comprehensive help menu with modern cyber-minimalist categories. */
 export function printHelp(): void {
   const rule = symbols.rule.repeat(64);
-  const title = `${theme.brand('T Bot')} ${theme.muted('─ Siber-Minimalist Terminal Komutları')}`;
+  const title = `${theme.brightMint('T Bot')} ${theme.muted('─ Cyber-Zen Terminal Komutları')}`;
   const categories = [
     {
       name: 'Oturum ve Çekirdek',
@@ -416,9 +544,9 @@ export function printHelp(): void {
 
   let out = `\n${title}\n${theme.dim(rule)}\n`;
   for (const cat of categories) {
-    out += `\n  ${theme.accent(cat.name)}\n`;
+    out += `\n  ${theme.brightMint(cat.name)}\n`;
     for (const [cmd, desc] of cat.cmds) {
-      out += `    ${theme.cyan(cmd.padEnd(24))} ${theme.text(desc)}\n`;
+      out += `    ${theme.crystalCyan(cmd.padEnd(24))} ${theme.text(desc)}\n`;
     }
   }
   out += `\n${theme.dim('  Not: Çok satırlı girdiler için satır sonuna \\ koyarak devam edebilirsiniz.')}\n${theme.dim(rule)}\n\n`;
@@ -496,7 +624,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   };
 
   const approve = async (request: ApprovalRequest): Promise<boolean> => {
-    eventPrinter.stopSpinner();
+    eventPrinter.stopThinking();
     eventPrinter.finishStream();
     write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
     write(`${theme.muted(safe(JSON.stringify(request.arguments, null, 2)))}\n`);
@@ -509,7 +637,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   };
 
   const suspendUi = async <T>(action: () => Promise<T>): Promise<T> => {
-    eventPrinter.stopSpinner();
+    eventPrinter.stopThinking();
     if (!interactive) return action();
     rl.close();
     try {
@@ -522,8 +650,8 @@ export async function startTui(options: TuiOptions): Promise<void> {
   };
 
   if (interactive) {
-    const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
-    await animateLogo(width, () => exiting);
+    const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
+    await animateLogo(width, () => exiting, 55);
     write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
     write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
     if (options.modeStatus) write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
@@ -536,7 +664,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
     while (!exiting) {
       const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
       const promptStr = interactive
-        ? `${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}${status} ${theme.accent(symbols.prompt)} `
+        ? `${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}${status} ${theme.brightMint(symbols.prompt)} `
         : '';
       const first = await read(promptStr);
       if (first === undefined) break;
@@ -627,7 +755,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
       if (interactive) write('\n');
     }
   } finally {
-    eventPrinter.stopSpinner();
+    eventPrinter.stopThinking();
     rl.close();
   }
 }

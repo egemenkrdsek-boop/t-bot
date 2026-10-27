@@ -14,6 +14,8 @@ export interface SessionMetadata {
     title: string;
     messageCount: number;
 }
+/** Redact common credentials before persistence. This cannot recognize every possible secret. */
+export declare function redactSecrets(text: string): string;
 export declare function createSession(workspace: string): Session;
 /** Local sessions are stored under the configured data directory, never transmitted by this store. */
 export declare class SessionStore {

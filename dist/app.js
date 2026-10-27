@@ -208,18 +208,23 @@ export async function main(argv) {
     const hydrateMcp = async (signal, emit) => {
         if (mcpHydrated)
             return;
-        const saved = await loadConnections();
-        for (const service of ['supabase', 'vercel', 'github']) {
-            if (!saved[service].enabled || mcpTools.some(c => c.service === service))
+        const mcpConfig = await loadConnections();
+        const services = (mcpConfig.services && typeof mcpConfig.services === 'object' ? mcpConfig.services : mcpConfig);
+        for (const service of Object.keys(services)) {
+            if (service === 'version' || service === 'services')
                 continue;
+            const serviceCfg = services[service];
+            if (!serviceCfg || typeof serviceCfg !== 'object' || !serviceCfg.enabled || mcpTools.some(c => c.service === service))
+                continue;
+            const isStdio = (typeof serviceCfg.url === 'string' && serviceCfg.url.startsWith('stdio:')) || Boolean(serviceCfg.command);
             const token = await getMcpToken(service);
-            if (!token) {
+            if (!token && !isStdio) {
                 emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` });
                 continue;
             }
             emit?.({ type: 'status', message: `${service} MCP bağlantısı kuruluyor...` });
             try {
-                mcpTools.push(await connectMcp(service, token, { ...saved[service], signal }));
+                mcpTools.push(await connectMcp(service, token, { ...serviceCfg, workspace, signal }));
             }
             catch {
                 if (signal?.aborted)

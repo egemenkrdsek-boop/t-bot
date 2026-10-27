@@ -1,7 +1,18 @@
-import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, unlink, copyFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { withFileLock } from './lock.js';
+const VALID_CATEGORIES = new Set([
+    'architecture',
+    'convention',
+    'bugfix',
+    'preference',
+    'environment',
+]);
+const MAX_MEMORY_CONTEXT_CHARS = 2400;
+const MAX_CONSTITUTION_CHARS = 1800;
+const CONSTITUTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.tbot/rules.md'];
 function getProjectMemoryPath(workspace) {
     return join(resolve(workspace), '.tbot', 'memory.json');
 }
@@ -11,18 +22,46 @@ function getGlobalMemoryPath() {
         : join(homedir(), '.config'));
     return join(base, 'TBot', 'memory.json');
 }
-async function readMemoryFile(filePath) {
+function normalizeTags(tags) {
+    if (Array.isArray(tags)) {
+        const cleaned = tags
+            .filter((t) => typeof t === 'string')
+            .map(t => t.trim())
+            .filter(Boolean);
+        return cleaned.length > 0 ? Array.from(new Set(cleaned)) : undefined;
+    }
+    if (typeof tags === 'string' && tags.trim()) {
+        const cleaned = tags
+            .split(',')
+            .map(t => t.trim())
+            .filter(Boolean);
+        return cleaned.length > 0 ? Array.from(new Set(cleaned)) : undefined;
+    }
+    return undefined;
+}
+function normalizeCategory(category) {
+    if (typeof category === 'string') {
+        const clean = category.trim().toLowerCase();
+        if (VALID_CATEGORIES.has(clean))
+            return clean;
+    }
+    return undefined;
+}
+async function backupCorruptMemoryFile(filePath, rawContent) {
+    const bakPath = `${filePath}.bak`;
     try {
-        const raw = await readFile(filePath, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-            return parsed.filter(item => item &&
-                typeof item.key === 'string' &&
-                typeof item.value === 'string' &&
-                (item.scope === 'project' || item.scope === 'global') &&
-                typeof item.updatedAt === 'string');
+        await copyFile(filePath, bakPath);
+    }
+    catch {
+        if (rawContent !== undefined) {
+            await writeFile(bakPath, rawContent, 'utf8').catch(() => undefined);
         }
-        return [];
+    }
+}
+async function readMemoryFile(filePath) {
+    let raw;
+    try {
+        raw = await readFile(filePath, 'utf8');
     }
     catch (error) {
         if (error.code === 'ENOENT') {
@@ -30,25 +69,60 @@ async function readMemoryFile(filePath) {
         }
         return [];
     }
+    if (!raw.trim()) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            return parsed
+                .filter(item => item &&
+                typeof item.key === 'string' &&
+                typeof item.value === 'string' &&
+                (item.scope === 'project' || item.scope === 'global') &&
+                typeof item.updatedAt === 'string')
+                .map(item => {
+                const category = normalizeCategory(item.category);
+                const tags = normalizeTags(item.tags);
+                return {
+                    key: item.key,
+                    value: item.value,
+                    scope: item.scope,
+                    updatedAt: item.updatedAt,
+                    ...(category ? { category } : {}),
+                    ...(tags ? { tags } : {}),
+                };
+            });
+        }
+        await backupCorruptMemoryFile(filePath, raw);
+        return [];
+    }
+    catch {
+        await backupCorruptMemoryFile(filePath, raw);
+        return [];
+    }
 }
 async function writeMemoryFile(filePath, entries) {
     await mkdir(dirname(filePath), { recursive: true });
-    const tmpPath = `${filePath}.${randomUUID()}.tmp`;
-    const data = JSON.stringify(entries, null, 2);
-    try {
-        await writeFile(tmpPath, data, 'utf8');
-        await rename(tmpPath, filePath);
-    }
-    catch {
-        // Fallback for Windows if rename fails due to file locking/concurrency
-        await writeFile(filePath, data, 'utf8');
-        await unlink(tmpPath).catch(() => { });
-    }
+    const lockPath = `${filePath}.lock`;
+    await withFileLock(lockPath, async () => {
+        const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+        const data = JSON.stringify(entries, null, 2);
+        try {
+            await writeFile(tmpPath, data, 'utf8');
+            await rename(tmpPath, filePath);
+        }
+        catch {
+            // Fallback for Windows if rename fails due to file locking/concurrency
+            await writeFile(filePath, data, 'utf8');
+            await unlink(tmpPath).catch(() => { });
+        }
+    });
 }
 /**
- * Persists a key-value fact into project or global memory.
+ * Persists a key-value fact into project or global memory with optional category and tags.
  */
-export async function rememberFact(workspace, key, value, scope) {
+export async function rememberFact(workspace, key, value, scope, category, tags) {
     const cleanKey = key.trim();
     const cleanVal = value.trim();
     if (!cleanKey)
@@ -59,11 +133,16 @@ export async function rememberFact(workspace, key, value, scope) {
     const filePath = targetScope === 'global' ? getGlobalMemoryPath() : getProjectMemoryPath(workspace);
     const entries = await readMemoryFile(filePath);
     const existingIdx = entries.findIndex(e => e.key.toLowerCase() === cleanKey.toLowerCase());
+    const existing = existingIdx >= 0 ? entries[existingIdx] : undefined;
+    const resolvedCategory = normalizeCategory(category) ?? existing?.category;
+    const resolvedTags = normalizeTags(tags) ?? existing?.tags;
     const entry = {
         key: cleanKey,
         value: cleanVal,
         scope: targetScope,
         updatedAt: new Date().toISOString(),
+        ...(resolvedCategory ? { category: resolvedCategory } : {}),
+        ...(resolvedTags ? { tags: resolvedTags } : {}),
     };
     if (existingIdx >= 0) {
         entries[existingIdx] = entry;
@@ -74,8 +153,30 @@ export async function rememberFact(workspace, key, value, scope) {
     await writeMemoryFile(filePath, entries);
     return `Saved to ${targetScope} memory: ${cleanKey}`;
 }
+function tokenizeText(text) {
+    return text
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}_-]+/u)
+        .map(t => t.trim())
+        .filter(t => t.length >= 2);
+}
+function countTermOccurrences(haystackTokens, rawHaystack, queryToken) {
+    let count = 0;
+    for (const token of haystackTokens) {
+        if (token === queryToken) {
+            count += 1;
+        }
+        else if (token.includes(queryToken) || (queryToken.length >= 4 && queryToken.includes(token))) {
+            count += 0.6;
+        }
+    }
+    if (count === 0 && rawHaystack.includes(queryToken)) {
+        count = 0.5;
+    }
+    return count;
+}
 /**
- * Recalls facts from project and global memory, with optional query search.
+ * Recalls facts from project and global memory, with BM25/TF lexical overlap + recency scoring.
  * Project entries take precedence over global entries with identical keys.
  */
 export async function recallFacts(workspace, query) {
@@ -90,92 +191,257 @@ export async function recallFacts(workspace, query) {
     for (const entry of projectEntries) {
         map.set(entry.key.toLowerCase(), entry);
     }
-    let all = Array.from(map.values());
-    if (query && query.trim()) {
-        const q = query.trim().toLowerCase();
-        all = all.filter(e => e.key.toLowerCase().includes(q) ||
-            e.value.toLowerCase().includes(q));
+    const all = Array.from(map.values());
+    if (all.length === 0)
+        return [];
+    if (!query || !query.trim()) {
+        all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return all;
     }
-    all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    return all;
+    const rawQuery = query.trim().toLowerCase();
+    const queryTokens = tokenizeText(rawQuery);
+    if (queryTokens.length === 0) {
+        const filtered = all.filter(e => e.key.toLowerCase().includes(rawQuery) ||
+            e.value.toLowerCase().includes(rawQuery) ||
+            (e.category && e.category.toLowerCase().includes(rawQuery)) ||
+            (e.tags && e.tags.some(t => t.toLowerCase().includes(rawQuery))));
+        filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        return filtered;
+    }
+    // Prepare document representations for BM25 scoring
+    const docs = all.map(entry => {
+        const keyLower = entry.key.toLowerCase();
+        const valLower = entry.value.toLowerCase();
+        const catLower = (entry.category ?? '').toLowerCase();
+        const tagsLower = (entry.tags ?? []).map(t => t.toLowerCase()).join(' ');
+        const keyTokens = tokenizeText(keyLower);
+        const valTokens = tokenizeText(valLower);
+        const catTokens = tokenizeText(catLower);
+        const tagTokens = tokenizeText(tagsLower);
+        const docLen = Math.max(1, keyTokens.length * 2 + valTokens.length + catTokens.length + tagTokens.length * 2);
+        return {
+            entry,
+            keyLower,
+            valLower,
+            catLower,
+            tagsLower,
+            keyTokens,
+            valTokens,
+            catTokens,
+            tagTokens,
+            docLen,
+        };
+    });
+    const N = docs.length;
+    const avgDocLen = docs.reduce((sum, d) => sum + d.docLen, 0) / Math.max(1, N);
+    const k1 = 1.2;
+    const b = 0.75;
+    // Compute IDF per query token
+    const idfMap = new Map();
+    for (const qt of queryTokens) {
+        let df = 0;
+        for (const d of docs) {
+            if (d.keyLower.includes(qt) ||
+                d.valLower.includes(qt) ||
+                d.catLower.includes(qt) ||
+                d.tagsLower.includes(qt)) {
+                df++;
+            }
+        }
+        const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5));
+        idfMap.set(qt, Math.max(0.1, idf));
+    }
+    const now = Date.now();
+    const scored = [];
+    for (const d of docs) {
+        let lexicalScore = 0;
+        // Exact phrase match bonus
+        if (d.keyLower.includes(rawQuery))
+            lexicalScore += 5.0;
+        if (d.tagsLower && d.tagsLower.includes(rawQuery))
+            lexicalScore += 3.5;
+        if (d.catLower && d.catLower.includes(rawQuery))
+            lexicalScore += 3.0;
+        if (d.valLower.includes(rawQuery))
+            lexicalScore += 2.5;
+        for (const qt of queryTokens) {
+            const idf = idfMap.get(qt) ?? 0.5;
+            const tfKey = countTermOccurrences(d.keyTokens, d.keyLower, qt) * 3.0;
+            const tfTags = countTermOccurrences(d.tagTokens, d.tagsLower, qt) * 2.5;
+            const tfCat = countTermOccurrences(d.catTokens, d.catLower, qt) * 2.0;
+            const tfVal = countTermOccurrences(d.valTokens, d.valLower, qt) * 1.0;
+            const weightedTf = tfKey + tfTags + tfCat + tfVal;
+            if (weightedTf > 0) {
+                const normTf = (weightedTf * (k1 + 1)) /
+                    (weightedTf + k1 * (1 - b + b * (d.docLen / Math.max(1, avgDocLen))));
+                lexicalScore += idf * normTf;
+            }
+        }
+        if (lexicalScore <= 0)
+            continue;
+        // Recency bonus based on updatedAt
+        const parsedTime = Date.parse(d.entry.updatedAt);
+        const ageDays = Number.isFinite(parsedTime)
+            ? Math.max(0, (now - parsedTime) / 86_400_000)
+            : 365;
+        const recencyBonus = 0.35 / (1 + ageDays / 14);
+        const scopeBonus = d.entry.scope === 'project' ? 0.15 : 0;
+        scored.push({
+            entry: d.entry,
+            score: lexicalScore + recencyBonus + scopeBonus,
+        });
+    }
+    scored.sort((a, b) => {
+        if (Math.abs(b.score - a.score) > 1e-6) {
+            return b.score - a.score;
+        }
+        return b.entry.updatedAt.localeCompare(a.entry.updatedAt);
+    });
+    return scored.map(s => s.entry);
 }
 /**
- * Removes a fact by key from project and global memory.
+ * Removes a fact by key from project and/or global memory.
  */
-export async function forgetFact(workspace, key) {
+export async function forgetFact(workspace, key, scope) {
     const cleanKey = key.trim().toLowerCase();
     if (!cleanKey)
         return false;
     const projectPath = getProjectMemoryPath(workspace);
     const globalPath = getGlobalMemoryPath();
-    const [projectEntries, globalEntries] = await Promise.all([
-        readMemoryFile(projectPath),
-        readMemoryFile(globalPath),
-    ]);
     let removed = false;
-    const newProject = projectEntries.filter(e => {
-        if (e.key.toLowerCase() === cleanKey) {
-            removed = true;
-            return false;
+    if (!scope || scope === 'project') {
+        const projectEntries = await readMemoryFile(projectPath);
+        const newProject = projectEntries.filter(e => {
+            if (e.key.toLowerCase() === cleanKey) {
+                removed = true;
+                return false;
+            }
+            return true;
+        });
+        if (newProject.length !== projectEntries.length) {
+            await writeMemoryFile(projectPath, newProject);
         }
-        return true;
-    });
-    const newGlobal = globalEntries.filter(e => {
-        if (e.key.toLowerCase() === cleanKey) {
-            removed = true;
-            return false;
-        }
-        return true;
-    });
-    if (newProject.length !== projectEntries.length) {
-        await writeMemoryFile(projectPath, newProject);
     }
-    if (newGlobal.length !== globalEntries.length) {
-        await writeMemoryFile(globalPath, newGlobal);
+    if (!scope || scope === 'global') {
+        const globalEntries = await readMemoryFile(globalPath);
+        const newGlobal = globalEntries.filter(e => {
+            if (e.key.toLowerCase() === cleanKey) {
+                removed = true;
+                return false;
+            }
+            return true;
+        });
+        if (newGlobal.length !== globalEntries.length) {
+            await writeMemoryFile(globalPath, newGlobal);
+        }
     }
     return removed;
 }
+async function loadProjectConstitution(workspace) {
+    const root = resolve(workspace);
+    for (const relPath of CONSTITUTION_FILES) {
+        try {
+            const fullPath = join(root, relPath);
+            const raw = await readFile(fullPath, 'utf8');
+            const trimmed = raw.trim();
+            if (trimmed) {
+                const snippet = trimmed.length > MAX_CONSTITUTION_CHARS
+                    ? `${trimmed.slice(0, MAX_CONSTITUTION_CHARS - 3)}...`
+                    : trimmed;
+                return `[Proje Anayasası / Kuralları]\n${snippet}`;
+            }
+        }
+        catch {
+            // Continue checking next constitution candidate
+        }
+    }
+    return '';
+}
+function formatFactLine(f) {
+    const catPrefix = f.category ? `[${f.category}] ` : '';
+    const tagSuffix = f.tags?.length ? ` [tags: ${f.tags.join(', ')}]` : '';
+    return `- ${catPrefix}${f.key}: ${f.value}${tagSuffix}`;
+}
 /**
- * Builds a concise memory context (max 600 chars) for prompt injection.
- * Returns empty string "" if no facts exist.
+ * Builds a rich memory context (max 2400 chars) for prompt injection,
+ * including automatic discovery of AGENTS.md, CLAUDE.md, or .tbot/rules.md.
+ * Returns empty string "" if neither rules nor facts exist.
  */
 export async function buildMemoryContext(workspace, userQuery) {
-    let facts = await recallFacts(workspace, userQuery);
+    const [constitutionBlock, initialFacts] = await Promise.all([
+        loadProjectConstitution(workspace),
+        recallFacts(workspace, userQuery),
+    ]);
+    let facts = initialFacts;
     if (!facts.length && userQuery) {
         facts = await recallFacts(workspace);
     }
-    if (!facts.length)
+    if (!constitutionBlock && !facts.length)
         return '';
-    const header = '[Memory Context]';
-    const lines = [header];
-    let currentLength = header.length;
-    for (const f of facts) {
-        const line = `- ${f.key}: ${f.value}`;
-        if (currentLength + 1 + line.length > 600) {
-            const remaining = 600 - (currentLength + 1);
-            if (remaining > 15) {
-                lines.push(`${line.slice(0, remaining - 3)}...`);
-            }
-            break;
-        }
-        lines.push(line);
-        currentLength += 1 + line.length;
+    const sections = [];
+    let remainingBudget = MAX_MEMORY_CONTEXT_CHARS;
+    if (constitutionBlock) {
+        // Reserve at least 550 chars for memory facts if facts exist
+        const maxConstitutionSection = facts.length > 0
+            ? Math.min(constitutionBlock.length, MAX_MEMORY_CONTEXT_CHARS - 550)
+            : Math.min(constitutionBlock.length, MAX_MEMORY_CONTEXT_CHARS);
+        const trimmedConstitution = constitutionBlock.length > maxConstitutionSection
+            ? `${constitutionBlock.slice(0, maxConstitutionSection - 3)}...`
+            : constitutionBlock;
+        sections.push(trimmedConstitution);
+        remainingBudget -= trimmedConstitution.length + (facts.length > 0 ? 2 : 0);
     }
-    if (lines.length <= 1)
+    if (facts.length > 0 && remainingBudget > 30) {
+        const header = '[Memory Context]';
+        const lines = [header];
+        let currentLength = header.length;
+        for (const f of facts) {
+            const line = formatFactLine(f);
+            if (currentLength + 1 + line.length > remainingBudget) {
+                const rem = remainingBudget - (currentLength + 1);
+                if (rem > 15) {
+                    lines.push(`${line.slice(0, rem - 3)}...`);
+                }
+                break;
+            }
+            lines.push(line);
+            currentLength += 1 + line.length;
+        }
+        if (lines.length > 1) {
+            sections.push(lines.join('\n'));
+        }
+    }
+    if (sections.length === 0)
         return '';
-    const result = lines.join('\n');
-    return result.length > 600 ? result.slice(0, 600) : result;
+    const combined = sections.join('\n\n');
+    return combined.length > MAX_MEMORY_CONTEXT_CHARS
+        ? combined.slice(0, MAX_MEMORY_CONTEXT_CHARS)
+        : combined;
 }
 export const memoryToolDefinitions = [
     {
         name: 'memory_save',
-        description: 'Save a persistent key-value fact or user preference to memory (project or global scope).',
+        description: 'Save a persistent key-value fact, architecture note, bugfix, or user preference to memory (project or global scope).',
         parameters: {
             type: 'object',
             properties: {
                 key: { type: 'string', description: 'Identifier or topic for the fact' },
                 value: { type: 'string', description: 'Fact or instruction to remember' },
-                scope: { type: 'string', enum: ['project', 'global'], description: 'Storage scope: "project" (current workspace) or "global" (all projects). Defaults to "project".' },
+                scope: {
+                    type: 'string',
+                    enum: ['project', 'global'],
+                    description: 'Storage scope: "project" (current workspace) or "global" (all projects). Defaults to "project".',
+                },
+                category: {
+                    type: 'string',
+                    enum: ['architecture', 'convention', 'bugfix', 'preference', 'environment'],
+                    description: 'Optional category of the memory fact.',
+                },
+                tags: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Optional keywords or tags for BM25 retrieval.',
+                },
             },
             required: ['key', 'value'],
             additionalProperties: false,
@@ -192,19 +458,55 @@ export const memoryToolDefinitions = [
             additionalProperties: false,
         },
     },
+    {
+        name: 'memory_forget',
+        description: 'Delete a saved fact from persistent memory by key.',
+        parameters: {
+            type: 'object',
+            properties: {
+                key: { type: 'string', description: 'Exact key of the memory fact to remove' },
+                scope: {
+                    type: 'string',
+                    enum: ['project', 'global'],
+                    description: 'Optional scope to delete from ("project" or "global"). If omitted, deletes from both.',
+                },
+            },
+            required: ['key'],
+            additionalProperties: false,
+        },
+    },
 ];
-export async function handleMemoryTool(name, args, ctx) {
+export async function handleMemoryTool(nameOrCall, argsOrCtx, maybeCtx) {
+    let name;
+    let args;
+    let ctx;
+    if (typeof nameOrCall === 'string') {
+        name = nameOrCall;
+        args = argsOrCtx || {};
+        ctx = typeof maybeCtx === 'string'
+            ? { workspace: maybeCtx }
+            : maybeCtx || { workspace: process.cwd() };
+    }
+    else {
+        name = nameOrCall.name;
+        args = nameOrCall.arguments || (nameOrCall.args ?? {});
+        ctx = typeof argsOrCtx === 'string'
+            ? { workspace: argsOrCtx }
+            : argsOrCtx || { workspace: process.cwd() };
+    }
     if (ctx.signal?.aborted)
         throw new Error('Operation cancelled');
     if (name === 'memory_save') {
         const key = typeof args.key === 'string' ? args.key.trim() : '';
         const value = typeof args.value === 'string' ? args.value.trim() : '';
         const scope = args.scope === 'global' ? 'global' : 'project';
+        const category = normalizeCategory(args.category);
+        const tags = normalizeTags(args.tags);
         if (!key)
             throw new Error('Parameter "key" is required.');
         if (!value)
             throw new Error('Parameter "value" is required.');
-        return await rememberFact(ctx.workspace, key, value, scope);
+        return await rememberFact(ctx.workspace, key, value, scope, category, tags);
     }
     if (name === 'memory_recall') {
         const query = typeof args.query === 'string' ? args.query.trim() : undefined;
@@ -212,7 +514,27 @@ export async function handleMemoryTool(name, args, ctx) {
         if (!facts.length) {
             return query ? `No memories found matching "${query}".` : 'No saved memories found.';
         }
-        return facts.map(f => `[${f.scope}] ${f.key}: ${f.value}`).join('\n');
+        return facts
+            .map(f => {
+            const cat = f.category ? `[${f.category}] ` : '';
+            const tags = f.tags?.length ? ` (tags: ${f.tags.join(', ')})` : '';
+            return `[${f.scope}] ${cat}${f.key}: ${f.value}${tags}`;
+        })
+            .join('\n');
+    }
+    if (name === 'memory_forget') {
+        const key = typeof args.key === 'string' ? args.key.trim() : '';
+        if (!key)
+            throw new Error('Parameter "key" is required.');
+        const scope = args.scope === 'global'
+            ? 'global'
+            : args.scope === 'project'
+                ? 'project'
+                : undefined;
+        const removed = await forgetFact(ctx.workspace, key, scope);
+        return removed
+            ? `Removed from memory: ${key}`
+            : `Memory key not found: ${key}`;
     }
     throw new Error(`Unknown memory tool: ${name}`);
 }

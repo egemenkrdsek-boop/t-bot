@@ -34,11 +34,9 @@ function objectArgs(raw: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
   return value as Record<string, unknown>;
 }
-async function* sse(response: Response): AsyncGenerator<Obj> {
-  if (!response.body) throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
-  const reader = response.body.getReader(); const decoder = new TextDecoder();
+export async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader(); const decoder = new TextDecoder();
   let buffer = ''; let data: string[] = []; let frameSize = 0;
-  const parse = (payload: string): Obj => payload === '[DONE]' ? { __done: true } : JSON.parse(payload) as Obj;
   try {
     while (true) {
       const { done, value } = await reader.read(); buffer += decoder.decode(value, { stream: !done });
@@ -49,7 +47,7 @@ async function* sse(response: Response): AsyncGenerator<Obj> {
         const line = buffer.slice(0, match.index); buffer = buffer.slice(match.index + match[0].length);
         frameSize += line.length + match[0].length;
         if (frameSize > 4_000_000) throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
-        if (!line) { if (data.length) yield parse(data.join('\n')); data = []; frameSize = 0; }
+        if (!line) { if (data.length) yield data.join('\n'); data = []; frameSize = 0; }
         else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
       }
       if (frameSize + buffer.length > 4_000_000) throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
@@ -61,12 +59,19 @@ async function* sse(response: Response): AsyncGenerator<Obj> {
 function imageParts(m: Message): Obj[] {
   return (m.images ?? []).map(image => ({ type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.data}` } }));
 }
-function openaiMessages(messages: Message[]): Obj[] {
+function openaiMessages(messages: Message[], enableSystemCacheControl = false): Obj[] {
   const result: Obj[] = []; let pendingImages: Obj[] = [];
   const flush = () => { if (pendingImages.length) { result.push({ role: 'user', content: [{ type: 'text', text: 'Images returned by the preceding tools:' }, ...pendingImages] }); pendingImages = []; } };
   for (const m of messages) {
     if (m.role !== 'tool') flush();
     if (m.role === 'tool') pendingImages.push(...imageParts(m));
+    if (m.role === 'system' && enableSystemCacheControl && m.content) {
+      result.push({
+        role: 'system',
+        content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }],
+      });
+      continue;
+    }
     const parts = m.role === 'user' ? imageParts(m) : [];
     result.push({ role: m.role, content: parts.length ? [{ type: 'text', text: m.content }, ...parts] : m.content || (m.toolCalls?.length ? null : ''), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}), ...(m.toolCalls?.length ? { tool_calls: m.toolCalls.map(c => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments) } })) } : {}) });
   }
@@ -109,9 +114,6 @@ export function createProvider(config: ProviderConfig): Provider {
           const isCacheTarget = idx === lastUserIndex;
           if (m.role === 'tool') {
             const toolResultBlocks: Obj[] = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
-            if (isCacheTarget && toolResultBlocks.length) {
-              toolResultBlocks[toolResultBlocks.length - 1].cache_control = { type: 'ephemeral' };
-            }
             return {
               role: 'user',
               content: [{
@@ -154,7 +156,8 @@ export function createProvider(config: ProviderConfig): Provider {
         body = { contents: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: m.role === 'tool' ? [{ functionResponse: { name: names.get(m.toolCallId ?? '') ?? '', response: { result: m.content } } }, ...geminiImages(m)] : [...(m.content ? [{ text: m.content }] : []), ...geminiImages(m), ...(m.toolCalls ?? []).map(c => ({ functionCall: { name: c.name, args: c.arguments }, ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}) }))] })), ...(messages.some(m => m.role === 'system') ? { systemInstruction: { parts: [{ text: messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') }] } } : {}), ...(tools.length ? { tools: [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }] } : {}) };
       } else {
         url = endpoint(base, 'chat/completions'); if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
-        body = { model: config.model, messages: openaiMessages(messages), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+        const enableOpenRouterCache = spec.id === 'openrouter' && /^(?:anthropic|google)\//i.test(config.model.trim());
+        body = { model: config.model, messages: openaiMessages(messages, enableOpenRouterCache), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
       }
       const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
       if (effort.effective) {
@@ -169,8 +172,10 @@ export function createProvider(config: ProviderConfig): Provider {
         return;
       }
       if (!response.ok) throw new Error(`Sağlayıcı isteği başarısız oldu (HTTP ${response.status}).`);
+      if (!response.body) throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
       const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined; let finished = false; let toolFinish = false;
-      for await (const chunk of sse(response)) {
+      for await (const payload of sse(response.body)) {
+        const chunk: Obj = payload === '[DONE]' ? { __done: true } : JSON.parse(payload) as Obj;
         if (chunk.error || chunk.type === 'error') throw new Error('Sağlayıcı bir akış hatası bildirdi.');
         if (spec.id === 'anthropic') {
           if (chunk.type === 'content_block_start' && chunk.content_block?.type === 'tool_use') pending.set(chunk.index, { id: chunk.content_block.id, name: chunk.content_block.name, args: '' });
@@ -209,6 +214,8 @@ export function createProvider(config: ProviderConfig): Provider {
           inputTokens = chunk.usage?.prompt_tokens ?? inputTokens; outputTokens = chunk.usage?.completion_tokens ?? outputTokens;
           if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === 'number') {
             cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+          } else if (typeof chunk.usage?.cache_read_input_tokens === 'number') {
+            cachedTokens = chunk.usage.cache_read_input_tokens;
           }
         }
       }

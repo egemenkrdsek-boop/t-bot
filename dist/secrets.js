@@ -186,23 +186,6 @@ export async function deleteApiKey(id) {
             throw error;
     }
 }
-export async function getSecret(id) {
-    if (secretCache.has(id))
-        return secretCache.get(id);
-    const key = await getApiKey(id);
-    if (key)
-        secretCache.set(id, key);
-    return key;
-}
-export async function setSecret(id, key) {
-    const result = await setApiKey(id, key);
-    secretCache.set(id, prepareApiKey(key));
-    return result;
-}
-export async function deleteSecret(id) {
-    secretCache.delete(id);
-    await deleteApiKey(id);
-}
 function toCustomId(name) {
     const clean = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
     if (!clean)
@@ -246,5 +229,24 @@ export async function deleteCustomSecret(name) {
     if (rawId && rawId !== id) {
         await deleteApiKey(rawId).catch(() => undefined);
     }
+}
+function toMcpSecretId(service) {
+    const clean = service.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!clean)
+        throw new Error('Invalid MCP service name');
+    return clean.startsWith('mcp-') ? clean : `mcp-${clean}`;
+}
+export async function getMcpSecret(service) {
+    return readSavedKey(toMcpSecretId(service));
+}
+export async function setMcpSecret(service, token) {
+    return setApiKey(toMcpSecretId(service), token);
+}
+export async function deleteMcpSecret(service) {
+    await deleteApiKey(toMcpSecretId(service));
+}
+export async function hasMcpSecret(service) {
+    const val = await getMcpSecret(service);
+    return Boolean(val);
 }
 //# sourceMappingURL=secrets.js.map

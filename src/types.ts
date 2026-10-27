@@ -1,3 +1,4 @@
+import type { EffortLevel } from './effort.js';
 import type { McpConnection } from './mcp.js';
 import type { ImageProviderConfig } from './tools/image.js';
 
@@ -63,20 +64,24 @@ export interface Config {
   provider: string;
   model: string;
   baseUrl?: string;
-  workspacePermissions?: Record<string, 'ask' | 'allow'>;
-  efforts?: Record<string, string>;
+  workspacePermissions: Record<string, 'ask' | 'allow'>;
+  efforts?: Record<string, EffortLevel>;
   telegramBotToken?: boolean;
   telegramAllowedChatIds?: string[];
-  [key: string]: unknown;
 }
 
 export interface TokenSavingsReport {
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens: number;
-  savedTokens: number;
-  rawEstimatedTokens: number;
+  totalRawTokens: number;
+  totalSentInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedTokens: number;
+  totalPrunedSchemaTokens: number;
+  totalCompressedHistoryTokens: number;
+  totalSavedTokens: number;
   savingsPercent: number;
+  turnsCount: number;
+  turnSavedTokens?: number;
+  turnCachedTokens?: number;
 }
 
 export interface GroundingStatus {

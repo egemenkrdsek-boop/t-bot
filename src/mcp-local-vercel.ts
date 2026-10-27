@@ -10,14 +10,19 @@ interface PackedFile {
   encoding: 'base64';
 }
 
+const SKIP_FILES = new Set(['.npmrc', 'id_rsa', 'id_ed25519', '.netrc', '.pypirc']);
+
 export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<PackedFile[]> {
   const packed: PackedFile[] = [];
   const MAX_FILES = 80;
   const MAX_FILE_SIZE = 250 * 1024; // 250 KB
 
   const isIgnored = (name: string): boolean => {
+    const lower = name.toLowerCase();
     if (name === 'node_modules' || name === '.git' || name === 'dist' || name === '.tbot') return true;
-    if (name.startsWith('.env')) return true;
+    if (lower.startsWith('.env')) return true;
+    if (SKIP_FILES.has(lower) || SKIP_FILES.has(name)) return true;
+    if (lower.endsWith('.pem') || lower.endsWith('.key')) return true;
     return false;
   };
 
@@ -34,17 +39,18 @@ export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<P
 
     for (const entry of entries) {
       if (packed.length >= MAX_FILES) break;
-      if (isIgnored(entry.name)) continue;
+      if (entry.isSymbolicLink() || isIgnored(entry.name)) continue;
 
       const fullPath = path.join(currentDir, entry.name);
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       const posixRel = relPath.split(path.sep).join('/');
 
       try {
-        if (entry.isDirectory()) {
+        const stats = await fs.lstat(fullPath);
+        if (stats.isSymbolicLink()) continue;
+        if (stats.isDirectory()) {
           await walk(fullPath, posixRel);
-        } else if (entry.isFile()) {
-          const stats = await fs.stat(fullPath);
+        } else if (stats.isFile()) {
           if (stats.size <= MAX_FILE_SIZE) {
             const content = await fs.readFile(fullPath);
             packed.push({
@@ -65,7 +71,7 @@ export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<P
 }
 
 /** Local TBot MCP server backed by selected Vercel REST endpoints, not Vercel's hosted MCP. */
-export async function createVercelAdapter(token: string, options: { team?: string; project?: string; readOnly?: boolean; signal?: AbortSignal }) {
+export async function createVercelAdapter(token: string, options: { team?: string; project?: string; readOnly?: boolean; workspace?: string; signal?: AbortSignal }) {
   const valid = (value: string | undefined) => !value || /^[A-Za-z0-9_.-]{1,128}$/.test(value);
   if (!valid(options.team) || !valid(options.project)) throw new Error('Invalid Vercel team or project scope.');
   async function request(path: string, signal?: AbortSignal, body?: Record<string, unknown>): Promise<string> {
@@ -153,7 +159,7 @@ export async function createVercelAdapter(token: string, options: { team?: strin
         );
 
         if (autoPack) {
-          const workspaceFiles = await packWorkspaceFiles(process.cwd());
+          const workspaceFiles = await packWorkspaceFiles(options.workspace || process.cwd());
           let combinedFiles = workspaceFiles;
           if (hasFiles) {
             let total = 0;

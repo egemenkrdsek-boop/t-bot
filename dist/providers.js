@@ -36,15 +36,12 @@ function objectArgs(raw) {
         throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
     return value;
 }
-async function* sse(response) {
-    if (!response.body)
-        throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
-    const reader = response.body.getReader();
+export async function* sse(body) {
+    const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let data = [];
     let frameSize = 0;
-    const parse = (payload) => payload === '[DONE]' ? { __done: true } : JSON.parse(payload);
     try {
         while (true) {
             const { done, value } = await reader.read();
@@ -61,7 +58,7 @@ async function* sse(response) {
                     throw new Error('Sağlayıcı akış çerçevesi çok büyük.');
                 if (!line) {
                     if (data.length)
-                        yield parse(data.join('\n'));
+                        yield data.join('\n');
                     data = [];
                     frameSize = 0;
                 }
@@ -83,7 +80,7 @@ async function* sse(response) {
 function imageParts(m) {
     return (m.images ?? []).map(image => ({ type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.data}` } }));
 }
-function openaiMessages(messages) {
+function openaiMessages(messages, enableSystemCacheControl = false) {
     const result = [];
     let pendingImages = [];
     const flush = () => { if (pendingImages.length) {
@@ -95,6 +92,13 @@ function openaiMessages(messages) {
             flush();
         if (m.role === 'tool')
             pendingImages.push(...imageParts(m));
+        if (m.role === 'system' && enableSystemCacheControl && m.content) {
+            result.push({
+                role: 'system',
+                content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }],
+            });
+            continue;
+        }
         const parts = m.role === 'user' ? imageParts(m) : [];
         result.push({ role: m.role, content: parts.length ? [{ type: 'text', text: m.content }, ...parts] : m.content || (m.toolCalls?.length ? null : ''), ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}), ...(m.toolCalls?.length ? { tool_calls: m.toolCalls.map(c => ({ id: c.id, type: 'function', function: { name: c.name, arguments: JSON.stringify(c.arguments) } })) } : {}) });
     }
@@ -142,9 +146,6 @@ export function createProvider(config) {
                         const isCacheTarget = idx === lastUserIndex;
                         if (m.role === 'tool') {
                             const toolResultBlocks = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
-                            if (isCacheTarget && toolResultBlocks.length) {
-                                toolResultBlocks[toolResultBlocks.length - 1].cache_control = { type: 'ephemeral' };
-                            }
                             return {
                                 role: 'user',
                                 content: [{
@@ -191,7 +192,8 @@ export function createProvider(config) {
                     url = endpoint(base, 'chat/completions');
                     if (config.apiKey)
                         headers.authorization = `Bearer ${config.apiKey}`;
-                    body = { model: config.model, messages: openaiMessages(messages), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+                    const enableOpenRouterCache = spec.id === 'openrouter' && /^(?:anthropic|google)\//i.test(config.model.trim());
+                    body = { model: config.model, messages: openaiMessages(messages, enableOpenRouterCache), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
                 }
                 const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
                 if (effort.effective) {
@@ -211,6 +213,8 @@ export function createProvider(config) {
                 }
                 if (!response.ok)
                     throw new Error(`Sağlayıcı isteği başarısız oldu (HTTP ${response.status}).`);
+                if (!response.body)
+                    throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
                 const pending = new Map();
                 const complete = [];
                 let inputTokens;
@@ -218,7 +222,8 @@ export function createProvider(config) {
                 let cachedTokens;
                 let finished = false;
                 let toolFinish = false;
-                for await (const chunk of sse(response)) {
+                for await (const payload of sse(response.body)) {
+                    const chunk = payload === '[DONE]' ? { __done: true } : JSON.parse(payload);
                     if (chunk.error || chunk.type === 'error')
                         throw new Error('Sağlayıcı bir akış hatası bildirdi.');
                     if (spec.id === 'anthropic') {
@@ -298,6 +303,9 @@ export function createProvider(config) {
                         outputTokens = chunk.usage?.completion_tokens ?? outputTokens;
                         if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === 'number') {
                             cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+                        }
+                        else if (typeof chunk.usage?.cache_read_input_tokens === 'number') {
+                            cachedTokens = chunk.usage.cache_read_input_tokens;
                         }
                     }
                 }

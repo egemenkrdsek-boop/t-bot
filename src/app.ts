@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP, printUsage } from './cli.js';
 import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getEffort, setEffort, getWorkspacePermission, setWorkspacePermission, type AppConfig, type ResolvedProviderConfig } from './config.js';
-import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError, setCustomSecret, getCustomSecret, deleteCustomSecret } from './secrets.js';
+import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError, setCustomSecret, getCustomSecret } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
@@ -159,13 +159,17 @@ export async function main(argv: string[]): Promise<void> {
 
   const hydrateMcp = async (signal?: AbortSignal, emit?: (event: AgentEvent) => void) => {
     if (mcpHydrated) return;
-    const saved = await loadConnections();
-    for (const service of ['supabase', 'vercel', 'github'] as const) {
-      if (!saved[service].enabled || mcpTools.some(c => c.service === service)) continue;
+    const mcpConfig = await loadConnections() as Record<string, any>;
+    const services = (mcpConfig.services && typeof mcpConfig.services === 'object' ? mcpConfig.services : mcpConfig) as Record<string, any>;
+    for (const service of Object.keys(services)) {
+      if (service === 'version' || service === 'services') continue;
+      const serviceCfg = services[service];
+      if (!serviceCfg || typeof serviceCfg !== 'object' || !serviceCfg.enabled || mcpTools.some(c => c.service === service)) continue;
+      const isStdio = (typeof serviceCfg.url === 'string' && serviceCfg.url.startsWith('stdio:')) || Boolean(serviceCfg.command);
       const token = await getMcpToken(service);
-      if (!token) { emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` }); continue; }
+      if (!token && !isStdio) { emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` }); continue; }
       emit?.({ type: 'status', message: `${service} MCP bağlantısı kuruluyor...` });
-      try { mcpTools.push(await connectMcp(service, token, { ...saved[service], signal })); }
+      try { mcpTools.push(await connectMcp(service, token, { ...serviceCfg, workspace, signal })); }
       catch { if (signal?.aborted) throw new Error('İptal edildi.'); emit?.({ type: 'status', message: `${service} MCP bağlantısı kurulamadı; /mcp ile kontrol edin.` }); }
     }
     mcpHydrated = true;

@@ -16,14 +16,15 @@ export interface ReclaimResult {
     pressure: 'low' | 'moderate' | 'high';
 }
 /**
- * Trims physical working set memory using Win32 EmptyWorkingSet API on Windows.
- * Runs with a 20-second cooldown and a 5-second timeout, failing silently if an error occurs.
+ * Trims physical working set memory of the current T Bot process using Win32 EmptyWorkingSet API on Windows.
+ * Caches the compiled helper assembly on disk to avoid repeated csc.exe invocations.
+ * Enforces a 120-second cooldown unless force is true.
  */
-export declare function trimWindowsWorkingSet(): Promise<void>;
+export declare function trimWindowsWorkingSet(force?: boolean): Promise<void>;
 /**
- * Returns current memory usage and pressure level:
- * - 'high': heapUsedMB > 140 or rssMB > 280 or systemUsedPercent > 82
- * - 'moderate': heapUsedMB > 90 or rssMB > 200 or systemUsedPercent > 70
+ * Returns current memory usage and pressure level based on T Bot process memory or critical system free RAM:
+ * - 'high': heapUsedMB > 220 or rssMB > 420 or systemFreeMB < 512
+ * - 'moderate': heapUsedMB > 140 or rssMB > 280
  * - 'low': otherwise
  */
 export declare function getMemoryStats(): MemoryStats;
@@ -34,12 +35,12 @@ export declare function getMemoryStats(): MemoryStats;
  *    and clears old image attachments (preserving only the latest message's image).
  * 2. Closes idle browser instance if active.
  * 3. Triggers V8 garbage collector if available (global.gc).
- * 4. Trims Windows physical working set if force is true or before.pressure !== 'low'.
+ * 4. Trims Windows physical working set if force is true or beforeStats.pressure === 'high'.
  */
 export declare function reclaimMemory(session?: Session, force?: boolean): Promise<ReclaimResult>;
 /**
- * Starts automatic memory guard running every 20 seconds.
- * Triggers reclaimMemory when memory pressure is moderate or high.
+ * Starts automatic memory guard running every 30 seconds.
+ * Triggers reclaimMemory only when memory pressure is high or heapUsedMB > 160.
  */
 export declare function startAutoMemoryGuard(getSession?: () => Session | undefined): void;
 /**

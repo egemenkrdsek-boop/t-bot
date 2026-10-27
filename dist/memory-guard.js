@@ -1,28 +1,38 @@
-import os from 'node:os';
+import os, { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { closeIdleBrowser } from './tools/browser.js';
 import { pruneCompletedProcesses } from './tools/shell.js';
-let lastTrimTime = 0;
-const TRIM_COOLDOWN_MS = 20_000;
+let lastTrimAt = 0;
+const TRIM_COOLDOWN_MS = 120_000;
 let guardTimer = null;
 /**
- * Trims physical working set memory using Win32 EmptyWorkingSet API on Windows.
- * Runs with a 20-second cooldown and a 5-second timeout, failing silently if an error occurs.
+ * Trims physical working set memory of the current T Bot process using Win32 EmptyWorkingSet API on Windows.
+ * Caches the compiled helper assembly on disk to avoid repeated csc.exe invocations.
+ * Enforces a 120-second cooldown unless force is true.
  */
-export async function trimWindowsWorkingSet() {
+export async function trimWindowsWorkingSet(force = false) {
     if (process.platform !== 'win32') {
         return;
     }
     const now = Date.now();
-    if (now - lastTrimTime < TRIM_COOLDOWN_MS) {
+    if (!force && now - lastTrimAt < TRIM_COOLDOWN_MS) {
         return;
     }
-    lastTrimTime = now;
+    lastTrimAt = now;
+    const dllPath = join(process.env.APPDATA || homedir(), 'TBot', 'bin', 'tbot-wstrim-v2.dll');
+    await mkdir(dirname(dllPath), { recursive: true, mode: 0o700 }).catch(() => undefined);
     return new Promise((resolve) => {
         try {
-            const pid = process.pid;
+            const curPid = process.pid;
+            const escapedDllPath = dllPath.replace(/'/g, "''");
             const script = `
-$def = @'
+$dll = '${escapedDllPath}'
+if (Test-Path -LiteralPath $dll) {
+  [void][Reflection.Assembly]::LoadFrom($dll)
+} else {
+  $def = @'
 using System;
 using System.Runtime.InteropServices;
 public static class WsTrim {
@@ -34,21 +44,13 @@ public static class WsTrim {
                 EmptyWorkingSet(cp.Handle);
             }
         } catch {}
-        foreach (var p in System.Diagnostics.Process.GetProcesses()) {
-            try {
-                if (!p.HasExited && p.WorkingSet64 > 52428800) {
-                    EmptyWorkingSet(p.Handle);
-                }
-            } catch {}
-            finally {
-                try { p.Dispose(); } catch {}
-            }
-        }
     }
 }
 '@
-Add-Type -TypeDefinition $def -Language CSharp
-[WsTrim]::Clean(${pid})
+  Add-Type -TypeDefinition $def -Language CSharp -OutputAssembly $dll
+  [void][Reflection.Assembly]::LoadFrom($dll)
+}
+[WsTrim]::Clean(${curPid})
 `;
             execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
                 resolve();
@@ -60,9 +62,9 @@ Add-Type -TypeDefinition $def -Language CSharp
     });
 }
 /**
- * Returns current memory usage and pressure level:
- * - 'high': heapUsedMB > 140 or rssMB > 280 or systemUsedPercent > 82
- * - 'moderate': heapUsedMB > 90 or rssMB > 200 or systemUsedPercent > 70
+ * Returns current memory usage and pressure level based on T Bot process memory or critical system free RAM:
+ * - 'high': heapUsedMB > 220 or rssMB > 420 or systemFreeMB < 512
+ * - 'moderate': heapUsedMB > 140 or rssMB > 280
  * - 'low': otherwise
  */
 export function getMemoryStats() {
@@ -78,10 +80,10 @@ export function getMemoryStats() {
         ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10
         : 0;
     let pressure = 'low';
-    if (heapUsedMB > 140 || rssMB > 280 || systemUsedPercent > 82) {
+    if (heapUsedMB > 220 || rssMB > 420 || systemFreeMB < 512) {
         pressure = 'high';
     }
-    else if (heapUsedMB > 90 || rssMB > 200 || systemUsedPercent > 70) {
+    else if (heapUsedMB > 140 || rssMB > 280) {
         pressure = 'moderate';
     }
     return {
@@ -101,7 +103,7 @@ export function getMemoryStats() {
  *    and clears old image attachments (preserving only the latest message's image).
  * 2. Closes idle browser instance if active.
  * 3. Triggers V8 garbage collector if available (global.gc).
- * 4. Trims Windows physical working set if force is true or before.pressure !== 'low'.
+ * 4. Trims Windows physical working set if force is true or beforeStats.pressure === 'high'.
  */
 export async function reclaimMemory(session, force = false) {
     const beforeStats = getMemoryStats();
@@ -159,9 +161,9 @@ export async function reclaimMemory(session, force = false) {
             }
         }
         // 4. Windows physical Working Set trim
-        if (force || beforeStats.pressure !== 'low') {
+        if (force || beforeStats.pressure === 'high') {
             try {
-                await trimWindowsWorkingSet();
+                await trimWindowsWorkingSet(force);
             }
             catch {
                 // Safe guard against working set trim errors
@@ -180,8 +182,8 @@ export async function reclaimMemory(session, force = false) {
     };
 }
 /**
- * Starts automatic memory guard running every 20 seconds.
- * Triggers reclaimMemory when memory pressure is moderate or high.
+ * Starts automatic memory guard running every 30 seconds.
+ * Triggers reclaimMemory only when memory pressure is high or heapUsedMB > 160.
  */
 export function startAutoMemoryGuard(getSession) {
     if (guardTimer) {
@@ -190,14 +192,14 @@ export function startAutoMemoryGuard(getSession) {
     guardTimer = setInterval(async () => {
         try {
             const stats = getMemoryStats();
-            if (stats.pressure !== 'low') {
+            if (stats.pressure === 'high' || stats.heapUsedMB > 160) {
                 await reclaimMemory(getSession?.(), false);
             }
         }
         catch {
             // Safe guard against background watcher errors
         }
-    }, 20_000);
+    }, 30_000);
     guardTimer.unref();
 }
 /**

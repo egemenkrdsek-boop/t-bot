@@ -17,7 +17,7 @@ export interface TelegramBridgeOptions {
 /**
  * Splits text into chunks conforming to Telegram's 4096 character limit and sends each chunk.
  */
-export declare function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void>;
+export declare function sendTelegramMessage(token: string, chatId: string, text: string, replyMarkup?: Record<string, unknown>): Promise<void>;
 /**
  * Sends a photo to a Telegram chat using native FormData, Blob, and fs.readFile.
  */

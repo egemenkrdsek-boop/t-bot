@@ -11,6 +11,7 @@ export declare function createVercelAdapter(token: string, options: {
     team?: string;
     project?: string;
     readOnly?: boolean;
+    workspace?: string;
     signal?: AbortSignal;
 }): Promise<{
     clientTransport: InMemoryTransport;

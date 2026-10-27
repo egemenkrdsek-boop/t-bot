@@ -4,12 +4,23 @@
   "description": "T Bot 2.0 — Tri-Core Local AI Coding Agent, Autonomous Desktop Agent & Zero-Backend Telegram Bot Gateway with 50%-75% Token Savings and Deterministic Anti-Hallucination",
   "type": "module",
   "bin": {
-    "tbot": "./dist/index.js"
+    "tbot": "./dist/index.js",
+    "t-bot": "./dist/index.js",
+    "t-bot-cli": "./dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/egemenkrdsek-boop/t-bot.git"
+  },
+  "homepage": "https://github.com/egemenkrdsek-boop/t-bot",
+  "bugs": {
+    "url": "https://github.com/egemenkrdsek-boop/t-bot/issues"
   },
   "files": [
     "dist",
     "scripts",
     "assets",
+    "docs",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"

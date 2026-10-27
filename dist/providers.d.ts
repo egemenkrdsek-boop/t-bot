@@ -79,6 +79,7 @@ export declare const PROVIDER_CATALOG: readonly [{
     readonly baseUrl: "";
     readonly requiresApiKey: false;
 }];
+export declare function sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string>;
 export declare function createProvider(config: ProviderConfig): Provider;
 /** Validate an OpenRouter key without exposing the response body or credentials. */
 export declare function validateOpenRouterKey(key: string, signal?: AbortSignal): Promise<void>;

@@ -3,14 +3,20 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+const SKIP_FILES = new Set(['.npmrc', 'id_rsa', 'id_ed25519', '.netrc', '.pypirc']);
 export async function packWorkspaceFiles(cwd = process.cwd()) {
     const packed = [];
     const MAX_FILES = 80;
     const MAX_FILE_SIZE = 250 * 1024; // 250 KB
     const isIgnored = (name) => {
+        const lower = name.toLowerCase();
         if (name === 'node_modules' || name === '.git' || name === 'dist' || name === '.tbot')
             return true;
-        if (name.startsWith('.env'))
+        if (lower.startsWith('.env'))
+            return true;
+        if (SKIP_FILES.has(lower) || SKIP_FILES.has(name))
+            return true;
+        if (lower.endsWith('.pem') || lower.endsWith('.key'))
             return true;
         return false;
     };
@@ -28,17 +34,19 @@ export async function packWorkspaceFiles(cwd = process.cwd()) {
         for (const entry of entries) {
             if (packed.length >= MAX_FILES)
                 break;
-            if (isIgnored(entry.name))
+            if (entry.isSymbolicLink() || isIgnored(entry.name))
                 continue;
             const fullPath = path.join(currentDir, entry.name);
             const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
             const posixRel = relPath.split(path.sep).join('/');
             try {
-                if (entry.isDirectory()) {
+                const stats = await fs.lstat(fullPath);
+                if (stats.isSymbolicLink())
+                    continue;
+                if (stats.isDirectory()) {
                     await walk(fullPath, posixRel);
                 }
-                else if (entry.isFile()) {
-                    const stats = await fs.stat(fullPath);
+                else if (stats.isFile()) {
                     if (stats.size <= MAX_FILE_SIZE) {
                         const content = await fs.readFile(fullPath);
                         packed.push({
@@ -176,7 +184,7 @@ export async function createVercelAdapter(token, options) {
                 const hasFiles = Array.isArray(args.files) && args.files.length > 0;
                 const autoPack = args.auto_pack_workspace === true || (args.auto_pack_workspace !== false && !hasFiles && args.repoId === undefined);
                 if (autoPack) {
-                    const workspaceFiles = await packWorkspaceFiles(process.cwd());
+                    const workspaceFiles = await packWorkspaceFiles(options.workspace || process.cwd());
                     let combinedFiles = workspaceFiles;
                     if (hasFiles) {
                         let total = 0;

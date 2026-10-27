@@ -14,8 +14,9 @@ export interface McpOptions {
     url?: string;
     command?: string;
     args?: string[];
+    workspace?: string;
 }
-export type McpServiceInput = McpService | McpServerDefinition | {
+export type McpServiceInput = McpService | (string & {}) | McpServerDefinition | {
     id?: string;
     name?: string;
     url?: string;

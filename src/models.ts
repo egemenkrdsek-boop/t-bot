@@ -2,10 +2,10 @@
 export interface ModelOption { id: string; label: string }
 
 const FALLBACK: Record<string, string[]> = {
-  openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.1', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini'],
-  anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
-  gemini: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-  openrouter: ['openai/gpt-4.1', 'anthropic/claude-sonnet-4', 'google/gemini-2.5-flash'],
+  openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.1', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'o3', 'o4-mini'],
+  anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-latest'],
+  gemini: ['gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
+  openrouter: ['openai/gpt-4.1', 'openai/gpt-4o', 'openai/o3', 'openai/o4-mini', 'anthropic/claude-sonnet-4', 'anthropic/claude-3-7-sonnet-latest', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'],
   groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
   together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],

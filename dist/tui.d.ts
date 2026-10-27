@@ -1,4 +1,6 @@
 import type { AgentEvent, ApprovalRequest, Message, Provider } from './types.js';
+import { logo } from './logo.js';
+export { logo };
 export interface HudConfig {
     model?: string;
     provider?: Provider | string;
@@ -8,8 +10,8 @@ export interface HudConfig {
     mcpCount?: number;
 }
 /**
- * Renders the single-line Cyber-Minimalist HUD status bar:
- * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]
+ * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export declare function renderHudBar(config: HudConfig): string;
 export interface EventPrinterOptions {
@@ -21,12 +23,14 @@ export interface EventPrinter {
     emit: (event: AgentEvent) => void;
     finishStream: () => void;
     startThinking: (label?: string) => void;
+    stopThinking: () => void;
     stopSpinner: () => void;
 }
+export declare const TOOL_TITLE_MAP: Record<string, string>;
 export declare function formatToolTitle(toolName: string): string;
 /**
- * Creates an event printer with animated braille spinner, wave bar thinking animation,
- * streaming syntax/diff highlighting, and token/grounding/memory HUD reporting.
+ * Sıfır-Kırpışmalı (DEC ?2026h/?2026l), Sıfır-Taşmalı (truncateAnsi),
+ * Görsel Görev Ağacı ve Ultracode Stepper destekli Cyber-Zen EventPrinter.
  */
 export declare function createEventPrinter(options: EventPrinterOptions): EventPrinter;
 /** Print comprehensive help menu with modern cyber-minimalist categories. */

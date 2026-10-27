@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '../types.js';
+import { redactSecrets } from '../sessions.js';
 
 // A private, disposable profile: never attach to the user's existing browser.
 let context: any;
@@ -13,27 +14,34 @@ let nextId = 1;
 const snapshots = new WeakMap<object, Set<string>>();
 let idleTimer: NodeJS.Timeout | undefined;
 const BROWSER_IDLE_TIMEOUT_MS = 60_000;
+let lastBrowserActivityAt = 0;
+let activeBrowserOps = 0;
 
 export function resetIdleTimer(): void {
+  lastBrowserActivityAt = Date.now();
   if (idleTimer) {
     clearTimeout(idleTimer);
     idleTimer = undefined;
   }
   if (context || launching) {
     idleTimer = setTimeout(() => {
-      void closeBrowser().catch(() => {});
+      if (activeBrowserOps === 0) {
+        void closeBrowser().catch(() => {});
+      }
     }, BROWSER_IDLE_TIMEOUT_MS);
     idleTimer.unref();
   }
 }
 
-export async function closeIdleBrowser(): Promise<void> {
-  if (context || launching) {
-    await closeBrowser();
+export async function closeIdleBrowser(idleThresholdMs = 180_000): Promise<void> {
+  if (activeBrowserOps === 0 && (Date.now() - lastBrowserActivityAt > idleThresholdMs)) {
+    if (context || launching) {
+      await closeBrowser();
+    }
   }
 }
 const cap = (s: string, n = 6000) => s.length > n ? s.slice(0, n) + '\n[truncated]' : s;
-const clean = (s: string) => s.replace(/(password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
+const clean = (s: string) => redactSecrets(s);
 const str = (value: unknown, label: string): string => {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
   return value;
@@ -99,9 +107,23 @@ async function pageFor(value: unknown): Promise<any> {
   if (typeof id !== 'number' || !Number.isInteger(id) || !tabs.has(id)) throw new Error('Unknown browser tab');
   return tabs.get(id);
 }
-function safeUrl(raw: string): string {
+export function safeUrl(raw: string): string {
   const url = new URL(raw);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Only HTTP(S) URLs without embedded credentials are allowed');
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('Only HTTP(S) URLs without embedded credentials are allowed');
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    host === '169.254.169.254' ||
+    host === '0.0.0.0' ||
+    host === '::' ||
+    host === '0:0:0:0:0:0:0:0' ||
+    host.endsWith(':169.254.169.254') ||
+    host.endsWith(':a9fe:a9fe') ||
+    host === 'metadata.google.internal'
+  ) {
+    throw new Error(`Blocked unsafe or cloud metadata URL host: ${url.hostname}`);
+  }
   return url.href;
 }
 function displayUrl(raw: string): string {
@@ -117,16 +139,22 @@ export async function closeBrowser(): Promise<void> {
   try { if (current) await current.close(); } finally { if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 }
 export async function handleBrowserTool(name: string, args: Record<string, unknown>, options: { workspace: string; signal?: AbortSignal }): Promise<string> {
-  if (options.signal?.aborted) throw new Error('Operation cancelled');
-  if (!options.signal) return runBrowserTool(name, args, options);
-  let onAbort: (() => void) | undefined;
-  const cancelled = new Promise<never>((_resolve, reject) => {
-    onAbort = () => { void closeBrowser().catch(() => {}); reject(new Error('Operation cancelled')); };
-    options.signal!.addEventListener('abort', onAbort, { once: true });
-    if (options.signal!.aborted) onAbort();
-  });
-  try { return await Promise.race([runBrowserTool(name, args, options), cancelled]); }
-  finally { if (onAbort) options.signal.removeEventListener('abort', onAbort); }
+  activeBrowserOps++;
+  try {
+    if (options.signal?.aborted) throw new Error('Operation cancelled');
+    if (!options.signal) return await runBrowserTool(name, args, options);
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => { void closeBrowser().catch(() => {}); reject(new Error('Operation cancelled')); };
+      options.signal!.addEventListener('abort', onAbort, { once: true });
+      if (options.signal!.aborted) onAbort();
+    });
+    try { return await Promise.race([runBrowserTool(name, args, options), cancelled]); }
+    finally { if (onAbort) options.signal.removeEventListener('abort', onAbort); }
+  } finally {
+    activeBrowserOps--;
+    lastBrowserActivityAt = Date.now();
+  }
 }
 async function runBrowserTool(name: string, args: Record<string, unknown>, options: { workspace: string; signal?: AbortSignal }): Promise<string> {
   if (options.signal?.aborted) throw new Error('Operation cancelled');

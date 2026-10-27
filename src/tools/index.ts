@@ -6,8 +6,11 @@ import { browserToolDefinitions, handleBrowserTool } from './browser.js';
 import { computerToolDefinitions, handleComputerTool } from './computer.js';
 import { gitToolDefinitions, handleGitTool } from './git.js';
 import { imageToolDefinitions, handleImageTool, type ImageProviderConfig } from './image.js';
-import { memoryToolDefinitions, handleMemoryTool } from '../memory.js';
+import { memoryToolDefinitions, handleMemoryTool, forgetFact } from '../memory.js';
+import * as skillsMod from '../skills.js';
+import * as subagentsMod from '../subagents.js';
 import { globalGroundingLedger } from '../grounding.js';
+import { redactSecrets } from '../sessions.js';
 
 export interface ToolContext {
   workspace: string;
@@ -15,27 +18,151 @@ export interface ToolContext {
   signal?: AbortSignal;
   mcpTools?: McpConnection[];
   imageProvider?: ImageProviderConfig;
+  [key: string]: unknown;
 }
 
-export const localToolDefinitions: ToolDefinition[] = [
-  ...fileToolDefinitions,
-  ...shellToolDefinitions,
-  ...browserToolDefinitions,
-  ...computerToolDefinitions,
-  ...gitToolDefinitions,
-  ...imageToolDefinitions,
-  ...memoryToolDefinitions,
-];
+export function isToolResultOk(name: string, output: string): boolean {
+  if (typeof output !== 'string') return false;
+  const trimmed = output.trimStart();
+  if (
+    trimmed.startsWith('Tool error:') ||
+    trimmed.startsWith('Araç Hatası:') ||
+    trimmed.startsWith('Araç hatası:') ||
+    trimmed.startsWith('Tool action denied') ||
+    trimmed.startsWith('Tool denied:') ||
+    trimmed.startsWith('Araç reddedildi') ||
+    trimmed.startsWith('Unknown tool:')
+  ) {
+    return false;
+  }
+  if (/"ok"\s*:\s*false/.test(output)) {
+    return false;
+  }
+  if (name === 'shell') {
+    if (output.includes('Timed out') || output.includes('Aborted')) {
+      return false;
+    }
+    const exitMatch = output.match(/Exit code:\s*(\d+)/i);
+    if (exitMatch && Number(exitMatch[1]) !== 0) {
+      return false;
+    }
+    if (/Exit code:\s*(?:-\d+|signal\b)/i.test(output)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Normalize GroundingLedger.recordToolResult so both (name, args, output, ok) and (name, args, { ok, output }, workspace) work seamlessly
+const ledgerProto = Object.getPrototypeOf(globalGroundingLedger);
+if (ledgerProto && typeof ledgerProto.recordToolResult === 'function' && !ledgerProto.__wrappedRecordToolResult) {
+  const origRecord = ledgerProto.recordToolResult;
+  ledgerProto.recordToolResult = function (
+    toolName: string,
+    args: Record<string, unknown>,
+    resultOrOutput: { ok: boolean; output: string } | string,
+    okOrWorkspace?: boolean | string,
+    maybeWorkspace?: string
+  ) {
+    const rawOutput = typeof resultOrOutput === 'string' ? resultOrOutput : (resultOrOutput?.output ?? '');
+    const rawOk =
+      typeof resultOrOutput === 'string'
+        ? typeof okOrWorkspace === 'boolean'
+          ? okOrWorkspace
+          : true
+        : Boolean(resultOrOutput?.ok);
+    const ok = rawOk && isToolResultOk(toolName, rawOutput);
+    const ws =
+      typeof okOrWorkspace === 'string'
+        ? okOrWorkspace
+        : typeof maybeWorkspace === 'string'
+          ? maybeWorkspace
+          : this.workspace;
+    const fnStr = Function.prototype.toString.call(origRecord);
+    const fnHead = fnStr.slice(0, 200);
+    if (/\(\s*[^,]+,\s*[^,]+,\s*result\b/.test(fnHead) && !fnStr.includes('typeof result')) {
+      return origRecord.call(this, toolName, args, { ok, output: rawOutput }, ws);
+    }
+    return origRecord.call(this, toolName, args, rawOutput, ok, ws);
+  };
+  Object.defineProperty(ledgerProto, '__wrappedRecordToolResult', { value: true, enumerable: false });
+}
+
+const fallbackMemoryForgetDefinition: ToolDefinition = {
+  name: 'memory_forget',
+  description: 'Remove a saved fact or preference from persistent memory by key.',
+  parameters: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'Identifier or key of the fact to remove' },
+    },
+    required: ['key'],
+    additionalProperties: false,
+  },
+};
+
+function getSkillDefs(): ToolDefinition[] {
+  try {
+    const defs = (skillsMod as any).skillToolDefinitions;
+    return Array.isArray(defs) ? defs : [];
+  } catch {
+    return [];
+  }
+}
+
+function getSubagentDefs(): ToolDefinition[] {
+  try {
+    const defs = (subagentsMod as any).subagentToolDefinitions;
+    return Array.isArray(defs) ? defs : [];
+  } catch {
+    return [];
+  }
+}
+
+function buildLocalToolDefinitions(): ToolDefinition[] {
+  const memoryDefs = memoryToolDefinitions.some(t => t.name === 'memory_forget')
+    ? memoryToolDefinitions
+    : [...memoryToolDefinitions, fallbackMemoryForgetDefinition];
+
+  const all: ToolDefinition[] = [
+    ...fileToolDefinitions,
+    ...shellToolDefinitions,
+    ...browserToolDefinitions,
+    ...computerToolDefinitions,
+    ...gitToolDefinitions,
+    ...imageToolDefinitions,
+    ...memoryDefs,
+    ...getSkillDefs(),
+    ...getSubagentDefs(),
+  ];
+
+  const seen = new Set<string>();
+  return all.filter(tool => {
+    if (!tool || typeof tool.name !== 'string' || seen.has(tool.name)) return false;
+    seen.add(tool.name);
+    return true;
+  });
+}
+
+export const localToolDefinitions: ToolDefinition[] = buildLocalToolDefinitions();
 export const toolDefinitions = localToolDefinitions;
-const localTools = localToolDefinitions;
+
+function syncLocalTools(): ToolDefinition[] {
+  const current = buildLocalToolDefinitions();
+  if (current.length !== localToolDefinitions.length || current.some((t, i) => localToolDefinitions[i]?.name !== t.name)) {
+    localToolDefinitions.splice(0, localToolDefinitions.length, ...current);
+  }
+  return localToolDefinitions;
+}
 
 type RemoteTool = { definition: ToolDefinition; connection: McpConnection };
 
 function remoteTools(connections: McpConnection[] = []): RemoteTool[] {
+  const local = syncLocalTools();
   const all = connections.flatMap(connection => connection.definitions.map(definition => ({ definition, connection })));
   const counts = new Map<string, number>();
   for (const { definition } of all) counts.set(definition.name, (counts.get(definition.name) ?? 0) + 1);
-  return all.filter(({ definition }) => /^mcp_[A-Za-z0-9_-]{1,80}$/.test(definition.name) && counts.get(definition.name) === 1 && !localTools.some(tool => tool.name === definition.name));
+  return all.filter(({ definition }) => /^mcp_[A-Za-z0-9_-]{1,80}$/.test(definition.name) && counts.get(definition.name) === 1 && !local.some(tool => tool.name === definition.name));
 }
 
 const priority = /(?:create_repository|create_branch|push_files|create_pull_request|merge_pull_request|create_project|create_deployment|deploy_edge_function|apply_migration)/i;
@@ -64,6 +191,7 @@ const catalogTools: ToolDefinition[] = [
 export const READ_ONLY_TOOLS = new Set([
   'file_read',
   'file_list',
+  'file_glob',
   'file_search',
   'file_outline',
   'git_status',
@@ -72,6 +200,8 @@ export const READ_ONLY_TOOLS = new Set([
   'memory_recall',
   'process_list',
   'process_output',
+  'skill_list',
+  'delegate_task',
 ]);
 
 export function getToolDefinitions(
@@ -88,9 +218,10 @@ export function getToolDefinitions(
     connections = connectionsOrPolicy;
   }
 
+  const local = syncLocalTools();
   const all = remoteTools(connections);
   const definitions = [
-    ...localTools,
+    ...local,
     ...(all.length ? catalogTools : []),
     ...featuredTools(connections).map(({ definition }) => ({ ...definition, description: definition.description.slice(0, 600) })),
   ];
@@ -102,29 +233,43 @@ export function getToolDefinitions(
 }
 
 function redact(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
   if (Array.isArray(value)) return value.map(redact);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, (/token|secret|password|api.?key|authorization/i.test(key) || (key.toLowerCase() === 'data' && typeof v === 'string' && v.length > 500)) ? '[redacted]' : redact(v)]));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => [
+        key,
+        /token|secret|password|api.?key|authorization|credential|private.?key/i.test(key) ||
+        (key.toLowerCase() === 'data' && typeof v === 'string' && v.length > 500)
+          ? '[redacted]'
+          : redact(v),
+      ])
+    );
+  }
   return value;
 }
 
-const APPROVAL_REQUIRED_TOOLS = [
+export const APPROVAL_REQUIRED_TOOLS = [
+  'browser_click',
+  'browser_fill',
   'file_write',
   'file_patch',
   'shell',
   'process_stop',
-  'computer',
+  'git_add',
   'git_commit',
-  'git_push',
   'git_branch',
-  'browser_click',
-  'browser_type',
-  'browser_press',
-  'browser_scroll',
+  'git_push',
+  'computer',
 ];
 
 export async function executeTool(call: ToolCall, context: ToolContext): Promise<string> {
   const args = ((call as unknown as { args?: Record<string, unknown> }).args || call.arguments || {}) as Record<string, unknown>;
   (call as unknown as { args: Record<string, unknown> }).args = args;
+  call.arguments = args;
+  if (context.workspace) {
+    globalGroundingLedger.workspace = context.workspace;
+  }
 
   try {
     context.signal?.throwIfAborted();
@@ -136,7 +281,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       const matched = allRemote.filter(({ definition }) => definition.name.toLowerCase().includes(query));
       const page = matched.slice(offset, offset + limit).map(({ definition }) => ({ ...definition, description: definition.description.slice(0, 600) }));
       const output = `[Untrusted MCP catalog]\n${JSON.stringify({ tools: page, next_offset: offset + limit < matched.length ? offset + limit : null })}`;
-      globalGroundingLedger.recordToolResult(call.name, args, { ok: true, output }, context.workspace);
+      globalGroundingLedger.recordToolResult(call.name, call.arguments, output as any, isToolResultOk(call.name, output) as any);
       return output;
     }
 
@@ -145,7 +290,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     if (call.name === 'mcp_call') {
       if (typeof args.name !== 'string' || !args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) {
         const err = 'Tool error: mcp_call requires a catalog tool name and arguments object.';
-        globalGroundingLedger.recordToolResult(call.name, args, { ok: false, output: err }, context.workspace);
+        globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, false as any);
         return err;
       }
       actualArgs = args.arguments as Record<string, unknown>;
@@ -156,7 +301,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     const remote = (call.name === 'mcp_call' ? allRemote : featuredTools(context.mcpTools)).find(item => item.definition.name === actualCall.name);
     if ((!remote && call.name === 'mcp_call') || !getToolDefinitions(context.mcpTools).some(tool => tool.name === call.name)) {
       const err = `Unknown tool: ${call.name}`;
-      globalGroundingLedger.recordToolResult(call.name, args, { ok: false, output: err }, context.workspace);
+      globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, false as any);
       return err;
     }
 
@@ -173,7 +318,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
           : actualArgs;
       if (!await context.approve({ tool: actualCall.name, description, arguments: approvalArgs })) {
         const denied = 'Tool action denied by user.';
-        globalGroundingLedger.recordToolResult(call.name, args, { ok: false, output: denied }, context.workspace);
+        globalGroundingLedger.recordToolResult(call.name, call.arguments, denied as any, false as any);
         return denied;
       }
       context.signal?.throwIfAborted();
@@ -184,8 +329,31 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       const result = await remote.connection.execute(actualCall, context.signal);
       const raw = typeof result === 'string' ? result : JSON.stringify(result);
       output = `[Untrusted MCP tool output]\n${raw.length > 12000 ? raw.slice(0, 12000) + '\n[output truncated]' : raw}`;
+    } else if (call.name === 'delegate_task' || getSubagentDefs().some(tool => tool.name === call.name)) {
+      const handler = (subagentsMod as any).handleSubagentTool;
+      if (typeof handler !== 'function') {
+        throw new Error(`Subagent tool handler is not available for ${call.name}`);
+      }
+      output = await handler(actualCall, context);
+    } else if (call.name === 'skill_create' || call.name === 'skill_list' || call.name.startsWith('skill_') || getSkillDefs().some(tool => tool.name === call.name)) {
+      const handler = (skillsMod as any).handleSkillTool;
+      if (typeof handler !== 'function') {
+        throw new Error(`Skill tool handler is not available for ${call.name}`);
+      }
+      output = await handler(actualCall, context);
     } else if (call.name.startsWith('memory_')) {
-      output = await handleMemoryTool(call.name, actualArgs, context);
+      try {
+        output = await handleMemoryTool(call.name, actualArgs, context);
+      } catch (err) {
+        if (call.name === 'memory_forget' && err instanceof Error && err.message.startsWith('Unknown memory tool:')) {
+          const key = typeof actualArgs.key === 'string' ? actualArgs.key.trim() : '';
+          if (!key) throw new Error('Parameter "key" is required.');
+          const removed = await forgetFact(context.workspace, key);
+          output = removed ? `Removed from memory: ${key}` : `Memory key not found: ${key}`;
+        } else {
+          throw err;
+        }
+      }
     } else if (call.name.startsWith('process_')) {
       output = await handleShellTool(call.name, actualArgs, context.workspace, context.signal);
     } else if (call.name === 'shell') {
@@ -202,19 +370,15 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       output = await handleFileTool(call.name, actualArgs, context.workspace, context.signal);
     }
 
-    const recordResult = {
-      ok: !output.startsWith('Tool error:') && output !== 'Tool action denied by user.' && !output.startsWith('Unknown tool:'),
-      output,
-    };
-    globalGroundingLedger.recordToolResult(call.name, args, recordResult, context.workspace);
+    globalGroundingLedger.recordToolResult(call.name, call.arguments, output as any, isToolResultOk(call.name, output) as any);
     if (actualCall.name !== call.name) {
-      globalGroundingLedger.recordToolResult(actualCall.name, actualArgs, recordResult, context.workspace);
+      globalGroundingLedger.recordToolResult(actualCall.name, actualArgs, output as any, isToolResultOk(actualCall.name, output) as any);
     }
     return output;
   } catch (error) {
     const err = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
     try {
-      globalGroundingLedger.recordToolResult(call.name, args, { ok: false, output: err }, context.workspace);
+      globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, isToolResultOk(call.name, err) as any);
     } catch { /* ignore */ }
     return err;
   }

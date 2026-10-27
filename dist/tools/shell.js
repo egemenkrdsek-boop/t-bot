@@ -35,18 +35,70 @@ export function pruneCompletedProcesses() {
     }
     return count;
 }
+const MAX_TOTAL_PROCESSES = 20;
+const MAX_RUNNING_PROCESSES = 12;
+function killProcessTree(proc) {
+    if (proc.status === 'running' && proc.pid) {
+        proc.status = 'stopped';
+        proc.child.stdout?.destroy();
+        proc.child.stderr?.destroy();
+        try {
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+            }
+            else {
+                try {
+                    process.kill(-proc.pid, 'SIGKILL');
+                }
+                catch {
+                    proc.child.kill('SIGKILL');
+                }
+            }
+        }
+        catch {
+            /* ignore */
+        }
+    }
+}
 function enforceProcessLimit() {
-    if (backgroundProcesses.size > 20) {
+    const running = Array.from(backgroundProcesses.entries())
+        .filter(([_, p]) => p.status === 'running')
+        .sort((a, b) => a[1].startTime - b[1].startTime);
+    if (running.length > MAX_RUNNING_PROCESSES) {
+        const excess = running.slice(0, running.length - MAX_RUNNING_PROCESSES);
+        for (const [_, proc] of excess) {
+            killProcessTree(proc);
+        }
+    }
+    if (backgroundProcesses.size > MAX_TOTAL_PROCESSES) {
         const completed = Array.from(backgroundProcesses.entries())
             .filter(([_, p]) => p.status !== 'running')
             .sort((a, b) => a[1].startTime - b[1].startTime);
         for (const [id, proc] of completed) {
             proc.output = '';
             backgroundProcesses.delete(id);
-            if (backgroundProcesses.size <= 20)
+            if (backgroundProcesses.size <= MAX_TOTAL_PROCESSES)
                 break;
         }
     }
+}
+function tailLinesFromBuffer(text, maxLines) {
+    if (!text || maxLines <= 0)
+        return '';
+    let pos = text.length;
+    let linesFound = 0;
+    while (pos > 0) {
+        const idx = text.lastIndexOf('\n', pos - 1);
+        if (idx === -1) {
+            return text.replace(/\r\n/g, '\n');
+        }
+        linesFound++;
+        if (linesFound >= maxLines) {
+            return text.slice(idx + 1).replace(/\r\n/g, '\n');
+        }
+        pos = idx;
+    }
+    return text.replace(/\r\n/g, '\n');
 }
 // Ensure cleanup on normal process exit
 process.on('exit', () => stopAllBackgroundProcesses());
@@ -140,8 +192,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
             throw new Error(`Background process '${processId}' not found`);
         let output = proc.output;
         if (typeof args.tail_lines === 'number' && args.tail_lines > 0) {
-            const lines = output.split(/\r?\n/);
-            output = lines.slice(-args.tail_lines).join('\n');
+            output = tailLinesFromBuffer(output, args.tail_lines);
         }
         return JSON.stringify({
             processId: proc.processId,

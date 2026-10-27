@@ -1,6 +1,6 @@
 # T Bot 2.0 Kurulum ve Yapılandırma Kılavuzu
 
-Bu kılavuz; T Bot 2.0'ın Windows, macOS ve Linux işletim sistemlerinde tek komutla uzaktan terminal kurulumunu, kaynak kodundan derlenmesini, ilk yapılandırma adımlarını ve Telegram Bot ağ geçidi kurulumunu içerir.
+Bu kılavuz; T Bot 2.0'ın (OpenCode + Hermes Sentezi, Crystal-Ice Cyber-Zen TUI) Windows, macOS ve Linux işletim sistemlerinde tek komutla uzaktan terminal kurulumunu, kaynak kodundan derlenmesini, ilk yapılandırma adımlarını ve Telegram Bot ağ geçidi kurulumunu içerir.
 
 ---
 
@@ -17,7 +17,7 @@ Bu kılavuz; T Bot 2.0'ın Windows, macOS ve Linux işletim sistemlerinde tek ko
 
 ## 1. Tek Komutla Uzaktan Terminal Kurulumu (Önerilen)
 
-T Bot 2.0, herhangi bir ön yapılandırmaya gerek kalmadan terminalinizden tek bir satırla kurulabilir. Betikler ortamınızı denetler, eksik bağımlılıklar hakkında rehberlik sunar ve T Bot'u global olarak kurar.
+T Bot 2.0, herhangi bir ön yapılandırmaya gerek kalmadan terminalinizden tek bir satırla kurulabilir. Betikler ortamınızı denetler, eksik bağımlılıklar hakkında rehberlik sunar, kullanıcı `PATH` değişkeninizi kalıcı olarak yapılandırır ve T Bot'u global olarak kurar.
 
 ### Windows (PowerShell)
 PowerShell terminalinizi açın ve şu komutu yapıştırın:
@@ -27,7 +27,7 @@ irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/insta
 ```
 
 > [!NOTE]
-> Betik; Node.js >= 20.3, npm ve Git denetimi yapar, `%APPDATA%\npm` dizinini oturum PATH değişkeninize ekler ve `tbot --help` doğrulamasını çalıştırır.
+> Betik; UTF-8 konsol kodlamasını ayarlar, Node.js >= 20.3, npm ve Git denetimi yapar, `npm install -g --force` ile çakışmasız kurulum sağlar, global npm bin dizinini hem mevcut oturuma hem de kalıcı kullanıcı (`User`) `PATH` ortam değişkenine kaydeder ve `tbot --help` doğrulamasını çalıştırır.
 
 ### Linux ve macOS (Bash / Sh)
 Terminalinizi açın ve şu komutu çalıştırın:
@@ -37,17 +37,24 @@ curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/script
 ```
 
 > [!TIP]
-> Linux/macOS ortamında npm global dizinine yazma izni (EACCES) sorunu yaşarsanız, `npm config set prefix ~/.npm-global` yapılandırmasını yapabilir veya `sudo npm install -g git+https://github.com/egemenkrdsek-boop/t-bot.git` komutunu kullanabilirsiniz.
+> Linux/macOS ortamında npm global dizinine yazma izni (EACCES) sorunu yaşarsanız, `npm config set prefix ~/.npm-global` yapılandırmasını yapabilir veya `sudo npm install -g --force git+https://github.com/egemenkrdsek-boop/t-bot.git` komutunu kullanabilirsiniz.
 
 ### Doğrudan npm ile Global Kurulum
 Dilerseniz doğrudan npm aracılığıyla da kurabilirsiniz:
 
 ```bash
-npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git
+npm install -g git+https://github.com/egemenkrdsek-boop/t-bot.git
+```
+
+### Kurulum Yapmadan Doğrudan Çalıştırma (npx)
+Sisteminize global kurulum yapmadan anında çalıştırmak için:
+
+```bash
+npx github:egemenkrdsek-boop/t-bot
 ```
 
 > [!IMPORTANT]
-> T Bot 2.0'da derlenmiş `dist/` klasörü depoda hazır bulunduğu ve `package.json` içindeki `prepare` scripti korumalı çalıştığı için, üretim ortamlarında (`--omit=dev`) TypeScript derleyicisi (`tsc`) bulunmasa bile kurulum sıfır hatayla anında tamamlanır.
+> T Bot 2.0'da derlenmiş `dist/` klasörü depoda hazır bulunduğu ve `package.json` içindeki `bin` (`tbot`, `t-bot`, `t-bot-cli`) ve `prepare` tanımları korumalı çalıştığı için, üretim ortamlarında (`--omit=dev`) TypeScript derleyicisi (`tsc`) bulunmasa bile hem `npm install -g` hem de `npx github:egemenkrdsek-boop/t-bot` sıfır hatayla anında çalışır.
 
 ---
 
@@ -63,11 +70,12 @@ cd t-bot
 # 2. Bağımlılıkları Yükleyin
 npm ci
 
-# 3. TypeScript Projesini Derleyin
+# 3. Tip Kontrolü ve TypeScript Derlemesi
+npm run typecheck
 npm run build
 
-# 4. Global Symlink Olarak Bağlayın
-npm install --global .
+# 4. Global Olarak Kurun
+npm install -g .
 ```
 
 Geliştirme modunda anlık çalıştırmak için:
@@ -75,14 +83,23 @@ Geliştirme modunda anlık çalıştırmak için:
 npm run dev
 ```
 
-Kod tip kontrolleri için:
-```bash
-npm run typecheck
-```
+---
+
+## 3. Mimari Özellikler ve Yerleşik Araçlar Özeti
+
+Kurulumla birlikte aşağıdaki yeni nesil yetenekler ve araçlar doğrudan aktif olur:
+* **Açık Renk Kristal Logo & Cyber-Zen TUI:** Parlak beyaz ve cam göbeği (Crystal-Ice) renk paleti, canlı HUD çubuğu ve diferansiyel diff görünümü.
+* **Gerçek TypeScript AST + Çapraz Dosya Sembol/Paket Doğrulama:** `ts.createSourceFile` ile tam AST ayrıştırma, bozuk kodda anında otomatik rollback, göreli importlarda sembol ihracı (`export`) doğrulaması ve `package.json` bağımlılık kontrolü.
+* **Diferansiyel Okuma Önbelleği ve %67+ Token Tasarrufu:** Değişmeyen dosyaları tekrar göndermeyen SHA-256 diferansiyel önbellek ve niyet-duyarlı araç şeması budama.
+* **Zengin Araç Seti:**
+  - Dosya & Arama: `file_read`, `file_write`, `file_patch`, `file_outline`, `file_glob`, `dir_list`, `code_search`
+  - Kabuk & Süreç: `shell`, `process_list`, `process_output`, `process_stop`
+  - Otonom & Hermes: `delegate_task`, `skill_create`, `skill_list`, `goal_manage`, `memory_save`, `memory_recall`, `memory_forget`
+  - Tarayıcı & Masaüstü: `browser_open`, `browser_click`, `browser_type`, `browser_fill`, `browser_screenshot`, `browser_evaluate`, `browser_close`, `desktop_action`, `image_generate`
 
 ---
 
-## 3. İlk Yapılandırma ve Sağlayıcı Ayarları
+## 4. İlk Yapılandırma ve Sağlayıcı Ayarları
 
 Kurulum tamamlandıktan sonra terminalde etkileşimli yapılandırmayı başlatın:
 
@@ -114,7 +131,7 @@ tbot providers
 
 ---
 
-## 4. Sıfır-Backend Yerel Telegram Bot Kurulumu
+## 5. Sıfır-Backend Yerel Telegram Bot Kurulumu
 
 T Bot 2.0; harici bir sunucu, port yönlendirme veya ters tünel (ngrok/cloudflare) gerektirmeden, doğrudan yerel makineniz üzerinden Telegram Bot API'ye Long-Polling ile bağlanır.
 
@@ -151,7 +168,7 @@ Telefondan Telegram botunuza mesaj yazdığınızda:
 
 ---
 
-## 5. Güncelleme ve Kaldırma
+## 6. Güncelleme ve Kaldırma
 
 ### Güncelleme
 En son sürümdeki yenilikleri almak için kurulum komutunu tekrar çalıştırmanız yeterlidir:
@@ -168,26 +185,26 @@ curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/script
 
 **npm ile:**
 ```bash
-npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git
+npm install -g --force git+https://github.com/egemenkrdsek-boop/t-bot.git
 ```
 
 ### Kaldırma
 ```bash
-npm uninstall --global t-bot-cli
+npm uninstall -g t-bot-cli
 ```
 
 ---
 
-## 6. Sorun Giderme (FAQ)
+## 7. Sorun Giderme (FAQ)
 
 ### S: `tbot` Komutu Tanınmıyor / Bulunamadı
 * **Cevap:** npm global ikili klasörü işletim sisteminizin `PATH` çevre değişkeninde yer almıyor olabilir.
-  - Windows'ta: `%APPDATA%\npm` klasörünün PATH içinde olduğunu denetleyin.
+  - Windows'ta: `install.ps1` betiği `%APPDATA%\npm` dizinini kullanıcı `PATH` değişkenine kalıcı olarak ekler; yeni bir terminal penceresi açmanız yeterlidir.
   - Linux/macOS'ta: `export PATH="$(npm prefix -g)/bin:$PATH"` satırını `~/.bashrc` veya `~/.zshrc` dosyanıza ekleyin.
 
 ### S: Kurulum Sırasında `EACCES: permission denied` Hatası Alıyorum
 * **Cevap:** Linux veya macOS'ta global npm dizinine yazma yetkisi gerekebilir:
-  `sudo npm install -g git+https://github.com/egemenkrdsek-boop/t-bot.git`
+  `sudo npm install -g --force git+https://github.com/egemenkrdsek-boop/t-bot.git`
   veya npm belgelerine uygun olarak global prefix'inizi ev dizininize yönlendirin.
 
 ### S: Sağlayıcıdan `401 Unauthorized` Hatası Alıyorum

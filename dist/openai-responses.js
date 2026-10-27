@@ -1,4 +1,5 @@
 import { describeEffort } from './effort.js';
+import { sse } from './providers.js';
 /** Stateless Responses API adapter for models that require it for function calls. */
 export function createOpenAIResponsesProvider(config) {
     return { id: 'openai', label: 'OpenAI', async *stream(messages, tools, options = {}) {
@@ -42,59 +43,25 @@ export function createOpenAIResponsesProvider(config) {
                     throw new Error(`Provider request failed (HTTP ${response.status}).`);
                 if (!response.body)
                     throw new Error('Provider returned an empty response stream.');
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let data = [];
-                let frameSize = 0;
                 let finished = false;
                 const items = new Map();
                 let usage;
-                try {
-                    while (true) {
-                        const part = await reader.read();
-                        buffer += decoder.decode(part.value, { stream: !part.done });
-                        let match;
-                        while ((match = /\r\n|\r|\n/.exec(buffer))) {
-                            if (!part.done && match[0] === '\r' && match.index === buffer.length - 1)
-                                break;
-                            const line = buffer.slice(0, match.index);
-                            buffer = buffer.slice(match.index + match[0].length);
-                            frameSize += line.length + match[0].length;
-                            if (frameSize > 4_000_000)
-                                throw new Error('Provider stream frame is too large.');
-                            if (line.startsWith('data:'))
-                                data.push(line.slice(5).replace(/^ /, ''));
-                            else if (!line) {
-                                const payload = data.join('\n');
-                                data = [];
-                                frameSize = 0;
-                                if (!payload || payload === '[DONE]')
-                                    continue;
-                                const event = JSON.parse(payload);
-                                if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete')
-                                    throw new Error('Provider reported a stream error.');
-                                if (event.type === 'response.output_text.delta' && typeof event.delta === 'string')
-                                    yield { type: 'text', text: event.delta };
-                                if (event.type === 'response.output_item.done' && typeof event.output_index === 'number' && event.item && typeof event.item === 'object' && !Array.isArray(event.item))
-                                    items.set(event.output_index, event.item);
-                                if (event.type === 'response.completed') {
-                                    if (event.response?.status !== 'completed')
-                                        throw new Error('Incomplete provider stream.');
-                                    finished = true;
-                                    usage = event.response.usage;
-                                }
-                            }
-                        }
-                        if (frameSize + buffer.length > 4_000_000)
-                            throw new Error('Provider stream frame is too large.');
-                        if (part.done)
-                            break;
+                for await (const payload of sse(response.body)) {
+                    if (!payload || payload === '[DONE]')
+                        continue;
+                    const event = JSON.parse(payload);
+                    if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete')
+                        throw new Error('Provider reported a stream error.');
+                    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string')
+                        yield { type: 'text', text: event.delta };
+                    if (event.type === 'response.output_item.done' && typeof event.output_index === 'number' && event.item && typeof event.item === 'object' && !Array.isArray(event.item))
+                        items.set(event.output_index, event.item);
+                    if (event.type === 'response.completed') {
+                        if (event.response?.status !== 'completed')
+                            throw new Error('Incomplete provider stream.');
+                        finished = true;
+                        usage = event.response.usage;
                     }
-                }
-                finally {
-                    await reader.cancel().catch(() => { });
-                    reader.releaseLock();
                 }
                 if (!finished)
                     throw new Error('Incomplete provider stream.');
@@ -126,7 +93,10 @@ export function createOpenAIResponsesProvider(config) {
                 }
             }
             catch (error) {
-                yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' };
+                const msg = error instanceof Error && error.message === 'Sağlayıcı akış çerçevesi çok büyük.'
+                    ? 'Provider stream frame is too large.'
+                    : error instanceof Error ? error.message : '';
+                yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : /^(Provider|Incomplete|Tool arguments)/.test(msg) ? msg : 'Provider request failed or returned invalid data.' };
             }
         } };
 }

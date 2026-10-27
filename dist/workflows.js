@@ -1,69 +1,22 @@
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { runAgent } from './agent.js';
+import { withFileLock } from './lock.js';
 import { reclaimMemory } from './memory-guard.js';
+import { estimateMessagesTokens, globalTokenTracker } from './token-optimizer.js';
 const goalPath = (workspace) => join(workspace, '.tbot', 'goal.json');
-function isPidRunning(pid) {
-    if (!Number.isInteger(pid) || pid <= 0)
-        return false;
+const goalLockPath = (workspace) => join(workspace, '.tbot', 'goal.lock');
+async function withGoalLock(workspace, action) {
     try {
-        process.kill(pid, 0);
-        return true;
+        return await withFileLock(goalLockPath(workspace), action, 30_000);
     }
     catch (error) {
-        return error?.code === 'EPERM';
+        if (error.code === 'EEXIST') {
+            throw new Error('Hedef başka bir işlem tarafından kilitlenmiş. Çalışan başka bir T Bot işlemi yoksa .tbot/goal.lock dosyasını silip tekrar deneyin.');
+        }
+        throw error;
     }
-}
-// Serialize read-modify-write operations across processes with stale lock detection.
-async function withGoalLock(workspace, action) {
-    const dir = join(workspace, '.tbot');
-    const path = join(dir, 'goal.lock');
-    await mkdir(dir, { recursive: true });
-    for (let attempt = 0; attempt < 40; attempt++) {
-        let handle;
-        try {
-            handle = await open(path, 'wx', 0o600);
-            await handle.writeFile(String(process.pid), 'utf8');
-        }
-        catch (error) {
-            if (handle) {
-                await handle.close().catch(() => undefined);
-            }
-            if (error.code !== 'EEXIST')
-                throw error;
-            // Bayat kilit (stale lock) kontrolü: 30 saniyeden eskiyse veya PID çalışmıyorsa devral
-            try {
-                const stats = await stat(path);
-                const isStaleByAge = (Date.now() - stats.mtimeMs) > 30_000;
-                let isDeadPid = false;
-                if (!isStaleByAge) {
-                    const content = await readFile(path, 'utf8').catch(() => '');
-                    const pid = parseInt(content.trim(), 10);
-                    if (content.trim() && !isPidRunning(pid)) {
-                        isDeadPid = true;
-                    }
-                }
-                if (isStaleByAge || isDeadPid) {
-                    await unlink(path).catch(() => undefined);
-                    continue;
-                }
-            }
-            catch {
-                // Dosya eşzamanlı olarak silinmiş olabilir
-            }
-            await new Promise(resolve => setTimeout(resolve, 50));
-            continue;
-        }
-        try {
-            return await action();
-        }
-        finally {
-            await handle.close().catch(() => undefined);
-            await unlink(path).catch(() => undefined);
-        }
-    }
-    throw new Error('Hedef başka bir işlem tarafından kilitlenmiş. Çalışan başka bir T Bot işlemi yoksa .tbot/goal.lock dosyasını silip tekrar deneyin.');
 }
 export async function getGoal(workspace) {
     let raw;
@@ -79,10 +32,13 @@ export async function getGoal(workspace) {
     if (!value || typeof value !== 'object')
         throw new Error('Kayıtlı hedef geçersiz.');
     const goal = value;
-    if (typeof goal.id !== 'string' || typeof goal.objective !== 'string' ||
+    if (typeof goal.id !== 'string' ||
+        typeof goal.objective !== 'string' ||
         !['active', 'paused', 'completed', 'cancelled'].includes(goal.status) ||
-        typeof goal.createdAt !== 'string' || typeof goal.updatedAt !== 'string')
+        typeof goal.createdAt !== 'string' ||
+        typeof goal.updatedAt !== 'string') {
         throw new Error('Kayıtlı hedef geçersiz.');
+    }
     return goal;
 }
 async function saveGoal(workspace, goal) {
@@ -103,10 +59,19 @@ export async function startGoal(workspace, objective) {
         throw new Error('Hedef açıklaması boş olamaz.');
     return withGoalLock(workspace, async () => {
         const existing = await getGoal(workspace);
-        if (existing && (existing.status === 'active' || existing.status === 'paused'))
+        if (existing && (existing.status === 'active' || existing.status === 'paused')) {
             throw new Error('Zaten mevcut bir hedef var; yeni bir hedef başlatmadan önce mevcudu tamamlayın veya iptal edin.');
+        }
         const now = new Date().toISOString();
-        const goal = { id: randomUUID(), objective, status: 'active', createdAt: now, updatedAt: now, revision: randomUUID(), notes: [] };
+        const goal = {
+            id: randomUUID(),
+            objective,
+            status: 'active',
+            createdAt: now,
+            updatedAt: now,
+            revision: randomUUID(),
+            notes: [],
+        };
         await saveGoal(workspace, goal);
         return goal;
     });
@@ -114,8 +79,9 @@ export async function startGoal(workspace, objective) {
 async function changeGoal(workspace, status, allowed) {
     return withGoalLock(workspace, async () => {
         const goal = await getGoal(workspace);
-        if (!goal || !allowed.includes(goal.status))
+        if (!goal || !allowed.includes(goal.status)) {
             throw new Error('Bu işlem için uygun bir hedef bulunamadı.');
+        }
         const updated = { ...goal, status, updatedAt: new Date().toISOString(), revision: randomUUID() };
         await saveGoal(workspace, updated);
         return updated;
@@ -128,8 +94,9 @@ export const completeGoal = (workspace) => changeGoal(workspace, 'completed', ['
 /** Çok Adımlı Otonom Hedef Döngüsü (Autonomous Goal Loop) */
 export async function runGoal(input, runner = runAgent, options = {}) {
     const initialGoal = await getGoal(input.workspace);
-    if (!initialGoal || initialGoal.status !== 'active')
+    if (!initialGoal || initialGoal.status !== 'active') {
         throw new Error('Aktif bir hedef bulunamadı. Önce bir hedef başlatın veya devam ettirin.');
+    }
     const maxSteps = options.maxAutonomousSteps ?? 4;
     let conversation = [...input.history];
     let currentGoal = initialGoal;
@@ -197,10 +164,13 @@ Yönergeler:
                 currentGoal = updatedGoal;
             }
         });
-        // Her adım sonunda await reclaimMemory(options.session) çağırarak RAM'i temizle
-        await reclaimMemory(options.session ?? input.session, true).catch(() => undefined);
+        // Her adım sonunda hızlı JS/V8 RAM temizliği (PowerShell bloklaması olmadan)
+        await reclaimMemory(options.session ?? input.session, false).catch(() => undefined);
         if (isCompleted) {
-            input.onEvent({ type: 'status', message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])' });
+            input.onEvent({
+                type: 'status',
+                message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])',
+            });
             break;
         }
         if (stepFailed || input.signal?.aborted) {
@@ -212,12 +182,17 @@ Yönergeler:
 /** Planlama yalnızca sağlayıcı düzeyinde bir çağrıdır: Araçlar sunulmaz ve yürütülmez. */
 export async function planTask(input) {
     const user = { role: 'user', content: input.message };
-    const prompt = { role: 'system', content: 'Kullanıcı isteği için somut, sıralı ve uygulanabilir bir plan oluştur. İlgili kontrolleri, varsayımları ve belirsizlikleri dahil et. Dosyaları incelediğini veya eylem gerçekleştirdiğini iddia etme. Bu yalnızca bir planlama adımıdır; yürütme kullanıcının ayrı bir onayını gerektirir.' };
+    const prompt = {
+        role: 'system',
+        content: 'Kullanıcı isteği için somut, sıralı ve uygulanabilir bir plan oluştur. İlgili kontrolleri, varsayımları ve belirsizlikleri dahil et. Dosyaları incelediğini veya eylem gerçekleştirdiğini iddia etme. Bu yalnızca bir planlama adımıdır; yürütme kullanıcının ayrı bir onayını gerektirir.',
+    };
+    const planMessages = [prompt, user];
     let content = '';
     let responseItems;
     let reported = false;
+    let usageRecorded = false;
     try {
-        for await (const event of input.provider.stream([prompt, user], [], { signal: input.signal })) {
+        for await (const event of input.provider.stream(planMessages, [], { signal: input.signal })) {
             input.signal?.throwIfAborted();
             if (event.type === 'text') {
                 content += event.text;
@@ -225,26 +200,71 @@ export async function planTask(input) {
                 if (content.length > 40_000)
                     throw new Error('Plan yanıt sınırını aştı.');
             }
-            else if (event.type === 'response_items')
+            else if (event.type === 'response_items') {
                 responseItems = event.responseItems;
-            else if (event.type === 'usage')
-                input.onEvent(event);
+            }
+            else if (event.type === 'usage') {
+                usageRecorded = true;
+                const sentInputTokens = event.inputTokens ?? estimateMessagesTokens(planMessages);
+                const outputTokens = event.outputTokens ?? estimateMessagesTokens([{ role: 'assistant', content }]);
+                const report = globalTokenTracker.recordTurn({
+                    rawTokens: sentInputTokens,
+                    sentInputTokens,
+                    outputTokens,
+                    cachedTokens: event.cachedTokens,
+                    prunedSchemaTokens: 0,
+                    compressedHistoryTokens: 0,
+                });
+                input.onEvent({
+                    type: 'usage',
+                    inputTokens: sentInputTokens,
+                    outputTokens,
+                    cachedTokens: report.turnCachedTokens ?? 0,
+                    savedTokens: report.turnSavedTokens ?? 0,
+                    savingsPercent: report.savingsPercent,
+                });
+            }
             else if (event.type === 'error') {
                 input.onEvent(event);
                 reported = true;
                 throw new Error(event.error);
             }
-            else if (event.type === 'tool_calls')
+            else if (event.type === 'tool_calls') {
                 throw new Error('Planlama aşamasında araç çağrıları yürütülemez.');
+            }
         }
         input.signal?.throwIfAborted();
         if (!content.trim())
             throw new Error('Sağlayıcı boş bir plan döndürdü.');
+        if (!usageRecorded) {
+            const sentInputTokens = estimateMessagesTokens(planMessages);
+            const outputTokens = estimateMessagesTokens([{ role: 'assistant', content }]);
+            const report = globalTokenTracker.recordTurn({
+                rawTokens: sentInputTokens,
+                sentInputTokens,
+                outputTokens,
+                cachedTokens: 0,
+                prunedSchemaTokens: 0,
+                compressedHistoryTokens: 0,
+            });
+            input.onEvent({
+                type: 'usage',
+                inputTokens: sentInputTokens,
+                outputTokens,
+                cachedTokens: report.turnCachedTokens ?? 0,
+                savedTokens: report.turnSavedTokens ?? 0,
+                savingsPercent: report.savingsPercent,
+            });
+        }
         return [...input.history, user, { role: 'assistant', content, ...(responseItems ? { responseItems } : {}) }];
     }
     catch (error) {
-        if (!reported)
-            input.onEvent({ type: 'error', error: input.signal?.aborted ? 'Planlama İptal Edildi.' : error instanceof Error ? error.message : String(error) });
+        if (!reported) {
+            input.onEvent({
+                type: 'error',
+                error: input.signal?.aborted ? 'Planlama İptal Edildi.' : error instanceof Error ? error.message : String(error),
+            });
+        }
         throw error;
     }
 }
@@ -252,6 +272,9 @@ export async function planTask(input) {
 export function executePlan(input, plan, runner = runAgent) {
     if (!plan.trim())
         throw new Error('Yürütülecek bir plan bulunmuyor.');
-    return runner({ ...input, message: `Bu istek için kullanıcı tarafından onaylanan aşağıdaki planı yürüt: ${input.message}\n\n${plan}\n\nNormal araç onaylarını kullan ve kanıtlar gerektiriyorsa plana uyum sağla.` });
+    return runner({
+        ...input,
+        message: `Bu istek için kullanıcı tarafından onaylanan aşağıdaki planı yürüt: ${input.message}\n\n${plan}\n\nNormal araç onaylarını kullan ve kanıtlar gerektiriyorsa plana uyum sağla.`,
+    });
 }
 //# sourceMappingURL=workflows.js.map

@@ -5,17 +5,17 @@ export function describeEffort(provider, model, level = 'medium') {
     const id = model.toLowerCase();
     let choices;
     if (provider === 'openai') {
-        if (/^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/.test(id))
+        if (/^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/.test(id) || /^o(?:3|4-mini)(?:[.-]|$)/.test(id))
             choices = ['low', 'medium', 'high', 'xhigh', 'max'];
         else if (/^gpt-5-pro(?:-|$)/.test(id))
             choices = ['high'];
         else if (/^gpt-5\.(?:[2-9]|[1-9][0-9])(?:[.-]|$)/.test(id))
             choices = ['low', 'medium', 'high', 'xhigh'];
-        else if (/^gpt-5(?:[.-]|$)/.test(id) || /^o(?:3|4-mini)(?:[.-]|$)/.test(id))
+        else if (/^gpt-5(?:[.-]|$)/.test(id))
             choices = ['low', 'medium', 'high'];
     }
     else if (provider === 'anthropic') {
-        if (/^claude-(?:fable-5|mythos-5|mythos-preview|opus-(?:5|4-[78])|sonnet-5|haiku-5-5)(?:-|$)/.test(id))
+        if (/^claude-(?:fable-5|mythos-5|mythos-preview|opus-(?:5|4-[78])|sonnet-5|haiku-5-5|sonnet-4|3-7|3\.7)(?:[.-]|$)/.test(id))
             choices = ['low', 'medium', 'high', 'xhigh', 'max'];
         else if (/^claude-(?:opus-4-6|sonnet-4-6)(?:-|$)/.test(id))
             choices = ['low', 'medium', 'high', 'max'];
@@ -23,14 +23,16 @@ export function describeEffort(provider, model, level = 'medium') {
             choices = ['low', 'medium', 'high'];
     }
     else if (provider === 'gemini') {
-        if (/^gemini-(?:3-(?:pro-preview|1-flash-lite-image)|3\.1-flash-lite-image)(?:-|$)/.test(id))
+        if (/^gemini-(?:2\.5|4)(?:[.-]|$)/.test(id) && !/(?:image|audio|live|tts)/.test(id))
+            choices = ['low', 'medium', 'high', 'xhigh', 'max'];
+        else if (/^gemini-(?:3-(?:pro-preview|1-flash-lite-image)|3\.1-flash-lite-image)(?:-|$)/.test(id))
             choices = ['low', 'high'];
-        else if (/^gemini-(?:3\.(?:1|5|6|7|8)|3-flash|4-argon)(?:-|$)/.test(id) && !/(?:image|audio|live|tts)/.test(id))
+        else if (/^gemini-(?:3\.(?:1|5|6|7|8)|3-flash)(?:-|$)/.test(id) && !/(?:image|audio|live|tts)/.test(id))
             choices = ['low', 'medium', 'high'];
     }
     else if (provider === 'openrouter') {
-        if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4\.6|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:3|4))(?:[.\/-]|$)/.test(id))
-            choices = ['low', 'medium', 'high', 'xhigh'];
+        if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4|3-7|3\.7|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:2\.5|3|4))(?:[.\/-]|$)/.test(id))
+            choices = ['low', 'medium', 'high', 'xhigh', 'max'];
     }
     if (!choices)
         return { supported: false, message: 'Bu model için düşünme düzeyi kontrolü doğrulanmadı; sağlayıcının varsayılanı kullanılacak.' };

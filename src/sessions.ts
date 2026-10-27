@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { withFileLock } from './lock.js';
 import type { Message } from './types.js';
 
 export interface Session {
@@ -24,26 +25,16 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
 
-function isProcessAlive(pid: number): boolean {
-  if (!pid || isNaN(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /** Redact common credentials before persistence. This cannot recognize every possible secret. */
-function redactString(value: string): string {
-  return value
+export function redactSecrets(text: string): string {
+  return text
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, '$1 [REDACTED]')
     .replace(/\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, '[REDACTED]')
     .replace(/((?:api[_-]?key|token|password|secret|credential|authorization)["']?\s*[=:]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED PRIVATE KEY]');
 }
 function redact(value: unknown): unknown {
-  if (typeof value === 'string') return redactString(value);
+  if (typeof value === 'string') return redactSecrets(value);
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SECRET_KEY.test(key) ? '[REDACTED]' : redact(item)]));
@@ -77,42 +68,7 @@ export class SessionStore {
     this.file(id);
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const lock = path.join(this.directory, `.${id}.lock`);
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
-    for (let attempt = 0; attempt < 50; attempt++) {
-      try {
-        handle = await fs.open(lock, 'wx', 0o600);
-        await handle.writeFile(String(process.pid));
-        break;
-      }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        let stale = false;
-        try {
-          const stats = await fs.stat(lock);
-          if (Date.now() - stats.mtimeMs > 30_000) {
-            stale = true;
-          } else {
-            const content = await fs.readFile(lock, 'utf8').catch(() => '');
-            const pid = parseInt(content.trim(), 10);
-            if (!pid || !isProcessAlive(pid)) {
-              stale = true;
-            }
-          }
-        } catch {
-          stale = true;
-        }
-        if (stale) {
-          await fs.unlink(lock).catch(() => undefined);
-          continue;
-        }
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-    if (!handle) throw new Error('Session is locked; retry later or remove a stale lock file');
-    try { return await action(); }
-    finally {
-      try { await handle.close(); } finally { await fs.unlink(lock).catch(() => undefined); }
-    }
+    return withFileLock(lock, action);
   }
   private async read(id: string): Promise<Session | null> {
     const file = this.file(id);

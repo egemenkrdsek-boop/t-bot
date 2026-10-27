@@ -23,6 +23,7 @@ export interface GroundingStatus {
 export interface SyntaxValidationResult {
     valid: boolean;
     error?: string;
+    warnings?: string[];
 }
 /**
  * Result of auditing assistant claims against actual tool evidence.
@@ -39,7 +40,7 @@ export interface ClaimAuditResult {
 export declare function normalizePath(filePath: string, workspace?: string): string;
 /**
  * GroundingLedger tracks all file inspections, modifications, and command executions
- * during a session to strictly enforce Grounding and the Read-Before-Write invariant.
+ * during a session and per turn to strictly enforce Grounding and the Read-Before-Write invariant.
  */
 export declare class GroundingLedger {
     inspectedFiles: Set<string>;
@@ -48,13 +49,36 @@ export declare class GroundingLedger {
     gitCommits: number;
     warnings: string[];
     workspace?: string;
+    private turnModifiedFiles;
+    private turnCommandsRun;
+    private turnGitCommits;
     constructor(workspace?: string);
     /**
-     * Mark a file as inspected (e.g. read, outlined, searched).
+     * Resets turn-scoped evidence sets and HUD warnings at the start of each new user request.
+     */
+    beginTurn(): void;
+    /**
+     * Clears active grounding warnings.
+     */
+    clearWarnings(): void;
+    /**
+     * Returns files modified during the current turn.
+     */
+    getTurnModifiedFiles(): ReadonlySet<string>;
+    /**
+     * Returns commands executed successfully during the current turn.
+     */
+    getTurnCommandsRun(): readonly string[];
+    /**
+     * Returns git commit count during the current turn.
+     */
+    getTurnGitCommits(): number;
+    /**
+     * Mark a file as inspected (only via real inspection tools such as file_read or file_outline).
      */
     markFileInspected(filePath: string, workspace?: string): void;
     /**
-     * Mark a file as modified (e.g. written, patched).
+     * Mark a file as modified (e.g. written, patched) in both session and current turn sets.
      */
     markFileModified(filePath: string, workspace?: string): void;
     /**
@@ -67,7 +91,7 @@ export declare class GroundingLedger {
      */
     recordShellCommand(commandOrRecord: string | CommandRunRecord, ok?: boolean, outputSnippet?: string): void;
     /**
-     * Clear all recorded states.
+     * Clear all recorded states (session and turn).
      */
     clear(): void;
     /**
@@ -81,11 +105,17 @@ export declare class GroundingLedger {
     };
     /**
      * Record tool execution results to maintain the grounding ledger.
+     * Note: file_search is intentionally excluded from markFileInspected so files must be
+     * genuinely read or outlined via file_read / file_outline before modification.
      */
     recordToolResult(toolName: string, args: Record<string, unknown>, result: {
         ok: boolean;
         output: string;
     }, workspace?: string): void;
+    /**
+     * Compact (~1,500 chars) evidence summary for Ultracode auditor / verification checks.
+     */
+    getTurnEvidenceSummary(): string;
     /**
      * Return grounding status for HUD and diagnostics.
      */
@@ -108,8 +138,7 @@ export declare function getStatus(ledger?: GroundingLedger): GroundingStatus;
  */
 export declare function recordShellCommand(commandOrRecord: string | CommandRunRecord, ok?: boolean, outputSnippet?: string, ledger?: GroundingLedger): void;
 /**
- * Fast TypeScript lexer/scanner that validates balanced parentheses, braces,
- * brackets, and string/template literals while collecting relative imports.
+ * Fast TypeScript lexer/scanner preserved for backward compatibility.
  */
 export declare function scanTypeScript(content: string): {
     valid: boolean;
@@ -117,13 +146,13 @@ export declare function scanTypeScript(content: string): {
     imports: string[];
 };
 /**
- * Validates file syntax and structure deterministically immediately after writing or patching.
- * Supports .json, .js, .mjs, .cjs, .ts, and .tsx files.
+ * Validates file syntax, AST diagnostics, cross-file exports, and package grounding
+ * deterministically in memory (before writing to disk).
  */
 export declare function validateFileSyntax(filePath: string, content: string, workspace?: string): Promise<SyntaxValidationResult>;
 /**
  * Claim-Evidence Gate:
- * Audits model response text against the session's actual tool history.
- * Detects ungrounded claims about test passes, successful builds, and file modifications.
+ * Audits model response text against the current turn's actual tool history.
+ * Detects ungrounded claims about test passes, successful builds, git commits, and file modifications.
  */
 export declare function auditAssistantClaims(responseText: string, ledger?: GroundingLedger): ClaimAuditResult;
