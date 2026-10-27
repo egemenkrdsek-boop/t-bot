@@ -180,6 +180,13 @@ export async function runAgent(input) {
             input.onEvent({ type: 'error', error: 'Provider returned invalid or excessive tool calls; stopping the agent.' });
             return conversation;
         }
+        // Do not execute actions if there is no remaining round to interpret their results.
+        if (calls.length && round === MAX_ROUNDS - 1) {
+            if (content)
+                conversation.push({ role: 'assistant', content });
+            input.onEvent({ type: 'error', error: 'Agent iteration limit reached; final tool calls were not executed.' });
+            return conversation;
+        }
         const assistant = { role: 'assistant', content, ...(calls.length ? { toolCalls: calls } : {}) };
         conversation.push(assistant);
         turn.push(assistant);
