@@ -35,3 +35,9 @@ Vercel seçeneği T Bot'un Vercel API tokenı kullanan yerel MCP adaptörüdür;
 Her MCP araç çağrısı onay gerektirir; YOLO açıksa onaylar otomatik verilir. Salt okunur alt ajanlar MCP araçlarına erişmez. Gerçek servis bağlantıları veya dağıtımlar bu özellikler için test edilmedi.
 
 Başlangıçtaki logo ve piksel bot animasyonunu kapatmak için `TBOT_NO_ANIMATION` ortam değişkenini tanımlayın. `NO_COLOR`, renkleri kaldırarak piksel görünümünü tek renkli yapar.
+
+## Çalışma modu ve yerleşik beceriler
+
+`/effort` menüsü veya `--effort <düzey>` ile `low`, `medium`, `high`, `xhigh`, `max` arasından seçim yapılır. Varsayılan `medium`; kayıt sağlayıcı ve modele özeldir. Sağlayıcı/model desteğine göre değer eşlenebilir veya varsayılan kullanılabilir. `/ultracode on` ve `/ultracode off` veya başlangıçta `--ultracode`, isteğe bağlı sınırlı araştırma, uygulama ve salt okunur inceleme akışını yönetir.
+
+`/skills` becerileri, `/skills <id>` ise ayrıntılarını gösterir: `/frontenddesign`, `/backend`, `/codereview`, `/debuganalysis`, `/imagegen`. Doğrudan komutların yanı sıra uygun Türkçe ve İngilizce ifadeler de beceri seçebilir. Görsel üretimi için yapılandırılmış OpenAI, Gemini veya OpenRouter anahtarı ve hesabın seçilen görüntü modeline erişimi gerekir. Anthropic için yerel görsel üretimi bulunmaz; desteklenen başka bir sağlayıcının anahtarı gerekir. Görseller `generated-images/` altında saklanır; API isteği ücretli olabilir ve normal araç onay politikasına tabidir.

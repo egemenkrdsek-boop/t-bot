@@ -1,6 +1,7 @@
 import { open, realpath } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { executeTool, getToolDefinitions } from './tools/index.js';
+import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
 import type { AgentInput, ImageAttachment, Message, ToolCall } from './types.js';
 
 const MAX_ROUNDS = 20;
@@ -32,7 +33,8 @@ function compactMessages(messages: Message[], preserveLastToolBatch: boolean): M
 
 function size(messages: Message[]): number {
   return messages.reduce((total, message) => total + message.content.length +
-    (message.toolCalls ? JSON.stringify(message.toolCalls).length : 0) + 64, 0);
+    (message.toolCalls ? JSON.stringify(message.toolCalls).length : 0) +
+    (message.responseItems ? JSON.stringify(message.responseItems).length : 0) + 64, 0);
 }
 
 /** Keep complete recent conversation turns so tool-call messages stay paired. */
@@ -109,15 +111,19 @@ const READ_ONLY_TOOLS = new Set(['file_read', 'file_list', 'file_search', 'git_s
 /** Run one user turn, returning the conversation including any native tool calls. */
 export async function runAgent(input: AgentInput, options: AgentRunOptions = {}): Promise<Message[]> {
   const conversation: Message[] = [...input.history, { role: 'user', content: input.message }];
-  const system: Message = { role: 'system', content: SYSTEM_PROMPT };
-  const turn: Message[] = [{ role: 'user', content: input.message }];
+  const skills = resolveSkills(input.message);
+  const skillPrompt = buildSkillPrompt(skills);
+  const readOnly = options.toolPolicy === 'read-only' || skillRequiresReadOnly(skills, input.message);
+  const system: Message = { role: 'system', content: skillPrompt ? `${SYSTEM_PROMPT}\n${skillPrompt}` : SYSTEM_PROMPT };
+  const stripped = stripSkillCommand(input.message);
+  const turn: Message[] = [{ role: 'user', content: stripped || (skills.length ? 'Inspect the current workspace for this task.' : input.message) }];
   const initialBudget = MAX_CONTEXT_CHARS - size([system, ...turn]);
   if (initialBudget < 0) {
     input.onEvent({ type: 'error', error: 'The message is too large for the agent context.' });
     return conversation;
   }
   const previous = selectHistory(input.history, initialBudget);
-  const definitions = getToolDefinitions(input.mcpTools).filter(tool => options.toolPolicy !== 'read-only' || READ_ONLY_TOOLS.has(tool.name));
+  const definitions = getToolDefinitions(input.mcpTools).filter(tool => !readOnly || READ_ONLY_TOOLS.has(tool.name));
   const maxRounds = Math.max(1, Math.min(MAX_ROUNDS, Math.floor(options.maxRounds ?? MAX_ROUNDS) || 1));
   const maxToolCalls = Math.max(0, Math.min(MAX_TOOL_CALLS, Math.floor(options.maxToolCalls ?? MAX_TOOL_CALLS) || 0));
   let toolCount = 0;
@@ -137,6 +143,7 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
     const messages = [system, ...selectHistory(previous, available), ...requestTurn];
     let content = '';
     const calls: ToolCall[] = [];
+    let responseItems: Record<string, unknown>[] | undefined;
     let failed = false;
     try {
       for await (const event of input.provider.stream(limitImages(messages), definitions, { signal: input.signal })) {
@@ -151,11 +158,14 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
           }
         } else if (event.type === 'tool_calls') {
           calls.push(...event.calls);
+          if (event.responseItems) responseItems = event.responseItems;
           if (calls.length > MAX_CALLS_PER_ROUND) {
             input.onEvent({ type: 'error', error: 'Provider returned too many tool calls; stopping the agent.' });
             failed = true;
             break;
           }
+        } else if (event.type === 'response_items') {
+          responseItems = event.responseItems;
         } else if (event.type === 'usage') {
           input.onEvent(event);
         } else if (event.type === 'error') {
@@ -188,7 +198,7 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
       input.onEvent({ type: 'error', error: 'Agent iteration limit reached; final tool calls were not executed.' });
       return conversation;
     }
-    const assistant: Message = { role: 'assistant', content, ...(calls.length ? { toolCalls: calls } : {}) };
+    const assistant: Message = { role: 'assistant', content, ...(calls.length ? { toolCalls: calls } : {}), ...(responseItems ? { responseItems } : {}) };
     conversation.push(assistant);
     turn.push(assistant);
     if (!calls.length) return conversation;
@@ -199,10 +209,10 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
       input.onEvent({ type: 'tool_start', call });
       let result: string;
       try {
-        result = options.toolPolicy === 'read-only' && !READ_ONLY_TOOLS.has(call.name)
+        result = readOnly && !READ_ONLY_TOOLS.has(call.name)
           ? 'Tool denied: this agent is restricted to read-only tools.'
           : input.signal?.aborted ? 'Tool execution cancelled.' : await executeTool(call, {
-          workspace: input.workspace, approve: input.approve, signal: input.signal, mcpTools: input.mcpTools,
+          workspace: input.workspace, approve: input.approve, signal: input.signal, mcpTools: input.mcpTools, imageProvider: input.imageProvider,
         });
       } catch (error) {
         result = `Tool error: ${error instanceof Error ? error.message : String(error)}`;

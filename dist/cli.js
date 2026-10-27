@@ -1,3 +1,4 @@
+import { EFFORT_LEVELS } from './effort.js';
 export const HELP = `T Bot — yerel AI ajanı
 
 Kullanım:
@@ -18,6 +19,8 @@ Seçenekler:
   -w, --workspace <yol>  Çalışma dizini
   -r, --resume <id>      Oturuma devam et
       --yolo             Araç onaylarını bu oturumda otomatik ver
+      --effort <düzey>   Low, Medium, High, XHigh veya Max
+      --ultracode        Bu oturumda Ultracode modunu aç
   -h, --help             Yardım
   -v, --version          Sürüm`;
 export function parseCli(argv) {
@@ -33,6 +36,10 @@ export function parseCli(argv) {
             positional.push(...argv.slice(i + 1));
             break;
         }
+        if (arg === '--ultracode') {
+            options.ultracode = true;
+            continue;
+        }
         if (arg === '--yolo') {
             options.yolo = true;
             continue;
@@ -47,6 +54,13 @@ export function parseCli(argv) {
         }
         const equal = arg.indexOf('=');
         const key = equal < 0 ? arg : arg.slice(0, equal);
+        if (key === '--effort') {
+            const value = (equal < 0 ? argv[++i] : arg.slice(equal + 1))?.toLowerCase();
+            if (!value || !EFFORT_LEVELS.includes(value))
+                throw new Error('--effort: low, medium, high, xhigh veya max seçin.');
+            options.effort = value;
+            continue;
+        }
         if (keys[key]) {
             const value = equal < 0 ? argv[++i] : arg.slice(equal + 1);
             if (!value || (equal < 0 && value.startsWith('-')))

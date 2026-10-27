@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getApiKey } from './secrets.js';
+import { EFFORT_LEVELS, type EffortLevel } from './effort.js';
 
 export type WorkspacePermission = 'ask' | 'allow';
 export interface AppConfig {
@@ -10,8 +11,9 @@ export interface AppConfig {
   model: string;
   baseUrl?: string;
   workspacePermissions: Record<string, WorkspacePermission>;
+  efforts?: Record<string, EffortLevel>;
 }
-export interface ResolvedProviderConfig { id: string; model: string; apiKey?: string; baseUrl?: string }
+export interface ResolvedProviderConfig { id: string; model: string; apiKey?: string; baseUrl?: string; effort: EffortLevel }
 export const configDirectory = (): string => join(process.env.APPDATA || join(homedir(), '.config'), 'TBot');
 const revisions = new WeakMap<AppConfig, string | null>();
 const remember = (config: AppConfig, revision: string | null): AppConfig => { revisions.set(config, revision); return config; };
@@ -74,7 +76,11 @@ export async function loadConfig(): Promise<AppConfig> {
     if (permission !== 'ask' && permission !== 'allow') throw new Error('Invalid workspace permission in config');
     permissions[key] = permission;
   }
-  return remember({ provider: (input.provider as string | undefined) ?? defaults.provider, model: (input.model as string | undefined) ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl as string } : {}), workspacePermissions: permissions }, raw);
+  const efforts: Record<string, EffortLevel> = {};
+  if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
+    for (const [key, level] of Object.entries(input.efforts)) if (typeof level === 'string' && EFFORT_LEVELS.includes(level as EffortLevel)) efforts[key] = level as EffortLevel;
+  }
+  return remember({ provider: (input.provider as string | undefined) ?? defaults.provider, model: (input.model as string | undefined) ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl as string } : {}), workspacePermissions: permissions, efforts }, raw);
 }
 
 export async function saveConfig(config: AppConfig): Promise<void> {
@@ -97,7 +103,7 @@ export async function saveConfig(config: AppConfig): Promise<void> {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; current = null; }
     if (current !== revisions.get(config)) throw new Error('Configuration changed since it was loaded; reload before saving');
     // Persist only known non-secret fields.
-    const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions };
+    const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions, efforts: config.efforts ?? {} };
     const contents = JSON.stringify(value, null, 2) + '\n';
     await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });
     await rename(temp, path);
@@ -110,7 +116,15 @@ export async function saveConfig(config: AppConfig): Promise<void> {
 function workspaceKey(workspace: string): string { const path = resolve(workspace); return process.platform === 'win32' ? path.toLowerCase() : path; }
 export function getWorkspacePermission(config: AppConfig, workspace: string): WorkspacePermission { return config.workspacePermissions[workspaceKey(workspace)] ?? 'ask'; }
 export function setWorkspacePermission(config: AppConfig, workspace: string, permission: WorkspacePermission): void { config.workspacePermissions[workspaceKey(workspace)] = permission; }
+export function getEffort(config: AppConfig, provider = config.provider, model = config.model): EffortLevel {
+  const level = config.efforts?.[`${provider}:${model}`];
+  return level && EFFORT_LEVELS.includes(level) ? level : 'medium';
+}
+export function setEffort(config: AppConfig, level: EffortLevel, provider = config.provider, model = config.model): void {
+  if (!EFFORT_LEVELS.includes(level)) throw new Error('Invalid effort level');
+  (config.efforts ??= {})[`${provider}:${model}`] = level;
+}
 export async function resolveProviderConfig(config: AppConfig, _workspace?: string): Promise<ResolvedProviderConfig> {
   const apiKey = await getApiKey(config.provider);
-  return { id: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
+  return { id: config.provider, model: config.model, effort: getEffort(config), ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }

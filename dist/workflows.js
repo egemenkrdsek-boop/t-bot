@@ -91,13 +91,13 @@ export const resumeGoal = (workspace) => changeGoal(workspace, 'active', ['pause
 export const cancelGoal = (workspace) => changeGoal(workspace, 'cancelled', ['active', 'paused']);
 // Completion is explicit; exhausting a run or receiving an assistant response never implies success.
 export const completeGoal = (workspace) => changeGoal(workspace, 'completed', ['active', 'paused']);
-export async function runGoal(input) {
+export async function runGoal(input, runner = runAgent) {
     const goal = await getGoal(input.workspace);
     if (!goal || goal.status !== 'active')
         throw new Error('No active goal. Start or resume a goal first.');
     let failed = false;
     const message = `Continue the saved goal: ${goal.objective}\n${goal.lastResult ? `Previous progress: ${goal.lastResult}\n` : ''}${input.message.trim() ? `Current instruction: ${input.message.trim()}\n` : ''}Work within the normal tool approvals. Report what was done, what remains, and any blockers. Do not claim completion without evidence.`;
-    const result = await runAgent({ ...input, message, onEvent: event => { if (event.type === 'error')
+    const result = await runner({ ...input, message, onEvent: event => { if (event.type === 'error')
             failed = true; input.onEvent(event); } });
     await withGoalLock(input.workspace, async () => {
         const current = await getGoal(input.workspace);
@@ -113,6 +113,7 @@ export async function planTask(input) {
     const user = { role: 'user', content: input.message };
     const prompt = { role: 'system', content: 'Create a concrete, ordered, actionable plan for the user request. Include relevant checks, assumptions, and uncertainties. Do not claim to have inspected files or performed actions. This is planning only; execution requires a separate user choice.' };
     let content = '';
+    let responseItems;
     let reported = false;
     try {
         for await (const event of input.provider.stream([prompt, user], [], { signal: input.signal })) {
@@ -123,6 +124,8 @@ export async function planTask(input) {
                 if (content.length > 40_000)
                     throw new Error('Plan exceeds the response limit.');
             }
+            else if (event.type === 'response_items')
+                responseItems = event.responseItems;
             else if (event.type === 'usage')
                 input.onEvent(event);
             else if (event.type === 'error') {
@@ -136,7 +139,7 @@ export async function planTask(input) {
         input.signal?.throwIfAborted();
         if (!content.trim())
             throw new Error('Provider returned an empty plan.');
-        return [...input.history, user, { role: 'assistant', content }];
+        return [...input.history, user, { role: 'assistant', content, ...(responseItems ? { responseItems } : {}) }];
     }
     catch (error) {
         if (!reported)
@@ -145,9 +148,9 @@ export async function planTask(input) {
     }
 }
 /** Call only after the user explicitly chooses to execute the displayed plan. */
-export function executePlan(input, plan) {
+export function executePlan(input, plan, runner = runAgent) {
     if (!plan.trim())
         throw new Error('There is no plan to execute.');
-    return runAgent({ ...input, message: `Execute the following user-approved plan for this request: ${input.message}\n\n${plan}\n\nUse normal tool approvals and adapt if the evidence requires it.` });
+    return runner({ ...input, message: `Execute the following user-approved plan for this request: ${input.message}\n\n${plan}\n\nUse normal tool approvals and adapt if the evidence requires it.` });
 }
 //# sourceMappingURL=workflows.js.map

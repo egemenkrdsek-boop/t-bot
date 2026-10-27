@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getApiKey } from './secrets.js';
+import { EFFORT_LEVELS } from './effort.js';
 export const configDirectory = () => join(process.env.APPDATA || join(homedir(), '.config'), 'TBot');
 const revisions = new WeakMap();
 const remember = (config, revision) => { revisions.set(config, revision); return config; };
@@ -88,7 +89,13 @@ export async function loadConfig() {
             throw new Error('Invalid workspace permission in config');
         permissions[key] = permission;
     }
-    return remember({ provider: input.provider ?? defaults.provider, model: input.model ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}), workspacePermissions: permissions }, raw);
+    const efforts = {};
+    if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
+        for (const [key, level] of Object.entries(input.efforts))
+            if (typeof level === 'string' && EFFORT_LEVELS.includes(level))
+                efforts[key] = level;
+    }
+    return remember({ provider: input.provider ?? defaults.provider, model: input.model ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}), workspacePermissions: permissions, efforts }, raw);
 }
 export async function saveConfig(config) {
     const dir = configDirectory();
@@ -122,7 +129,7 @@ export async function saveConfig(config) {
         if (current !== revisions.get(config))
             throw new Error('Configuration changed since it was loaded; reload before saving');
         // Persist only known non-secret fields.
-        const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions };
+        const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions, efforts: config.efforts ?? {} };
         const contents = JSON.stringify(value, null, 2) + '\n';
         await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });
         await rename(temp, path);
@@ -141,8 +148,17 @@ export async function saveConfig(config) {
 function workspaceKey(workspace) { const path = resolve(workspace); return process.platform === 'win32' ? path.toLowerCase() : path; }
 export function getWorkspacePermission(config, workspace) { return config.workspacePermissions[workspaceKey(workspace)] ?? 'ask'; }
 export function setWorkspacePermission(config, workspace, permission) { config.workspacePermissions[workspaceKey(workspace)] = permission; }
+export function getEffort(config, provider = config.provider, model = config.model) {
+    const level = config.efforts?.[`${provider}:${model}`];
+    return level && EFFORT_LEVELS.includes(level) ? level : 'medium';
+}
+export function setEffort(config, level, provider = config.provider, model = config.model) {
+    if (!EFFORT_LEVELS.includes(level))
+        throw new Error('Invalid effort level');
+    (config.efforts ??= {})[`${provider}:${model}`] = level;
+}
 export async function resolveProviderConfig(config, _workspace) {
     const apiKey = await getApiKey(config.provider);
-    return { id: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
+    return { id: config.provider, model: config.model, effort: getEffort(config), ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), ...(apiKey ? { apiKey } : {}) };
 }
 //# sourceMappingURL=config.js.map

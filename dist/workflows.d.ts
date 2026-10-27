@@ -15,8 +15,8 @@ export declare const pauseGoal: (workspace: string) => Promise<Goal>;
 export declare const resumeGoal: (workspace: string) => Promise<Goal>;
 export declare const cancelGoal: (workspace: string) => Promise<Goal>;
 export declare const completeGoal: (workspace: string) => Promise<Goal>;
-export declare function runGoal(input: AgentInput): Promise<Message[]>;
+export declare function runGoal(input: AgentInput, runner?: (input: AgentInput) => Promise<Message[]>): Promise<Message[]>;
 /** Planning is a provider-only call: no tools are exposed or executed. */
 export declare function planTask(input: AgentInput): Promise<Message[]>;
 /** Call only after the user explicitly chooses to execute the displayed plan. */
-export declare function executePlan(input: AgentInput, plan: string): Promise<Message[]>;
+export declare function executePlan(input: AgentInput, plan: string, runner?: (input: AgentInput) => Promise<Message[]>): Promise<Message[]>;

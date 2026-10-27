@@ -2,7 +2,7 @@
 export interface ModelOption { id: string; label: string }
 
 const FALLBACK: Record<string, string[]> = {
-  openai: ['gpt-5.1', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini'],
+  openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.1', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini'],
   anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
   gemini: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
   openrouter: ['openai/gpt-4.1', 'anthropic/claude-sonnet-4', 'google/gemini-2.5-flash'],
@@ -59,7 +59,7 @@ export async function discoverModels(provider: string, apiKey?: string, signal?:
         if (!Array.isArray(item.supportedGenerationMethods) || !item.supportedGenerationMethods.includes('generateContent') || !/^gemini-/.test(id) || /(?:image|tts|audio|live|embedding|robotics|computer-use)/i.test(id)) continue;
       } else if (provider === 'openai') {
         // The Models API does not advertise chat/tool capabilities: include known chat families only.
-        if (!/^(gpt-4\.1|gpt-4o|gpt-5(?:[.-]|$)|o3(?:[.-]|$)|o4-mini)/.test(id) || /(?:audio|realtime|transcribe|tts|image|search|deep-research|chat|pro|codex)/i.test(id)) continue;
+        if (!/^(gpt-4\.1|gpt-4o|gpt-5(?:[.-]|$)|gpt-6(?:[.-]|$)|o3(?:[.-]|$)|o4-mini)/.test(id) || /(?:audio|realtime|transcribe|tts|image|search|deep-research|chat|pro|codex)/i.test(id)) continue;
       } else if (provider === 'anthropic') {
         if (!id.startsWith('claude-') || (typeof item.lifecycle === 'object' && item.lifecycle !== null && (item.lifecycle as Record<string, unknown>).status === 'retired')) continue;
       } else if (provider === 'openrouter') {

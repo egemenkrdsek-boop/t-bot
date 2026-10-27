@@ -1,3 +1,5 @@
+import { EFFORT_LEVELS, type EffortLevel } from './effort.js';
+
 export interface CliOptions {
   command: 'chat' | 'help' | 'version' | 'config' | 'providers' | 'doctor' | 'sessions';
   message?: string;
@@ -6,6 +8,8 @@ export interface CliOptions {
   workspace?: string;
   resume?: string;
   yolo?: boolean;
+  ultracode?: boolean;
+  effort?: EffortLevel;
   args: string[];
 }
 
@@ -29,6 +33,8 @@ Seçenekler:
   -w, --workspace <yol>  Çalışma dizini
   -r, --resume <id>      Oturuma devam et
       --yolo             Araç onaylarını bu oturumda otomatik ver
+      --effort <düzey>   Low, Medium, High, XHigh veya Max
+      --ultracode        Bu oturumda Ultracode modunu aç
   -h, --help             Yardım
   -v, --version          Sürüm`;
 
@@ -42,11 +48,17 @@ export function parseCli(argv: string[]): CliOptions {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--') { positional.push(...argv.slice(i + 1)); break; }
+    if (arg === '--ultracode') { options.ultracode = true; continue; }
     if (arg === '--yolo') { options.yolo = true; continue; }
     if (arg === '-h' || arg === '--help') { options.command = 'help'; continue; }
     if (arg === '-v' || arg === '--version') { options.command = 'version'; continue; }
     const equal = arg.indexOf('=');
     const key = equal < 0 ? arg : arg.slice(0, equal);
+    if (key === '--effort') {
+      const value = (equal < 0 ? argv[++i] : arg.slice(equal + 1))?.toLowerCase();
+      if (!value || !EFFORT_LEVELS.includes(value as EffortLevel)) throw new Error('--effort: low, medium, high, xhigh veya max seçin.');
+      options.effort = value as EffortLevel; continue;
+    }
     if (keys[key]) {
       const value = equal < 0 ? argv[++i] : arg.slice(equal + 1);
       if (!value || (equal < 0 && value.startsWith('-'))) throw new Error(`${key} için bir değer gerekli.`);

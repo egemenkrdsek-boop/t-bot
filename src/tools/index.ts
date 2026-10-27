@@ -5,9 +5,10 @@ import { shellToolDefinitions, handleShellTool } from './shell.js';
 import { browserToolDefinitions, handleBrowserTool } from './browser.js';
 import { computerToolDefinitions, handleComputerTool } from './computer.js';
 import { gitToolDefinitions, handleGitTool } from './git.js';
+import { imageToolDefinitions, handleImageTool, type ImageProviderConfig } from './image.js';
 
-export interface ToolContext { workspace: string; approve: (request: ApprovalRequest) => Promise<boolean>; signal?: AbortSignal; mcpTools?: McpConnection[] }
-const localTools = [...fileToolDefinitions, ...shellToolDefinitions, ...browserToolDefinitions, ...computerToolDefinitions, ...gitToolDefinitions];
+export interface ToolContext { workspace: string; approve: (request: ApprovalRequest) => Promise<boolean>; signal?: AbortSignal; mcpTools?: McpConnection[]; imageProvider?: ImageProviderConfig }
+const localTools = [...fileToolDefinitions, ...shellToolDefinitions, ...browserToolDefinitions, ...computerToolDefinitions, ...gitToolDefinitions, ...imageToolDefinitions];
 type RemoteTool = { definition: ToolDefinition; connection: McpConnection };
 function remoteTools(connections: McpConnection[] = []): RemoteTool[] {
   const all = connections.flatMap(connection => connection.definitions.map(definition => ({ definition, connection })));
@@ -69,6 +70,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       const output = typeof result === 'string' ? result : JSON.stringify(result);
       return `[Untrusted MCP tool output]\n${output.length > 12000 ? output.slice(0, 12000) + '\n[output truncated]' : output}`;
     }
+    if (call.name === 'image_generate') return await handleImageTool(call.name, call.arguments, context);
     if (call.name === 'shell') return await handleShellTool(call.arguments, context.workspace, context.signal);
     if (browserToolDefinitions.some(tool => tool.name === call.name)) return await handleBrowserTool(call.name, call.arguments, context);
     if (computerToolDefinitions.some(tool => tool.name === call.name)) return await handleComputerTool(call.name, call.arguments, context);

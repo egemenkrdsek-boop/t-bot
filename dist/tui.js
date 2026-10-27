@@ -124,12 +124,15 @@ export async function startTui(options) {
         }
         write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
         write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
+        if (options.modeStatus)
+            write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
         write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);
         write(`${theme.muted('  /help for commands  ·  Ctrl+C to cancel')}\n\n`);
     }
     try {
         while (!exiting) {
-            const first = await read(interactive ? `${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')} ${theme.accent(symbols.prompt)} ` : '');
+            const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
+            const first = await read(interactive ? `${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}${status} ${theme.accent(symbols.prompt)} ` : '');
             if (first === undefined)
                 break;
             let input = first;
@@ -149,7 +152,7 @@ export async function startTui(options) {
                 if (command === '/exit' || command === '/quit')
                     break;
                 if (command === '/help') {
-                    write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /mcp                   Configure MCP servers\n  /yolo [on|off]         Toggle automatic tool approval\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+                    write('\n  /help, /clear, /exit         Help, clear, exit\n  /config, /provider, /model   Provider and model\n  /auth, /mcp                 API key and MCP servers\n  /effort, /ultracode [on|off] Reasoning and mode\n  /yolo [on|off]              Automatic tool approval\n  /goal, /plan, /subagents    Goals and agent workflows\n  /sessions, /resume          Saved conversations\n  /skills                     List available skills\n  /frontenddesign, /backend, /codereview, /debuganalysis, /imagegen <task>\n  Skills can also be selected from matching task keywords.\n\n  End a line with \\ to continue on the next line.\n\n');
                     continue;
                 }
                 if (command === '/clear') {
@@ -159,7 +162,7 @@ export async function startTui(options) {
                     write(`${theme.muted('Conversation cleared.')}\n`);
                     continue;
                 }
-                if ((command === '/goal' || command === '/plan' || command === '/subagents' || command === '/mcp') && options.onWorkflow) {
+                if (['/goal', '/plan', '/subagents', '/mcp', '/frontenddesign', '/backend', '/codereview', '/debuganalysis', '/imagegen'].includes(command ?? '') && options.onWorkflow) {
                     controller = new AbortController();
                     try {
                         await options.onWorkflow(command, input.slice(command.length).trim(), emit, approve, controller.signal, suspendUi);
@@ -177,7 +180,7 @@ export async function startTui(options) {
                     continue;
                 }
                 let result;
-                const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth' || input.toLowerCase() === '/yolo');
+                const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth' || command === '/effort' || input.toLowerCase() === '/yolo' || input.toLowerCase() === '/ultracode');
                 try {
                     result = menu ? await suspendUi(async () => options.onCommand?.(input, setYolo)) : await options.onCommand?.(input, setYolo);
                 }

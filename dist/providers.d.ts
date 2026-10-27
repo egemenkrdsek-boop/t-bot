@@ -1,10 +1,12 @@
 import type { Provider } from './types.js';
+import { type EffortLevel } from './effort.js';
 export interface ProviderConfig {
     id: string;
     model: string;
     baseUrl?: string;
     apiKey?: string;
     timeoutMs?: number;
+    effort?: EffortLevel;
 }
 export declare const PROVIDER_CATALOG: readonly [{
     readonly id: "gemini";

@@ -1,4 +1,5 @@
 import type { McpConnection } from './mcp.js';
+import type { ImageProviderConfig } from './tools/image.js';
 /** Shared contracts for the local T Bot agent. */
 export interface ToolCall {
     id: string;
@@ -16,6 +17,7 @@ export interface Message {
     images?: ImageAttachment[];
     toolCallId?: string;
     toolCalls?: ToolCall[];
+    responseItems?: Record<string, unknown>[];
 }
 export interface ToolDefinition {
     name: string;
@@ -28,6 +30,10 @@ export type ProviderEvent = {
 } | {
     type: 'tool_calls';
     calls: ToolCall[];
+    responseItems?: Record<string, unknown>[];
+} | {
+    type: 'response_items';
+    responseItems: Record<string, unknown>[];
 } | {
     type: 'usage';
     inputTokens?: number;
@@ -80,4 +86,5 @@ export interface AgentInput {
     approve: (request: ApprovalRequest) => Promise<boolean>;
     signal?: AbortSignal;
     mcpTools?: McpConnection[];
+    imageProvider?: ImageProviderConfig;
 }

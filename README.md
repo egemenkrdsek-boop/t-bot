@@ -38,6 +38,8 @@ tbot --resume <id>                Oturuma devam et
 tbot config                       Sağlayıcı ayarları
 tbot providers                    Sağlayıcıları listele
 tbot doctor                       Ortam ve ayar durumunu göster
+tbot --effort <düzey>            İstek için akıl yürütme düzeyi
+tbot --ultracode                 Bu oturumda Ultracode modunu aç
 tbot --yolo                      Bu oturumda araç onaylarını otomatik ver
 tbot --help                       Yardım
 tbot --version                    Sürüm
@@ -50,6 +52,16 @@ Etkileşimli modda `/help`, `/clear`, `/provider`, `/model`, `/sessions`, `/conf
 - `/subagents` alt ajan modelini seçer veya açıkken değiştirme ve kapatma menüsünü gösterir. `/subagents <istek>` seçilen modelle paralel salt okunur araştırma başlatır; uygulamayı ana ajan yapar. Açıkken sonraki normal isteklerde de alt ajanlar kullanılabilir.
 
 Etkileşimli oturumda `/yolo` menüsünden veya `/yolo on` ve `/yolo off` komutlarıyla araç onaylarının otomatik verilmesini seçebilirsiniz. `--yolo` modu başlangıçta açar. Ayar yalnızca geçerli oturumda geçerlidir; varsayılan olarak onay istenir. YOLO açıkken kabuk komutları ve diğer onay gerektiren araçlar kullanıcı yetkileriyle otomatik çalışabilir. Plan uygulaması yine `/plan apply` ile başlatılır; salt okunur alt ajan sınırları korunur.
+
+## Çalışma düzeyi ve beceriler
+
+`/effort` menüsünden veya `/effort low`, `medium`, `high`, `xhigh`, `max` komutlarından birini seçin. Varsayılan `medium` düzeyidir; seçim sağlayıcı ve model çiftine göre kaydedilir. `--effort <düzey>` başlangıçta seçim yapar. Sağlayıcı ve modelin sunduğu seçeneklere göre değer eşlenebilir veya sağlayıcının varsayılanı kullanılabilir; alt ajan modeli kendi sağlayıcı/model düzeyini kullanır; her modelin beş düzeyi yerel olarak desteklediği varsayılmamalıdır.
+
+`/ultracode on` ve `/ultracode off` ile isteğe bağlı Ultracode modunu yönetin; `--ultracode` oturum başında açar. Varsayılan kapalıdır. Mod sınırlı paralel araştırmanın ardından ana ajanla uygulama ve bağımsız salt okunur inceleme yapar. İnceleme bulgularının kendiliğinden düzeltildiği varsayılmamalıdır.
+
+`/skills` yerleşik becerileri listeler; `/skills <id>` bir becerinin ayrıntılarını gösterir. `/frontenddesign <istek>`, `/backend <istek>`, `/codereview <istek>`, `/debuganalysis <istek>` ve `/imagegen <istek>` ile doğrudan kullanabilirsiniz; eşleşen Türkçe veya İngilizce ifadeler de uygun beceriyi seçebilir. Frontend becerisi mevcut projeye uygun, erişilebilir ve duyarlı gerçek arayüz kodu üretmeyi hedefler. Kod inceleme ve hata analizi komutları salt okunurdur; doğal dilde analizle birlikte açık bir düzeltme isteği verilirse uygulama düzeltmeye izin verebilir.
+
+`/imagegen` yapılandırılmış OpenAI, Gemini veya OpenRouter anahtarlarından ve görüntü modeli menüsünden seçim sunar. Anthropic için yerel görsel üretimi bulunmaz; görsel üretmek için desteklenen başka bir sağlayıcının anahtarı gerekir. Hesabınızda seçilen görüntü modeline erişim gerekir; oluşturulan görseller çalışma alanındaki `generated-images/` dizinine kaydedilir. İstek ücret doğurabilir ve normalde onay gerektirir; YOLO açıkken onay otomatik verilir.
 
 ## MCP bağlantıları
 

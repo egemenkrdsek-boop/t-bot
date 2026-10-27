@@ -1,6 +1,8 @@
 import type { Message, Provider, ProviderEvent, ToolCall, ToolDefinition } from './types.js';
+import { describeEffort, type EffortLevel } from './effort.js';
+import { createOpenAIResponsesProvider } from './openai-responses.js';
 
-export interface ProviderConfig { id: string; model: string; baseUrl?: string; apiKey?: string; timeoutMs?: number; }
+export interface ProviderConfig { id: string; model: string; baseUrl?: string; apiKey?: string; timeoutMs?: number; effort?: EffortLevel; }
 export const PROVIDER_CATALOG = [
   { id: 'gemini', label: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', requiresApiKey: true },
   { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', requiresApiKey: true },
@@ -82,6 +84,7 @@ export function createProvider(config: ProviderConfig): Provider {
   const base = (['custom', 'ollama', 'lmstudio'].includes(spec.id) ? config.baseUrl?.trim() : undefined) || spec.baseUrl;
   if (!base) throw new Error('A custom endpoint is required.');
   safeUrl(base);
+  if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model)) return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey!, effort: config.effort, timeoutMs: config.timeoutMs });
   return { id: spec.id, label: spec.label, async *stream(messages: Message[], tools: ToolDefinition[], options = {}): AsyncGenerator<ProviderEvent> {
     const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]);
     try {
@@ -97,6 +100,13 @@ export function createProvider(config: ProviderConfig): Provider {
       } else {
         url = endpoint(base, 'chat/completions'); if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
         body = { model: config.model, messages: openaiMessages(messages), stream: true, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+      }
+      const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
+      if (effort.effective) {
+        if (spec.id === 'anthropic') body.output_config = { effort: effort.effective };
+        else if (spec.id === 'gemini') body.generationConfig = { thinkingConfig: { thinkingLevel: effort.effective } };
+        else if (spec.id === 'openrouter') body.reasoning = { effort: effort.effective };
+        else if (spec.id === 'openai') body.reasoning_effort = effort.effective;
       }
       const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' });
       if (response.status === 401) {

@@ -1,15 +1,21 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP } from './cli.js';
-import { configDirectory, loadConfig, saveConfig, resolveProviderConfig } from './config.js';
-import { setApiKey, getApiKeySource, prepareApiKey, SecretStorageError } from './secrets.js';
+import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getEffort, setEffort } from './config.js';
+import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
 import { runSubagents } from './subagents.js';
+import { runUltracode } from './ultracode.js';
+import { EFFORT_LEVELS, describeEffort } from './effort.js';
+import { BUILTIN_SKILLS, resolveSkills, skillRequiresReadOnly } from './skills.js';
+import { IMAGE_MODELS } from './tools/image.js';
+import { executeTool } from './tools/index.js';
 import { connectMcp } from './mcp.js';
 import { MCP_PRESETS } from './mcp-presets.js';
 import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
@@ -119,7 +125,7 @@ export async function main(argv) {
         return;
     }
     if (options.command === 'version') {
-        console.log('T Bot 0.1.0');
+        console.log('T Bot 0.2.0');
         return;
     }
     if (options.command === 'providers') {
@@ -175,6 +181,9 @@ export async function main(argv) {
         config = await configure(config, true, Boolean(options.provider));
         resolved = await resolveProviderConfig(config, workspace);
     }
+    let selectedEffort = options.effort ?? getEffort(config);
+    let ultracode = options.ultracode === true;
+    resolved.effort = selectedEffort;
     let provider = createProvider(resolved);
     let keySource = await getApiKeySource(config.provider);
     let workerProvider;
@@ -281,6 +290,23 @@ export async function main(argv) {
         return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü)' : ''}. Araç işlemleri onay politikasına uyar.`;
     };
     let pendingPlan;
+    const imageConfig = async () => {
+        if (config.provider !== 'openai' && config.provider !== 'gemini' && config.provider !== 'openrouter')
+            return undefined;
+        const apiKey = await getApiKey(config.provider);
+        return apiKey ? { provider: config.provider, apiKey } : undefined;
+    };
+    const runRouted = async (input) => {
+        const skills = resolveSkills(input.message);
+        if (skillRequiresReadOnly(skills, input.message) || skills.some(s => s.id === 'imagegen'))
+            return runAgent(input);
+        if (ultracode)
+            return runUltracode({ ...input, workerProvider: workerProvider ?? provider });
+        if (workerProvider)
+            return runSubagents({ ...input, workerProvider });
+        return runAgent(input);
+    };
+    const modeStatus = () => { const mapping = describeEffort(config.provider, config.model, selectedEffort); return `Effort: ${selectedEffort}${mapping.effective && mapping.effective !== selectedEffort ? ` → ${mapping.effective}` : mapping.supported ? '' : ' (varsayılan)'}${ultracode ? ' · Ultracode' : ''}`; };
     const withAuth = (emit) => (event) => {
         emit(event);
         if (event.type === 'error' && event.code === 'authentication')
@@ -296,7 +322,8 @@ export async function main(argv) {
         process.once('SIGINT', cancel);
         try {
             await hydrateMcp(controller.signal, showEvent);
-            session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
+            console.error(describeEffort(config.provider, config.model, selectedEffort).message);
+            session.messages = await runRouted({ message: options.message, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
                     process.exitCode = 1; }), approve, signal: controller.signal });
             await store.save(session);
             stdout.write('\n');
@@ -311,18 +338,55 @@ export async function main(argv) {
         throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
     const { startTui } = await import('./tui.js');
     try {
-        await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
+        await startTui({ workspace, provider, model: config.model, history: session.messages, yolo, modeStatus,
             onSubmit: async (message, emit, tuiApprove, signal) => {
                 await hydrateMcp(signal, emit);
-                const input = { message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
-                session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
+                const input = { message, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                session.messages = await runRouted(input);
                 await store.save(session);
                 return session.messages;
             },
             onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
-                if ((command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) || (command === '/plan' && text.trim().toLowerCase() === 'apply') || (command === '/subagents' && text.trim()))
+                if (['/frontenddesign', '/backend'].includes(command) || (command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) || (command === '/plan' && text.trim().toLowerCase() === 'apply') || (command === '/subagents' && text.trim()))
                     await hydrateMcp(signal, emit);
-                const input = { message: text, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                const input = { message: text, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                if (command === '/imagegen') {
+                    if (!text.trim()) {
+                        emit({ type: 'status', message: 'Kullanım: /imagegen <görsel isteği>' });
+                        return;
+                    }
+                    if (/\b(edit|modify|retouch)\b|düzenle|değiştir|düzenlenmiş|duzenle|degistir/i.test(text)) {
+                        emit({ type: 'error', error: 'Mevcut görsel düzenleme bu araçta desteklenmiyor; /imagegen yeni görsel üretir.' });
+                        return;
+                    }
+                    const available = await Promise.all(['openai', 'gemini', 'openrouter'].map(async (id) => ({ id, apiKey: await getApiKey(id) })));
+                    signal.throwIfAborted();
+                    const usable = available.filter(item => !!item.apiKey);
+                    if (!usable.length) {
+                        emit({ type: 'error', error: 'Görsel üretimi için OpenAI, Gemini veya OpenRouter API anahtarı yapılandırın.' });
+                        return;
+                    }
+                    const imageId = await suspendUi(() => selectOption('Görsel sağlayıcısı', usable.map(item => ({ label: item.id === 'openai' ? 'OpenAI' : item.id === 'gemini' ? 'Gemini' : 'OpenRouter', value: item.id }))));
+                    if (imageId !== 'openai' && imageId !== 'gemini' && imageId !== 'openrouter')
+                        return;
+                    const chosenKey = usable.find(item => item.id === imageId)?.apiKey;
+                    if (!chosenKey)
+                        return;
+                    const imageModel = await suspendUi(() => selectOption('Görsel modeli', IMAGE_MODELS[imageId].choices.map(model => ({ label: model, value: model }))));
+                    if (!imageModel || signal.aborted)
+                        return;
+                    emit({ type: 'status', message: `${imageId} / ${imageModel}: görsel isteği hazırlanıyor.` });
+                    const result = await executeTool({ id: randomUUID(), name: 'image_generate', arguments: { prompt: text } }, { workspace, approve: input.approve, signal, imageProvider: { provider: imageId, apiKey: chosenKey, model: imageModel } });
+                    emit({ type: result.startsWith('Tool error:') ? 'error' : 'status', ...(result.startsWith('Tool error:') ? { error: result } : { message: result }) });
+                    session.messages.push({ role: 'user', content: `/imagegen ${text}` }, { role: 'assistant', content: result });
+                    await store.save(session);
+                    return;
+                }
+                if (['/frontenddesign', '/backend', '/codereview', '/debuganalysis'].includes(command)) {
+                    session.messages = await runRouted({ ...input, message: `${command} ${text}`.trim() });
+                    await store.save(session);
+                    return;
+                }
                 if (command === '/mcp') {
                     emit({ type: 'status', message: await configureMcp(suspendUi, signal) });
                     return;
@@ -353,7 +417,7 @@ export async function main(argv) {
                         await resumeGoal(workspace);
                     else if (action !== 'run')
                         await startGoal(workspace, text);
-                    session.messages = await runGoal({ ...input, message: '' });
+                    session.messages = await runGoal({ ...input, message: '' }, runRouted);
                     await store.save(session);
                     return;
                 }
@@ -369,7 +433,7 @@ export async function main(argv) {
                         }
                         const approved = pendingPlan;
                         pendingPlan = undefined;
-                        session.messages = await executePlan({ ...input, message: approved.request }, approved.plan);
+                        session.messages = await executePlan({ ...input, message: approved.request }, approved.plan, runRouted);
                         await store.save(session);
                         return;
                     }
@@ -403,7 +467,9 @@ export async function main(argv) {
                         emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' });
                         return;
                     }
-                    workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: selected });
+                    const workerEffort = getEffort(config, config.provider, selected);
+                    workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: selected, effort: workerEffort });
+                    emit({ type: 'status', message: describeEffort(config.provider, selected, workerEffort).message });
                     workerModel = selected;
                     emit({ type: 'status', message: `Alt ajanlar açık: ${selected}. Araştırma alt ajanları salt okunurdur.` });
                     if (text.trim()) {
@@ -414,6 +480,38 @@ export async function main(argv) {
             },
             onCommand: async (command, setYolo) => {
                 const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
+                if (name === '/skills') {
+                    if (argument) {
+                        const skill = BUILTIN_SKILLS.find(item => item.id === argument);
+                        return skill ? `/${skill.id} — ${skill.description}\n${skill.guidance}` : 'Beceri bulunamadı. /skills ile listeyi görün.';
+                    }
+                    return BUILTIN_SKILLS.map(skill => `/${skill.id} — ${skill.description}`).join('\n');
+                }
+                if (name === '/effort') {
+                    if (extra || (argument && !EFFORT_LEVELS.includes(argument)))
+                        return 'Kullanım: /effort veya /effort low|medium|high|xhigh|max';
+                    const choice = argument || await selectOption('Düşünme düzeyi', EFFORT_LEVELS.map(level => ({ label: level === 'xhigh' ? 'XHigh' : level[0].toUpperCase() + level.slice(1), value: level, description: describeEffort(config.provider, config.model, level).message })));
+                    if (!choice)
+                        return 'Düşünme düzeyi değiştirilmedi.';
+                    selectedEffort = choice;
+                    setEffort(config, selectedEffort);
+                    await saveConfig(config);
+                    provider = createProvider({ ...await resolveProviderConfig(config, workspace), effort: selectedEffort });
+                    if (workerProvider && workerModel)
+                        workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: workerModel, effort: getEffort(config, config.provider, workerModel) });
+                    return describeEffort(config.provider, config.model, selectedEffort).message;
+                }
+                if (name === '/ultracode') {
+                    if (extra || (argument && argument !== 'on' && argument !== 'off'))
+                        return 'Kullanım: /ultracode, /ultracode on veya /ultracode off';
+                    let choice = argument;
+                    if (!choice)
+                        choice = await selectOption('Ultracode modu', [{ label: 'Kapalı', value: 'off' }, { label: 'Açık', value: 'on' }]);
+                    if (!choice)
+                        return 'Ultracode modu değiştirilmedi.';
+                    ultracode = choice === 'on';
+                    return ultracode ? 'Ultracode açık: araştırma, uygulama ve bağımsız inceleme.' : 'Ultracode kapalı.';
+                }
                 if (name === '/yolo') {
                     if (extra || (argument && argument !== 'on' && argument !== 'off'))
                         return 'Kullanım: /yolo, /yolo on veya /yolo off';
@@ -450,7 +548,7 @@ export async function main(argv) {
                     if (spec.id === 'openrouter')
                         await validateOpenRouterKey(prepareApiKey(key));
                     const status = await setApiKey(spec.id, key);
-                    provider = createProvider(await resolveProviderConfig(config, workspace));
+                    provider = createProvider({ ...await resolveProviderConfig(config, workspace), effort: selectedEffort });
                     keySource = await getApiKeySource(config.provider);
                     workerProvider = undefined;
                     workerModel = '';
@@ -458,7 +556,8 @@ export async function main(argv) {
                 }
                 if (command === '/provider' || command === '/model' || command === '/config') {
                     config = await configure(config, false, true, command === '/model');
-                    provider = createProvider(await resolveProviderConfig(config, workspace));
+                    selectedEffort = getEffort(config);
+                    provider = createProvider({ ...await resolveProviderConfig(config, workspace), effort: selectedEffort });
                     keySource = await getApiKeySource(config.provider);
                     workerProvider = undefined;
                     workerModel = '';
