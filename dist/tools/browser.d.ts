@@ -1,0 +1,7 @@
+import type { ToolDefinition } from '../types.js';
+export declare const browserToolDefinitions: ToolDefinition[];
+export declare function closeBrowser(): Promise<void>;
+export declare function handleBrowserTool(name: string, args: Record<string, unknown>, options: {
+    workspace: string;
+    signal?: AbortSignal;
+}): Promise<string>;

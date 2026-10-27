@@ -1,0 +1,35 @@
+{
+  "name": "t-bot-cli",
+  "version": "0.1.0",
+  "description": "A local, provider-independent terminal AI agent",
+  "type": "module",
+  "bin": {
+    "tbot": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "assets",
+    "scripts",
+    "docs",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
