@@ -74,7 +74,7 @@ export async function setApiKey(id: string, key: string): Promise<SecretStorageS
   finally { await unlink(temp).catch(() => undefined); }
   return method === 'dpapi' ? { method } : { method, warning: 'API key is stored in a user-restricted file without encryption.' };
 }
-async function readSavedKey(id: string): Promise<string | undefined> {
+export async function readSavedKey(id: string): Promise<string | undefined> {
   const path = secretPath(id);
   let raw: string;
   try { raw = await readFile(path, 'utf8'); }

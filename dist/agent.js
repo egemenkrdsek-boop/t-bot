@@ -133,7 +133,7 @@ export async function runAgent(input, options = {}) {
         return conversation;
     }
     const previous = selectHistory(input.history, initialBudget);
-    const definitions = getToolDefinitions().filter(tool => options.toolPolicy !== 'read-only' || READ_ONLY_TOOLS.has(tool.name));
+    const definitions = getToolDefinitions(input.mcpTools).filter(tool => options.toolPolicy !== 'read-only' || READ_ONLY_TOOLS.has(tool.name));
     const maxRounds = Math.max(1, Math.min(MAX_ROUNDS, Math.floor(options.maxRounds ?? MAX_ROUNDS) || 1));
     const maxToolCalls = Math.max(0, Math.min(MAX_TOOL_CALLS, Math.floor(options.maxToolCalls ?? MAX_TOOL_CALLS) || 0));
     let toolCount = 0;
@@ -226,7 +226,7 @@ export async function runAgent(input, options = {}) {
                 result = options.toolPolicy === 'read-only' && !READ_ONLY_TOOLS.has(call.name)
                     ? 'Tool denied: this agent is restricted to read-only tools.'
                     : input.signal?.aborted ? 'Tool execution cancelled.' : await executeTool(call, {
-                        workspace: input.workspace, approve: input.approve, signal: input.signal,
+                        workspace: input.workspace, approve: input.approve, signal: input.signal, mcpTools: input.mcpTools,
                     });
             }
             catch (error) {

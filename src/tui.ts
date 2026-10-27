@@ -81,7 +81,16 @@ export async function startTui(options: TuiOptions): Promise<void> {
 
   if (interactive) {
     const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
-    write(`\n${logo(process.stdout.columns || 70).join('\n')}\n`);
+    const logoWidth = process.stdout.columns || 70;
+    const animateLogo = logoWidth >= 30 && process.env.TBOT_NO_ANIMATION === undefined && process.env.TERM !== 'dumb' && process.env.TBOT_ASCII !== '1';
+    write(`\n${logo(logoWidth, animateLogo ? 0 : -1).join('\n')}\n`);
+    if (animateLogo) {
+      for (let frame = 1; frame <= 5 && !exiting; frame++) {
+        await new Promise<void>(resolve => setTimeout(resolve, 120));
+        if (exiting) break;
+        write(`\x1b[7A\r${logo(logoWidth, frame === 5 ? -1 : frame).join('\n')}\n`);
+      }
+    }
     write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
     write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
     write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);
@@ -105,11 +114,11 @@ export async function startTui(options: TuiOptions): Promise<void> {
         const command = input.split(/\s+/, 1)[0]?.toLowerCase();
         if (command === '/exit' || command === '/quit') break;
         if (command === '/help') {
-          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /yolo [on|off]         Toggle automatic tool approval\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /mcp                   Configure MCP servers\n  /yolo [on|off]         Toggle automatic tool approval\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
           continue;
         }
         if (command === '/clear') { await options.onCommand?.(input, setYolo); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
-        if ((command === '/goal' || command === '/plan' || command === '/subagents') && options.onWorkflow) {
+        if ((command === '/goal' || command === '/plan' || command === '/subagents' || command === '/mcp') && options.onWorkflow) {
           controller = new AbortController();
           try { await options.onWorkflow(command, input.slice(command.length).trim(), emit, approve, controller.signal, suspendUi); }
           catch (error) { finishStream(); write(`${theme.error(controller.signal.aborted ? 'Cancelled.' : `Error: ${safe(error instanceof Error ? error.message : String(error))}`)}\n`); }

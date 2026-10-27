@@ -94,7 +94,7 @@ export async function setApiKey(id, key) {
     }
     return method === 'dpapi' ? { method } : { method, warning: 'API key is stored in a user-restricted file without encryption.' };
 }
-async function readSavedKey(id) {
+export async function readSavedKey(id) {
     const path = secretPath(id);
     let raw;
     try {

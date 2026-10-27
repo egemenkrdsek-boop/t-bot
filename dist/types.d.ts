@@ -1,3 +1,4 @@
+import type { McpConnection } from './mcp.js';
 /** Shared contracts for the local T Bot agent. */
 export interface ToolCall {
     id: string;
@@ -78,4 +79,5 @@ export interface AgentInput {
     onEvent: (event: AgentEvent) => void;
     approve: (request: ApprovalRequest) => Promise<boolean>;
     signal?: AbortSignal;
+    mcpTools?: McpConnection[];
 }

@@ -10,6 +10,9 @@ import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
 import { runSubagents } from './subagents.js';
+import { connectMcp, type McpConnection } from './mcp.js';
+import { MCP_PRESETS, type McpService } from './mcp-presets.js';
+import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
 import { getGoal, startGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal, runGoal, planTask, executePlan } from './workflows.js';
 import type { AgentEvent, ApprovalRequest, Provider } from './types.js';
 
@@ -120,6 +123,70 @@ export async function main(argv: string[]): Promise<void> {
   let keySource = await getApiKeySource(config.provider);
   let workerProvider: Provider | undefined;
   let workerModel = '';
+  const mcpTools: McpConnection[] = [];
+  let mcpHydrated = false;
+  const closeMcp = async () => { await Promise.allSettled(mcpTools.splice(0).map(c => c.close())); };
+  const hydrateMcp = async (signal?: AbortSignal, emit?: (event: AgentEvent) => void) => {
+    if (mcpHydrated) return;
+    const saved = await loadConnections();
+    for (const service of ['supabase', 'vercel'] as const) {
+      if (!saved[service].enabled || mcpTools.some(c => c.service === service)) continue;
+      const token = await getMcpToken(service);
+      if (!token) { emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` }); continue; }
+      emit?.({ type: 'status', message: `${service} MCP bağlantısı kuruluyor...` });
+      try { mcpTools.push(await connectMcp(service, token, { ...saved[service], signal })); }
+      catch { if (signal?.aborted) throw new Error('İptal edildi.'); emit?.({ type: 'status', message: `${service} MCP bağlantısı kurulamadı; /mcp ile kontrol edin.` }); }
+    }
+    mcpHydrated = true;
+  };
+  const configureMcp = async (suspendUi: <T>(action: () => Promise<T>) => Promise<T>, signal: AbortSignal): Promise<string> => {
+        const service = await suspendUi(() => selectOption('MCP bağlantısı', MCP_PRESETS.map(p => ({ label: p.label, value: p.id, description: p.description })))) as McpService | undefined;
+        if (!service) return 'MCP seçimi iptal edildi.';
+        const saved = await loadConnections();
+        signal.throwIfAborted();
+        const action = await suspendUi(() => selectOption(`${service} MCP`, [
+          { label: saved[service].enabled ? 'Bağlantıyı yenile veya tokenı değiştir' : 'Token ile bağlan', value: 'connect' },
+          ...(saved[service].enabled ? [{ label: 'Bağlantıyı kaldır', value: 'remove' }] : []),
+        ]));
+        if (!action) return 'MCP seçimi iptal edildi.';
+        if (action === 'remove') {
+          signal.throwIfAborted();
+          await removeConnection(service);
+          const old = mcpTools.findIndex(c => c.service === service);
+          if (old >= 0) { const [connection] = mcpTools.splice(old, 1); await connection.close(); }
+          return `${service} MCP bağlantısı yerel olarak kaldırıldı; sağlayıcı tokenı iptal edilmedi.`;
+        }
+        let token = await getMcpToken(service);
+        signal.throwIfAborted();
+        if (token) {
+          const use = await suspendUi(() => selectOption('Token seçimi', [{ label: 'Kayıtlı tokenı kullan', value: 'existing' }, { label: 'Yeni token gir', value: 'new' }]));
+          if (!use) return 'MCP seçimi iptal edildi.';
+          if (use === 'new') token = undefined;
+        }
+        let newToken: string | undefined;
+        if (!token) {
+          const entered = await suspendUi(() => inputSecret(`${service} erişim tokenı`));
+          if (!entered?.trim()) return 'Token girilmedi; bağlantı değiştirilmedi.';
+          newToken = prepareApiKey(entered); token = newToken;
+        }
+        let readOnly = true;
+        if (service === 'supabase') {
+          const mode = await suspendUi(() => selectOption('Supabase MCP erişimi', [{ label: 'Salt okunur', value: 'read' }, { label: 'Sağlayıcı yetkileriyle yazma (araç onayı gerekir)', value: 'write' }]));
+          if (!mode) return 'MCP seçimi iptal edildi.';
+          readOnly = mode === 'read';
+        }
+        const connection = await connectMcp(service, token, { ...saved[service], readOnly, signal });
+        try {
+          signal.throwIfAborted();
+          if (newToken) { const result = await setMcpToken(service, newToken); if (result.warning) console.log(safe(result.warning)); }
+          signal.throwIfAborted();
+          await saveConnection(service, { enabled: true, readOnly });
+        } catch (error) { await connection.close(); throw error; }
+        const old = mcpTools.findIndex(c => c.service === service);
+        if (old >= 0) { const [previous] = mcpTools.splice(old, 1); await previous.close(); }
+        mcpTools.push(connection);
+        return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü; salt okunur)' : readOnly ? ' (salt okunur)' : ''}.`;
+  };
   let pendingPlan: { request: string; plan: string } | undefined;
   const withAuth = (emit: (event: AgentEvent) => void) => (event: AgentEvent) => {
     emit(event);
@@ -131,20 +198,23 @@ export async function main(argv: string[]): Promise<void> {
     if (yolo) console.error('YOLO açık: araç onayları bu oturumda otomatik verilir.');
     const controller = new AbortController();
     const cancel = () => controller.abort(); process.once('SIGINT', cancel);
-    try { session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error') process.exitCode = 1; }), approve, signal: controller.signal }); await store.save(session); stdout.write('\n'); }
-    finally { process.off('SIGINT', cancel); }
+    try { await hydrateMcp(controller.signal, showEvent); session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error') process.exitCode = 1; }), approve, signal: controller.signal }); await store.save(session); stdout.write('\n'); }
+    finally { process.off('SIGINT', cancel); await closeMcp(); }
     return;
   }
   if (!stdin.isTTY || !stdout.isTTY) throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
   const { startTui } = await import('./tui.js');
-  await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
+  try { await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
     onSubmit: async (message, emit, tuiApprove, signal) => {
-      const input = { message, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request: ApprovalRequest) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+      await hydrateMcp(signal, emit);
+      const input = { message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request: ApprovalRequest) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
       session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
       await store.save(session); return session.messages;
     },
     onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
-      const input = { message: text, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request: ApprovalRequest) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+      if ((command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) || (command === '/plan' && text.trim().toLowerCase() === 'apply') || (command === '/subagents' && text.trim())) await hydrateMcp(signal, emit);
+      const input = { message: text, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request: ApprovalRequest) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+      if (command === '/mcp') { emit({ type: 'status', message: await configureMcp(suspendUi, signal) }); return; }
       if (command === '/goal') {
         const action = text.trim().toLowerCase();
         if (!action || action === 'status') {
@@ -234,5 +304,5 @@ export async function main(argv: string[]): Promise<void> {
       if (command === '/resume') return 'Devam etmek için tbot --resume <id> kullanın.';
       return undefined;
     }
-  });
+  }); } finally { await closeMcp(); }
 }

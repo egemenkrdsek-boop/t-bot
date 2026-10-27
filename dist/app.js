@@ -10,6 +10,9 @@ import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
 import { runSubagents } from './subagents.js';
+import { connectMcp } from './mcp.js';
+import { MCP_PRESETS } from './mcp-presets.js';
+import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
 import { getGoal, startGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal, runGoal, planTask, executePlan } from './workflows.js';
 const safe = (text) => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions() {
@@ -176,6 +179,102 @@ export async function main(argv) {
     let keySource = await getApiKeySource(config.provider);
     let workerProvider;
     let workerModel = '';
+    const mcpTools = [];
+    let mcpHydrated = false;
+    const closeMcp = async () => { await Promise.allSettled(mcpTools.splice(0).map(c => c.close())); };
+    const hydrateMcp = async (signal, emit) => {
+        if (mcpHydrated)
+            return;
+        const saved = await loadConnections();
+        for (const service of ['supabase', 'vercel']) {
+            if (!saved[service].enabled || mcpTools.some(c => c.service === service))
+                continue;
+            const token = await getMcpToken(service);
+            if (!token) {
+                emit?.({ type: 'status', message: `${service} MCP tokenı yok; /mcp ile yapılandırın.` });
+                continue;
+            }
+            emit?.({ type: 'status', message: `${service} MCP bağlantısı kuruluyor...` });
+            try {
+                mcpTools.push(await connectMcp(service, token, { ...saved[service], signal }));
+            }
+            catch {
+                if (signal?.aborted)
+                    throw new Error('İptal edildi.');
+                emit?.({ type: 'status', message: `${service} MCP bağlantısı kurulamadı; /mcp ile kontrol edin.` });
+            }
+        }
+        mcpHydrated = true;
+    };
+    const configureMcp = async (suspendUi, signal) => {
+        const service = await suspendUi(() => selectOption('MCP bağlantısı', MCP_PRESETS.map(p => ({ label: p.label, value: p.id, description: p.description }))));
+        if (!service)
+            return 'MCP seçimi iptal edildi.';
+        const saved = await loadConnections();
+        signal.throwIfAborted();
+        const action = await suspendUi(() => selectOption(`${service} MCP`, [
+            { label: saved[service].enabled ? 'Bağlantıyı yenile veya tokenı değiştir' : 'Token ile bağlan', value: 'connect' },
+            ...(saved[service].enabled ? [{ label: 'Bağlantıyı kaldır', value: 'remove' }] : []),
+        ]));
+        if (!action)
+            return 'MCP seçimi iptal edildi.';
+        if (action === 'remove') {
+            signal.throwIfAborted();
+            await removeConnection(service);
+            const old = mcpTools.findIndex(c => c.service === service);
+            if (old >= 0) {
+                const [connection] = mcpTools.splice(old, 1);
+                await connection.close();
+            }
+            return `${service} MCP bağlantısı yerel olarak kaldırıldı; sağlayıcı tokenı iptal edilmedi.`;
+        }
+        let token = await getMcpToken(service);
+        signal.throwIfAborted();
+        if (token) {
+            const use = await suspendUi(() => selectOption('Token seçimi', [{ label: 'Kayıtlı tokenı kullan', value: 'existing' }, { label: 'Yeni token gir', value: 'new' }]));
+            if (!use)
+                return 'MCP seçimi iptal edildi.';
+            if (use === 'new')
+                token = undefined;
+        }
+        let newToken;
+        if (!token) {
+            const entered = await suspendUi(() => inputSecret(`${service} erişim tokenı`));
+            if (!entered?.trim())
+                return 'Token girilmedi; bağlantı değiştirilmedi.';
+            newToken = prepareApiKey(entered);
+            token = newToken;
+        }
+        let readOnly = true;
+        if (service === 'supabase') {
+            const mode = await suspendUi(() => selectOption('Supabase MCP erişimi', [{ label: 'Salt okunur', value: 'read' }, { label: 'Sağlayıcı yetkileriyle yazma (araç onayı gerekir)', value: 'write' }]));
+            if (!mode)
+                return 'MCP seçimi iptal edildi.';
+            readOnly = mode === 'read';
+        }
+        const connection = await connectMcp(service, token, { ...saved[service], readOnly, signal });
+        try {
+            signal.throwIfAborted();
+            if (newToken) {
+                const result = await setMcpToken(service, newToken);
+                if (result.warning)
+                    console.log(safe(result.warning));
+            }
+            signal.throwIfAborted();
+            await saveConnection(service, { enabled: true, readOnly });
+        }
+        catch (error) {
+            await connection.close();
+            throw error;
+        }
+        const old = mcpTools.findIndex(c => c.service === service);
+        if (old >= 0) {
+            const [previous] = mcpTools.splice(old, 1);
+            await previous.close();
+        }
+        mcpTools.push(connection);
+        return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü; salt okunur)' : readOnly ? ' (salt okunur)' : ''}.`;
+    };
     let pendingPlan;
     const withAuth = (emit) => (event) => {
         emit(event);
@@ -191,169 +290,183 @@ export async function main(argv) {
         const cancel = () => controller.abort();
         process.once('SIGINT', cancel);
         try {
-            session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
+            await hydrateMcp(controller.signal, showEvent);
+            session.messages = await runAgent({ message: options.message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
                     process.exitCode = 1; }), approve, signal: controller.signal });
             await store.save(session);
             stdout.write('\n');
         }
         finally {
             process.off('SIGINT', cancel);
+            await closeMcp();
         }
         return;
     }
     if (!stdin.isTTY || !stdout.isTTY)
         throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
     const { startTui } = await import('./tui.js');
-    await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
-        onSubmit: async (message, emit, tuiApprove, signal) => {
-            const input = { message, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
-            session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
-            await store.save(session);
-            return session.messages;
-        },
-        onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
-            const input = { message: text, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
-            if (command === '/goal') {
-                const action = text.trim().toLowerCase();
-                if (!action || action === 'status') {
-                    const goal = await getGoal(workspace);
-                    emit({ type: 'status', message: goal ? `Hedef: ${goal.objective} | Durum: ${goal.status} | Son çalışma: ${goal.lastRun ?? 'yok'}` : 'Kayıtlı hedef yok. /goal <hedef> ile başlayın.' });
-                    return;
-                }
-                if (action === 'pause') {
-                    await pauseGoal(workspace);
-                    emit({ type: 'status', message: 'Hedef duraklatıldı.' });
-                    return;
-                }
-                if (action === 'cancel') {
-                    await cancelGoal(workspace);
-                    emit({ type: 'status', message: 'Hedef iptal edildi.' });
-                    return;
-                }
-                if (action === 'done' || action === 'complete') {
-                    await completeGoal(workspace);
-                    emit({ type: 'status', message: 'Hedef tamamlandı olarak işaretlendi.' });
-                    return;
-                }
-                if (action === 'resume')
-                    await resumeGoal(workspace);
-                else if (action !== 'run')
-                    await startGoal(workspace, text);
-                session.messages = await runGoal({ ...input, message: '' });
+    try {
+        await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
+            onSubmit: async (message, emit, tuiApprove, signal) => {
+                await hydrateMcp(signal, emit);
+                const input = { message, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
                 await store.save(session);
-                return;
-            }
-            if (command === '/plan') {
-                if (!text.trim()) {
-                    emit({ type: 'status', message: 'Kullanım: /plan <istek> veya /plan apply' });
+                return session.messages;
+            },
+            onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
+                if ((command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) || (command === '/plan' && text.trim().toLowerCase() === 'apply') || (command === '/subagents' && text.trim()))
+                    await hydrateMcp(signal, emit);
+                const input = { message: text, history: session.messages, provider, workspace, mcpTools, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                if (command === '/mcp') {
+                    emit({ type: 'status', message: await configureMcp(suspendUi, signal) });
                     return;
                 }
-                if (text.trim().toLowerCase() === 'apply') {
-                    if (!pendingPlan) {
-                        emit({ type: 'status', message: 'Uygulanacak plan yok; önce /plan <istek> kullanın.' });
+                if (command === '/goal') {
+                    const action = text.trim().toLowerCase();
+                    if (!action || action === 'status') {
+                        const goal = await getGoal(workspace);
+                        emit({ type: 'status', message: goal ? `Hedef: ${goal.objective} | Durum: ${goal.status} | Son çalışma: ${goal.lastRun ?? 'yok'}` : 'Kayıtlı hedef yok. /goal <hedef> ile başlayın.' });
                         return;
                     }
-                    const approved = pendingPlan;
+                    if (action === 'pause') {
+                        await pauseGoal(workspace);
+                        emit({ type: 'status', message: 'Hedef duraklatıldı.' });
+                        return;
+                    }
+                    if (action === 'cancel') {
+                        await cancelGoal(workspace);
+                        emit({ type: 'status', message: 'Hedef iptal edildi.' });
+                        return;
+                    }
+                    if (action === 'done' || action === 'complete') {
+                        await completeGoal(workspace);
+                        emit({ type: 'status', message: 'Hedef tamamlandı olarak işaretlendi.' });
+                        return;
+                    }
+                    if (action === 'resume')
+                        await resumeGoal(workspace);
+                    else if (action !== 'run')
+                        await startGoal(workspace, text);
+                    session.messages = await runGoal({ ...input, message: '' });
+                    await store.save(session);
+                    return;
+                }
+                if (command === '/plan') {
+                    if (!text.trim()) {
+                        emit({ type: 'status', message: 'Kullanım: /plan <istek> veya /plan apply' });
+                        return;
+                    }
+                    if (text.trim().toLowerCase() === 'apply') {
+                        if (!pendingPlan) {
+                            emit({ type: 'status', message: 'Uygulanacak plan yok; önce /plan <istek> kullanın.' });
+                            return;
+                        }
+                        const approved = pendingPlan;
+                        pendingPlan = undefined;
+                        session.messages = await executePlan({ ...input, message: approved.request }, approved.plan);
+                        await store.save(session);
+                        return;
+                    }
+                    const planned = await planTask(input);
+                    session.messages = planned;
+                    await store.save(session);
+                    const plan = [...planned].reverse().find(m => m.role === 'assistant')?.content ?? '';
+                    pendingPlan = { request: text, plan };
+                    emit({ type: 'status', message: 'Plan hazır. Uygulamak için /plan apply yazın.' });
+                    return;
+                }
+                if (command === '/subagents') {
+                    if (!text.trim() && workerProvider) {
+                        const action = await suspendUi(() => selectOption('Alt ajanlar', [
+                            { label: `Açık: ${workerModel}`, value: 'keep' }, { label: 'Modeli değiştir', value: 'change' }, { label: 'Kapat', value: 'disable' },
+                        ]));
+                        if (!action || action === 'keep')
+                            return;
+                        if (action === 'disable') {
+                            workerProvider = undefined;
+                            workerModel = '';
+                            emit({ type: 'status', message: 'Alt ajanlar kapatıldı.' });
+                            return;
+                        }
+                    }
+                    const models = await discoverModels(config.provider, (await resolveProviderConfig(config, workspace)).apiKey, signal);
+                    if (signal.aborted)
+                        return;
+                    const selected = await suspendUi(() => selectOption('Alt ajan modeli seçin', models.map(m => ({ label: m.label, value: m.id }))));
+                    if (!selected) {
+                        emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' });
+                        return;
+                    }
+                    workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: selected });
+                    workerModel = selected;
+                    emit({ type: 'status', message: `Alt ajanlar açık: ${selected}. Araştırma alt ajanları salt okunurdur.` });
+                    if (text.trim()) {
+                        session.messages = await runSubagents({ ...input, workerProvider });
+                        await store.save(session);
+                    }
+                }
+            },
+            onCommand: async (command, setYolo) => {
+                const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
+                if (name === '/yolo') {
+                    if (extra || (argument && argument !== 'on' && argument !== 'off'))
+                        return 'Kullanım: /yolo, /yolo on veya /yolo off';
+                    let choice = argument;
+                    if (!choice) {
+                        choice = await selectOption('YOLO modu', [
+                            { label: 'Kapalı — araç işlemlerinde onay iste', value: 'off' },
+                            { label: 'Açık — araç onaylarını otomatik ver', value: 'on' },
+                        ]);
+                        if (!choice)
+                            return 'YOLO modu değiştirilmedi.';
+                    }
+                    yolo = choice === 'on';
+                    setYolo?.(yolo);
+                    return yolo ? 'YOLO açık: araç onayları bu oturumda otomatik verilir.' : 'YOLO kapalı: araç onayları sorulur.';
+                }
+                if (command === '/clear') {
+                    session.messages = [];
                     pendingPlan = undefined;
-                    session.messages = await executePlan({ ...input, message: approved.request }, approved.plan);
                     await store.save(session);
-                    return;
+                    return undefined;
                 }
-                const planned = await planTask(input);
-                session.messages = planned;
-                await store.save(session);
-                const plan = [...planned].reverse().find(m => m.role === 'assistant')?.content ?? '';
-                pendingPlan = { request: text, plan };
-                emit({ type: 'status', message: 'Plan hazır. Uygulamak için /plan apply yazın.' });
-                return;
-            }
-            if (command === '/subagents') {
-                if (!text.trim() && workerProvider) {
-                    const action = await suspendUi(() => selectOption('Alt ajanlar', [
-                        { label: `Açık: ${workerModel}`, value: 'keep' }, { label: 'Modeli değiştir', value: 'change' }, { label: 'Kapat', value: 'disable' },
-                    ]));
-                    if (!action || action === 'keep')
-                        return;
-                    if (action === 'disable') {
-                        workerProvider = undefined;
-                        workerModel = '';
-                        emit({ type: 'status', message: 'Alt ajanlar kapatıldı.' });
-                        return;
-                    }
+                if (command === '/sessions')
+                    return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;
+                if (command === '/auth') {
+                    const spec = PROVIDER_CATALOG.find(p => p.id === config.provider);
+                    if (!spec?.requiresApiKey)
+                        return 'Bu sağlayıcı için API anahtarı gerekli değil.';
+                    const key = await inputSecret(`${spec.label} için yeni API anahtarı`);
+                    if (!key?.trim())
+                        return 'Anahtar değiştirilmedi.';
+                    if (/^\*+$/.test(key.trim()))
+                        return 'Maskelenmiş yıldızlar anahtar değildir; sağlayıcıdan anahtarın kendisini kopyalayın.';
+                    if (spec.id === 'openrouter')
+                        await validateOpenRouterKey(prepareApiKey(key));
+                    const status = await setApiKey(spec.id, key);
+                    provider = createProvider(await resolveProviderConfig(config, workspace));
+                    keySource = await getApiKeySource(config.provider);
+                    workerProvider = undefined;
+                    workerModel = '';
+                    return `Yeni anahtar kaydedildi. Önceki istek yeniden çalıştırılmadı; devam etmek için isteğinizi tekrar gönderin.${status.warning ? ` ${status.warning}` : ''}`;
                 }
-                const models = await discoverModels(config.provider, (await resolveProviderConfig(config, workspace)).apiKey, signal);
-                if (signal.aborted)
-                    return;
-                const selected = await suspendUi(() => selectOption('Alt ajan modeli seçin', models.map(m => ({ label: m.label, value: m.id }))));
-                if (!selected) {
-                    emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' });
-                    return;
+                if (command === '/provider' || command === '/model' || command === '/config') {
+                    config = await configure(config, false, true, command === '/model');
+                    provider = createProvider(await resolveProviderConfig(config, workspace));
+                    keySource = await getApiKeySource(config.provider);
+                    workerProvider = undefined;
+                    workerModel = '';
+                    return `Sağlayıcı: ${provider.label}; model: ${config.model}`;
                 }
-                workerProvider = createProvider({ ...await resolveProviderConfig(config, workspace), model: selected });
-                workerModel = selected;
-                emit({ type: 'status', message: `Alt ajanlar açık: ${selected}. Araştırma alt ajanları salt okunurdur.` });
-                if (text.trim()) {
-                    session.messages = await runSubagents({ ...input, workerProvider });
-                    await store.save(session);
-                }
-            }
-        },
-        onCommand: async (command, setYolo) => {
-            const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
-            if (name === '/yolo') {
-                if (extra || (argument && argument !== 'on' && argument !== 'off'))
-                    return 'Kullanım: /yolo, /yolo on veya /yolo off';
-                let choice = argument;
-                if (!choice) {
-                    choice = await selectOption('YOLO modu', [
-                        { label: 'Kapalı — araç işlemlerinde onay iste', value: 'off' },
-                        { label: 'Açık — araç onaylarını otomatik ver', value: 'on' },
-                    ]);
-                    if (!choice)
-                        return 'YOLO modu değiştirilmedi.';
-                }
-                yolo = choice === 'on';
-                setYolo?.(yolo);
-                return yolo ? 'YOLO açık: araç onayları bu oturumda otomatik verilir.' : 'YOLO kapalı: araç onayları sorulur.';
-            }
-            if (command === '/clear') {
-                session.messages = [];
-                pendingPlan = undefined;
-                await store.save(session);
+                if (command === '/resume')
+                    return 'Devam etmek için tbot --resume <id> kullanın.';
                 return undefined;
             }
-            if (command === '/sessions')
-                return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;
-            if (command === '/auth') {
-                const spec = PROVIDER_CATALOG.find(p => p.id === config.provider);
-                if (!spec?.requiresApiKey)
-                    return 'Bu sağlayıcı için API anahtarı gerekli değil.';
-                const key = await inputSecret(`${spec.label} için yeni API anahtarı`);
-                if (!key?.trim())
-                    return 'Anahtar değiştirilmedi.';
-                if (/^\*+$/.test(key.trim()))
-                    return 'Maskelenmiş yıldızlar anahtar değildir; sağlayıcıdan anahtarın kendisini kopyalayın.';
-                if (spec.id === 'openrouter')
-                    await validateOpenRouterKey(prepareApiKey(key));
-                const status = await setApiKey(spec.id, key);
-                provider = createProvider(await resolveProviderConfig(config, workspace));
-                keySource = await getApiKeySource(config.provider);
-                workerProvider = undefined;
-                workerModel = '';
-                return `Yeni anahtar kaydedildi. Önceki istek yeniden çalıştırılmadı; devam etmek için isteğinizi tekrar gönderin.${status.warning ? ` ${status.warning}` : ''}`;
-            }
-            if (command === '/provider' || command === '/model' || command === '/config') {
-                config = await configure(config, false, true, command === '/model');
-                provider = createProvider(await resolveProviderConfig(config, workspace));
-                keySource = await getApiKeySource(config.provider);
-                workerProvider = undefined;
-                workerModel = '';
-                return `Sağlayıcı: ${provider.label}; model: ${config.model}`;
-            }
-            if (command === '/resume')
-                return 'Devam etmek için tbot --resume <id> kullanın.';
-            return undefined;
-        }
-    });
+        });
+    }
+    finally {
+        await closeMcp();
+    }
 }
 //# sourceMappingURL=app.js.map
