@@ -17,6 +17,7 @@ Seçenekler:
   -m, --model <model>    Model seç
   -w, --workspace <yol>  Çalışma dizini
   -r, --resume <id>      Oturuma devam et
+      --yolo             Araç onaylarını bu oturumda otomatik ver
   -h, --help             Yardım
   -v, --version          Sürüm`;
 export function parseCli(argv) {
@@ -31,6 +32,10 @@ export function parseCli(argv) {
         if (arg === '--') {
             positional.push(...argv.slice(i + 1));
             break;
+        }
+        if (arg === '--yolo') {
+            options.yolo = true;
+            continue;
         }
         if (arg === '-h' || arg === '--help') {
             options.command = 'help';

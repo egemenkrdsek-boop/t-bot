@@ -8,7 +8,8 @@ export interface TuiOptions {
   model: string;
   history: Message[];
   onSubmit: (message: string, emit: (event: AgentEvent) => void, approve: (request: ApprovalRequest) => Promise<boolean>, signal: AbortSignal) => Promise<Message[]>;
-  onCommand?: (command: string) => Promise<string | undefined>;
+  onCommand?: (command: string, setYolo: (enabled: boolean) => void) => Promise<string | undefined>;
+  yolo?: boolean;
   onWorkflow?: (command: string, input: string, emit: (event: AgentEvent) => void, approve: (request: ApprovalRequest) => Promise<boolean>, signal: AbortSignal, suspendUi: <T>(action: () => Promise<T>) => Promise<T>) => Promise<void>;
 }
 
@@ -25,6 +26,8 @@ export async function startTui(options: TuiOptions): Promise<void> {
   let controller: AbortController | undefined;
   let streaming = false;
   let exiting = false;
+  let yolo = options.yolo ?? false;
+  const setYolo = (enabled: boolean): void => { yolo = enabled; };
 
   const attach = (): void => { rl.on('line', line => {
     if (waiting) { const resolve = waiting; waiting = undefined; resolve(line); }
@@ -79,12 +82,13 @@ export async function startTui(options: TuiOptions): Promise<void> {
     const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
     write(`\n${theme.brand('  T BOT')} ${theme.muted(`${symbols.bullet} Your terminal assistant`)}\n`);
     write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
+    write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
     write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);
     write(`${theme.muted('  /help for commands  ·  Ctrl+C to cancel')}\n\n`);
   }
   try {
     while (!exiting) {
-      const first = await read(interactive ? `${theme.accent(symbols.prompt)} ` : '');
+      const first = await read(interactive ? `${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')} ${theme.accent(symbols.prompt)} ` : '');
       if (first === undefined) break;
       let input = first;
       // A trailing backslash joins the next line, allowing multi-line prompts.
@@ -100,10 +104,10 @@ export async function startTui(options: TuiOptions): Promise<void> {
         const command = input.split(/\s+/, 1)[0]?.toLowerCase();
         if (command === '/exit' || command === '/quit') break;
         if (command === '/help') {
-          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+          write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /yolo [on|off]         Toggle automatic tool approval\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
           continue;
         }
-        if (command === '/clear') { await options.onCommand?.(input); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
+        if (command === '/clear') { await options.onCommand?.(input, setYolo); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
         if ((command === '/goal' || command === '/plan' || command === '/subagents') && options.onWorkflow) {
           controller = new AbortController();
           try { await options.onWorkflow(command, input.slice(command.length).trim(), emit, approve, controller.signal, suspendUi); }
@@ -113,8 +117,8 @@ export async function startTui(options: TuiOptions): Promise<void> {
           continue;
         }
         let result: string | undefined;
-        const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth');
-        try { result = menu ? await suspendUi(async () => options.onCommand?.(input)) : await options.onCommand?.(input); }
+        const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth' || input.toLowerCase() === '/yolo');
+        try { result = menu ? await suspendUi(async () => options.onCommand?.(input, setYolo)) : await options.onCommand?.(input, setYolo); }
         catch (error) { result = `Error: ${error instanceof Error ? error.message : String(error)}`; }
         write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);
         continue;

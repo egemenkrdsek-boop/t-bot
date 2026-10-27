@@ -3,7 +3,7 @@ import { stdin, stdout } from 'node:process';
 import { resolve } from 'node:path';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, HELP } from './cli.js';
-import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission } from './config.js';
+import { configDirectory, loadConfig, saveConfig, resolveProviderConfig } from './config.js';
 import { setApiKey, getApiKeySource, prepareApiKey, SecretStorageError } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
@@ -182,8 +182,11 @@ export async function main(argv) {
         if (event.type === 'error' && event.code === 'authentication')
             emit({ type: 'status', message: `Anahtar kaynağı: ${keySource}. /auth ile yeni anahtar girin ve sağlayıcı hesabındaki erişimi kontrol edin.` });
     };
-    const approve = getWorkspacePermission(config, workspace) === 'allow' ? async () => true : approveOnce;
+    let yolo = options.yolo === true;
+    const approve = (request) => yolo ? Promise.resolve(true) : approveOnce(request);
     if (options.message) {
+        if (yolo)
+            console.error('YOLO açık: araç onayları bu oturumda otomatik verilir.');
         const controller = new AbortController();
         const cancel = () => controller.abort();
         process.once('SIGINT', cancel);
@@ -201,15 +204,15 @@ export async function main(argv) {
     if (!stdin.isTTY || !stdout.isTTY)
         throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
     const { startTui } = await import('./tui.js');
-    await startTui({ workspace, provider, model: config.model, history: session.messages,
+    await startTui({ workspace, provider, model: config.model, history: session.messages, yolo,
         onSubmit: async (message, emit, tuiApprove, signal) => {
-            const input = { message, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: getWorkspacePermission(config, workspace) === 'allow' ? async () => true : tuiApprove, signal };
+            const input = { message, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
             session.messages = workerProvider ? await runSubagents({ ...input, workerProvider }) : await runAgent(input);
             await store.save(session);
             return session.messages;
         },
         onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
-            const input = { message: text, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: getWorkspacePermission(config, workspace) === 'allow' ? async () => true : tuiApprove, signal };
+            const input = { message: text, history: session.messages, provider, workspace, onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
             if (command === '/goal') {
                 const action = text.trim().toLowerCase();
                 if (!action || action === 'status') {
@@ -295,7 +298,24 @@ export async function main(argv) {
                 }
             }
         },
-        onCommand: async (command) => {
+        onCommand: async (command, setYolo) => {
+            const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
+            if (name === '/yolo') {
+                if (extra || (argument && argument !== 'on' && argument !== 'off'))
+                    return 'Kullanım: /yolo, /yolo on veya /yolo off';
+                let choice = argument;
+                if (!choice) {
+                    choice = await selectOption('YOLO modu', [
+                        { label: 'Kapalı — araç işlemlerinde onay iste', value: 'off' },
+                        { label: 'Açık — araç onaylarını otomatik ver', value: 'on' },
+                    ]);
+                    if (!choice)
+                        return 'YOLO modu değiştirilmedi.';
+                }
+                yolo = choice === 'on';
+                setYolo?.(yolo);
+                return yolo ? 'YOLO açık: araç onayları bu oturumda otomatik verilir.' : 'YOLO kapalı: araç onayları sorulur.';
+            }
             if (command === '/clear') {
                 session.messages = [];
                 pendingPlan = undefined;

@@ -12,6 +12,8 @@ export async function startTui(options) {
     let controller;
     let streaming = false;
     let exiting = false;
+    let yolo = options.yolo ?? false;
+    const setYolo = (enabled) => { yolo = enabled; };
     const attach = () => {
         rl.on('line', line => {
             if (waiting) {
@@ -110,12 +112,13 @@ export async function startTui(options) {
         const width = Math.max(20, Math.min(process.stdout.columns || 70, 70));
         write(`\n${theme.brand('  T BOT')} ${theme.muted(`${symbols.bullet} Your terminal assistant`)}\n`);
         write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
+        write(`  ${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')}\n`);
         write(`${theme.muted(`  ${symbols.rule.repeat(width - 2)}`)}\n`);
         write(`${theme.muted('  /help for commands  ·  Ctrl+C to cancel')}\n\n`);
     }
     try {
         while (!exiting) {
-            const first = await read(interactive ? `${theme.accent(symbols.prompt)} ` : '');
+            const first = await read(interactive ? `${yolo ? theme.warning('YOLO · otomatik onay') : theme.muted('Onaylı')} ${theme.accent(symbols.prompt)} ` : '');
             if (first === undefined)
                 break;
             let input = first;
@@ -135,11 +138,11 @@ export async function startTui(options) {
                 if (command === '/exit' || command === '/quit')
                     break;
                 if (command === '/help') {
-                    write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
+                    write('\n  /help                  Show commands\n  /clear                 Clear conversation\n  /config                Configure provider and model\n  /provider              Select provider\n  /model                 Select model\n  /auth                  Update API key\n  /yolo [on|off]         Toggle automatic tool approval\n  /goal <goal>           Create a goal\n  /goal status|run|pause|resume|complete|cancel\n  /plan <request>        Create and review a plan\n  /plan apply            Apply the current plan\n  /subagents [task]      Configure or run subagents\n  /sessions              List sessions\n  /resume                Resume a session\n  /exit                  Exit\n\n  End a line with \\ to continue on the next line.\n\n');
                     continue;
                 }
                 if (command === '/clear') {
-                    await options.onCommand?.(input);
+                    await options.onCommand?.(input, setYolo);
                     if (interactive)
                         process.stdout.write('\x1b[2J\x1b[H');
                     write(`${theme.muted('Conversation cleared.')}\n`);
@@ -163,9 +166,9 @@ export async function startTui(options) {
                     continue;
                 }
                 let result;
-                const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth');
+                const menu = interactive && (command === '/provider' || command === '/model' || command === '/config' || command === '/auth' || input.toLowerCase() === '/yolo');
                 try {
-                    result = menu ? await suspendUi(async () => options.onCommand?.(input)) : await options.onCommand?.(input);
+                    result = menu ? await suspendUi(async () => options.onCommand?.(input, setYolo)) : await options.onCommand?.(input, setYolo);
                 }
                 catch (error) {
                     result = `Error: ${error instanceof Error ? error.message : String(error)}`;

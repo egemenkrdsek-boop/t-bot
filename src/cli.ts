@@ -5,6 +5,7 @@ export interface CliOptions {
   model?: string;
   workspace?: string;
   resume?: string;
+  yolo?: boolean;
   args: string[];
 }
 
@@ -27,6 +28,7 @@ Seçenekler:
   -m, --model <model>    Model seç
   -w, --workspace <yol>  Çalışma dizini
   -r, --resume <id>      Oturuma devam et
+      --yolo             Araç onaylarını bu oturumda otomatik ver
   -h, --help             Yardım
   -v, --version          Sürüm`;
 
@@ -40,6 +42,7 @@ export function parseCli(argv: string[]): CliOptions {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--') { positional.push(...argv.slice(i + 1)); break; }
+    if (arg === '--yolo') { options.yolo = true; continue; }
     if (arg === '-h' || arg === '--help') { options.command = 'help'; continue; }
     if (arg === '-v' || arg === '--version') { options.command = 'version'; continue; }
     const equal = arg.indexOf('=');

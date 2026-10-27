@@ -38,6 +38,7 @@ tbot --resume <id>                Oturuma devam et
 tbot config                       Sağlayıcı ayarları
 tbot providers                    Sağlayıcıları listele
 tbot doctor                       Ortam ve ayar durumunu göster
+tbot --yolo                      Bu oturumda araç onaylarını otomatik ver
 tbot --help                       Yardım
 tbot --version                    Sürüm
 ```
@@ -47,6 +48,8 @@ Etkileşimli modda `/help`, `/clear`, `/provider`, `/model`, `/sessions`, `/conf
 - `/goal <hedef>` hedefi kaydedip sınırlı bir çalışma başlatır. `/goal status`, `/goal run`, `/goal pause`, `/goal resume`, `/goal complete` ve `/goal cancel` ile durumunu yönetin. Tamamlanma açıkça işaretlenir; çalışma otomatik olarak sonsuza kadar sürmez.
 - `/plan <istek>` araç kullanmadan bir plan oluşturur. Geçerli oturumda bu planı inceleyip `/plan apply` ile uygulamayı başlatabilirsiniz; araç onayları ayrıca geçerlidir.
 - `/subagents` alt ajan modelini seçer veya açıkken değiştirme ve kapatma menüsünü gösterir. `/subagents <istek>` seçilen modelle paralel salt okunur araştırma başlatır; uygulamayı ana ajan yapar. Açıkken sonraki normal isteklerde de alt ajanlar kullanılabilir.
+
+Etkileşimli oturumda `/yolo` menüsünden veya `/yolo on` ve `/yolo off` komutlarıyla araç onaylarının otomatik verilmesini seçebilirsiniz. `--yolo` modu başlangıçta açar. Ayar yalnızca geçerli oturumda geçerlidir; varsayılan olarak onay istenir. YOLO açıkken kabuk komutları ve diğer onay gerektiren araçlar kullanıcı yetkileriyle otomatik çalışabilir. Plan uygulaması yine `/plan apply` ile başlatılır; salt okunur alt ajan sınırları korunur.
 
 ## Araçlar ve gizlilik
 
