@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 export const computerToolDefinitions = [{
         name: 'computer',
@@ -48,7 +49,7 @@ export async function handleComputerTool(name, args, context) {
     if (action === 'screenshot') {
         const directory = join(context.workspace, '.tbot', 'screenshots');
         await mkdir(directory, { recursive: true });
-        request = { ...args, screenshotPath: join(directory, "screenshot-${randomUUID()}.png") };
+        request = { ...args, screenshotPath: join(directory, `screenshot-${randomUUID()}.png`) };
     }
     const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
     return await new Promise((resolve, reject) => {

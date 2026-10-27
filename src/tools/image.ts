@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import type { ApprovalRequest, ToolDefinition } from '../types.js';
 
@@ -12,8 +12,16 @@ export interface ImageToolContext {
 }
 export const imageToolDefinitions: ToolDefinition[] = [{
   name: 'image_generate',
-  description: 'Generate a real image using a configured image provider. This can incur charges and requires explicit approval. Returns the saved file path.',
-  parameters: { type: 'object', properties: { prompt: { type: 'string', description: 'Description of the image to create.' } }, required: ['prompt'], additionalProperties: false },
+  description: 'Generate or edit an image using a configured image provider. This can incur charges and requires explicit approval. Returns the saved file path.',
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'Description of the image to create or edit.' },
+      source_image: { type: 'string', description: 'Optional local image path in workspace to edit or reference for image-to-image generation.' },
+    },
+    required: ['prompt'],
+    additionalProperties: false,
+  },
 }];
 
 export const IMAGE_MODELS = {
@@ -80,12 +88,51 @@ export async function handleImageTool(name: string, args: Record<string, unknown
   if (name !== 'image_generate') throw new Error(`Unknown image tool: ${name}`);
   const prompt = args.prompt;
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 32000) throw new Error('Image prompt must contain 1–32000 characters.');
+  const sourceImage = typeof args.source_image === 'string' && args.source_image.trim() ? args.source_image.trim() : undefined;
   const config = context.imageProvider;
   if (!config || !['openai', 'gemini', 'openrouter'].includes(config.provider) || !config.apiKey?.trim()) throw new Error('No compatible image provider configured. Choose a configured OpenAI, Gemini, or OpenRouter provider with an API key. Anthropic does not generate images.');
   const model = config.model ?? IMAGE_MODELS[config.provider].default;
   if (!(IMAGE_MODELS[config.provider].choices as readonly string[]).includes(model)) throw new Error('Unsupported image model. Select a supported image-generation model in the image provider settings.');
   if (context.signal?.aborted) throw new Error('Image generation cancelled.');
-  const accepted = await context.approve({ tool: name, description: `Generate one image using ${config.provider} (${model}). This may incur API charges and will save a file in the workspace.`, arguments: { prompt } });
+
+  let sourceImageBytes: Buffer | undefined;
+  let sourceImageMime: string | undefined;
+
+  if (sourceImage) {
+    try {
+      const root = await realpath(context.workspace);
+      const target = isAbsolute(sourceImage) ? sourceImage : join(root, sourceImage);
+      const realTarget = await realpath(target);
+      const rel = relative(root, realTarget);
+      if (!rel.startsWith('..') && !isAbsolute(rel)) {
+        const stat = await lstat(realTarget);
+        if (stat.isFile() && stat.size > 0 && stat.size <= maxImage) {
+          const buf = await readFile(realTarget);
+          let mime = '';
+          if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mime = 'image/png';
+          else if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) mime = 'image/jpeg';
+          else if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp';
+          else if (sourceImage.toLowerCase().endsWith('.png')) mime = 'image/png';
+          else if (sourceImage.toLowerCase().endsWith('.jpg') || sourceImage.toLowerCase().endsWith('.jpeg')) mime = 'image/jpeg';
+          else if (sourceImage.toLowerCase().endsWith('.webp')) mime = 'image/webp';
+
+          if (mime) {
+            sourceImageBytes = buf;
+            sourceImageMime = mime;
+          }
+        }
+      }
+    } catch {
+      // Proceed without source image if not found or unreadable
+    }
+  }
+
+  const approvalDesc = sourceImageBytes
+    ? `Edit image based on ${sourceImage} using ${config.provider} (${model}). This may incur API charges and will save a file in the workspace.`
+    : `Generate one image using ${config.provider} (${model}). This may incur API charges and will save a file in the workspace.`;
+  const approvalArgs = sourceImage ? { prompt, source_image: sourceImage } : { prompt };
+
+  const accepted = await context.approve({ tool: name, description: approvalDesc, arguments: approvalArgs });
   if (!accepted) throw new Error('Image generation was not approved.');
   if (context.signal?.aborted) throw new Error('Image generation cancelled.');
   const openai = config.provider === 'openai';
@@ -93,7 +140,45 @@ export async function handleImageTool(name: string, args: Record<string, unknown
   const url = openai ? 'https://api.openai.com/v1/images/generations' : router ? 'https://openrouter.ai/api/v1/chat/completions' : `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(model)}:generateContent`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (openai || router) headers.Authorization = `Bearer ${config.apiKey}`; else headers['x-goog-api-key'] = config.apiKey;
-  const body = openai ? { model, prompt, n: 1, output_format: 'png' } : router ? { model, messages: [{ role: 'user', content: prompt }], modalities: ['image', 'text'] } : { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } };
+
+  let body: Record<string, unknown>;
+  if (openai) {
+    const finalPrompt = sourceImageBytes
+      ? `[Reference source image: ${sourceImage}]: ${prompt}`
+      : prompt;
+    body = { model, prompt: finalPrompt, n: 1, output_format: 'png' };
+  } else if (router) {
+    let routerContent: unknown = prompt;
+    if (sourceImageBytes && sourceImageMime) {
+      routerContent = [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${sourceImageMime};base64,${sourceImageBytes.toString('base64')}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ];
+    }
+    body = { model, messages: [{ role: 'user', content: routerContent }], modalities: ['image', 'text'] };
+  } else {
+    // Gemini
+    const parts: Array<Record<string, unknown>> = [];
+    if (sourceImageBytes && sourceImageMime) {
+      parts.push({
+        inlineData: {
+          mimeType: sourceImageMime,
+          data: sourceImageBytes.toString('base64'),
+        },
+      });
+    }
+    parts.push({ text: prompt });
+    body = { contents: [{ parts }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } };
+  }
+
   let response: Response;
   const signal = context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(180000)]) : AbortSignal.timeout(180000);
   try { response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' }); }

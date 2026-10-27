@@ -26,8 +26,10 @@ export type ProviderEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_calls'; calls: ToolCall[]; responseItems?: Record<string, unknown>[] }
   | { type: 'response_items'; responseItems: Record<string, unknown>[] }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number; savedTokens?: number; savingsPercent?: number }
   | { type: 'error'; error: string; code?: 'authentication' };
+export type StreamEvent = ProviderEvent;
+
 export interface Provider {
   id: string;
   label: string;
@@ -42,7 +44,7 @@ export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_start'; call: ToolCall }
   | { type: 'tool_end'; call: ToolCall; result: string }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number; savedTokens?: number; savingsPercent?: number }
   | { type: 'error'; error: string; code?: 'authentication' }
   | { type: 'status'; message: string };
 export interface AgentInput {
@@ -57,3 +59,30 @@ export interface AgentInput {
   imageProvider?: ImageProviderConfig;
 }
 
+export interface Config {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  workspacePermissions?: Record<string, 'ask' | 'allow'>;
+  efforts?: Record<string, string>;
+  telegramBotToken?: boolean;
+  telegramAllowedChatIds?: string[];
+  [key: string]: unknown;
+}
+
+export interface TokenSavingsReport {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  savedTokens: number;
+  rawEstimatedTokens: number;
+  savingsPercent: number;
+}
+
+export interface GroundingStatus {
+  verified: boolean;
+  inspectedCount: number;
+  modifiedCount: number;
+  verifiedCommands: number;
+  warnings: string[];
+}

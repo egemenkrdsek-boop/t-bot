@@ -9,34 +9,53 @@ export interface CliOptions {
   resume?: string;
   yolo?: boolean;
   ultracode?: boolean;
+  bot?: boolean;
   effort?: EffortLevel;
   args: string[];
 }
 
-export const HELP = `T Bot — yerel AI ajanı
+export const HELP = `T Bot 2.0 — Siber-Minimalist Akıllı AI Ajanı & Komut Merkezi
 
 Kullanım:
-  tbot                         Etkileşimli oturum
-  tbot "isteğiniz"             Tek seferlik istek
+  tbot                         Etkileşimli TUI oturumu
+  tbot "isteğiniz"             Tek seferlik istek yürüt
+  tbot --bot                   Telegram Bot köprüsünü otomatik başlat
   tbot --provider <id> --model <model> "isteğiniz"
   tbot --resume <id>           Kaydedilmiş oturuma devam et
-  tbot config                  Sağlayıcı ayarları
-  tbot providers               Sağlayıcıları listele
-  tbot sessions                Oturumları listele
-  tbot doctor                  Ortamı kontrol et
-  tbot --help                  Yardım
-  tbot --version               Sürüm
+  tbot config                  Sağlayıcı ve API anahtarı ayarları
+  tbot providers               Kullanılabilir LLM sağlayıcılarını listele
+  tbot sessions                Geçmiş oturumları listele
+  tbot doctor                  Ortam ve sistem sağlığı denetimi
+  tbot --help                  Yardım menüsü
+  tbot --version               Sürüm bilgisi
 
 Seçenekler:
-  -p, --provider <id>    Sağlayıcı seç
+  -p, --provider <id>    Sağlayıcı seç (openai, anthropic, gemini, openrouter, ollama vb.)
   -m, --model <model>    Model seç
-  -w, --workspace <yol>  Çalışma dizini
+  -w, --workspace <yol>  Çalışma dizini (varsayılan: aktif dizin)
   -r, --resume <id>      Oturuma devam et
+      --bot              Telegram Bot Gateway köprüsünü başlatır
       --yolo             Araç onaylarını bu oturumda otomatik ver
-      --effort <düzey>   Low, Medium, High, XHigh veya Max
-      --ultracode        Bu oturumda Ultracode modunu aç
-  -h, --help             Yardım
-  -v, --version          Sürüm`;
+      --ultracode        Yüksek doğruluklu özerk Ultracode modunu aç
+      --effort <düzey>   Düşünme eforu: low, medium, high, xhigh, max
+  -h, --help             Yardım menüsünü gösterir
+  -v, --version          Sürüm bilgisini gösterir
+
+T Bot 2.0 Komutları & İş Akışları (Etkileşimli TUI):
+  /bot [start|stop|token|status|allow]  Telegram Bot Köprüsü yönetimi
+  /tokens                               Canlı Token Tasarrufu & Optimizasyon raporu
+  /memory                               RAM kullanımı & kayıtlı proje/küresel bellek
+  /remember <anahtar> = <değer>         Kalıcı proje belleğine bilgi kaydeder
+  /forget <anahtar>                     Kayıtlı hafıza maddesini siler
+  /gc                                   Bellek koruyucusu & Garbage Collection çalıştırır
+  /ultracode [on|off]                   Özerk araştırma, kodlama ve test modu
+  /subagents [model]                    Paralel alt ajan araştırma koordinatörü
+  /goal [hedef|status|pause|cancel]     Otonom hedef belirleme ve döngüsel yürütme
+  /plan [istek|apply]                   Gereksinim analizi ve adım adım plan yürütme`;
+
+export function printUsage(): void {
+  console.log(HELP);
+}
 
 export function parseCli(argv: string[]): CliOptions {
   const options: CliOptions = { command: 'chat', args: [] };
@@ -50,6 +69,7 @@ export function parseCli(argv: string[]): CliOptions {
     if (arg === '--') { positional.push(...argv.slice(i + 1)); break; }
     if (arg === '--ultracode') { options.ultracode = true; continue; }
     if (arg === '--yolo') { options.yolo = true; continue; }
+    if (arg === '--bot') { options.bot = true; continue; }
     if (arg === '-h' || arg === '--help') { options.command = 'help'; continue; }
     if (arg === '-v' || arg === '--version') { options.command = 'version'; continue; }
     const equal = arg.indexOf('=');

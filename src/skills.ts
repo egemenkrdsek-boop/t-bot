@@ -2,11 +2,36 @@ export type SkillId = 'frontenddesign' | 'backend' | 'codereview' | 'debuganalys
 export interface SkillDefinition { id: SkillId; title: string; description: string; guidance: string }
 
 export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
-  { id: 'frontenddesign', title: 'Frontend design', description: 'Design and implement interfaces.', guidance: 'Follow the user’s style and existing design system. Inspect the project conventions first. Deliver real runnable frontend code using the existing stack, not merely a screenshot or mockup. Image generation may supply optional art assets. Create a distinctive, intentional visual direction with considered typography, layout, color and real content. Avoid generic purple gradients, repetitive cards and placeholder copy. Build accessible, responsive interfaces and preserve functional behavior.' },
-  { id: 'backend', title: 'Backend', description: 'Design and implement backend behavior.', guidance: 'Inspect existing architecture and conventions. Define clear contracts, validate inputs at boundaries, apply least privilege, handle failures and cancellation, and keep resource use bounded. Make focused changes and verify relevant behavior when appropriate.' },
-  { id: 'codereview', title: 'Code review', description: 'Review code for actionable defects.', guidance: 'Inspect the relevant code and its callers. Prioritize concrete bugs, regressions and security issues with evidence, impact and precise locations. Distinguish uncertainty and coverage gaps. Do not invent findings.' },
-  { id: 'debuganalysis', title: 'Debug analysis', description: 'Investigate a failure and explain its cause.', guidance: 'Trace the actual failure through relevant code and evidence. Separate observations from hypotheses; identify the likely cause, supporting locations and practical next steps. Do not claim a reproduction or fix without evidence.' },
-  { id: 'imagegen', title: 'Image generation', description: 'Create raster images with the image generation tool.', guidance: 'Use the native image generation tool to create images. Describe the subject, visual style and constraints clearly. The tool cannot edit existing images; say so honestly when editing is requested. Never claim an image was generated unless the tool succeeded; report when the capability is unavailable.' },
+  {
+    id: 'frontenddesign',
+    title: 'Frontend design',
+    description: 'Design and implement user interfaces.',
+    guidance: 'Inspect existing conventions and design systems first. Deliver real, accessible, responsive code using the project stack. Create intentional typography, layout, and colors; avoid generic templates, purple gradients, and placeholder copy.'
+  },
+  {
+    id: 'backend',
+    title: 'Backend',
+    description: 'Design and implement backend services and APIs.',
+    guidance: 'Inspect architecture and conventions. Define clear contracts, validate inputs at boundaries, handle errors and cancellation gracefully, and verify changes with tests.'
+  },
+  {
+    id: 'codereview',
+    title: 'Code review',
+    description: 'Review code for actionable defects.',
+    guidance: 'Inspect relevant code and callers. Prioritize concrete bugs, regressions, and security issues with precise locations and evidence. Distinguish verified facts from uncertainty; never invent findings.'
+  },
+  {
+    id: 'debuganalysis',
+    title: 'Debug analysis',
+    description: 'Investigate failures and identify root causes.',
+    guidance: 'Trace actual failures through code and execution evidence. Separate observations from hypotheses. Identify root causes and concrete next steps; never claim a reproduction or fix without evidence.'
+  },
+  {
+    id: 'imagegen',
+    title: 'Image generation',
+    description: 'Create and edit raster images.',
+    guidance: 'Use the image_generate tool to create or edit raster images. For image editing, supply the existing image path in source_image. Describe subject, visual style, and constraints clearly. Never claim an image was generated or edited unless the tool succeeded.'
+  },
 ];
 
 function normalize(text: string): string {
@@ -30,9 +55,22 @@ export function resolveSkills(message: string): SkillDefinition[] {
   };
   return BUILTIN_SKILLS.filter(skill => skill.id === command || matches[skill.id]);
 }
-export function buildSkillPrompt(skills: readonly SkillDefinition[]): string {
-  return skills.map(skill => `${skill.title}: ${skill.guidance}`).join('\n');
+
+export function buildSkillPrompt(skills?: readonly (SkillDefinition | string)[]): string {
+  if (!skills || !skills.length) return '';
+  const skillMap = new Map<string, SkillDefinition>(BUILTIN_SKILLS.map(s => [s.id, s]));
+  return skills
+    .map(skill => {
+      if (typeof skill === 'string') {
+        const found = skillMap.get(skill) ?? BUILTIN_SKILLS.find(b => b.title.toLowerCase() === skill.toLowerCase());
+        return found ? `${found.title}: ${found.guidance}` : skill;
+      }
+      return `${skill.title}: ${skill.guidance}`;
+    })
+    .filter(Boolean)
+    .join('\n');
 }
+
 export function skillRequiresReadOnly(skills: readonly SkillDefinition[], message: string): boolean {
   const command = normalize(message).match(explicit)?.[1];
   if (command === 'codereview' || command === 'debuganalysis') return true;

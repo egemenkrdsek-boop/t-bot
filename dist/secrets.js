@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
+const secretCache = new Map();
 export class SecretStorageError extends Error {
     code;
     constructor(code) {
@@ -29,7 +30,7 @@ const powershellPath = () => join(process.env.SystemRoot || 'C:\\Windows', 'Syst
 const secretDir = () => join(configDirectory(), 'secrets');
 function secretPath(id) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id))
-        throw new Error('Invalid provider ID');
+        throw new Error('Invalid secret or provider ID');
     return join(secretDir(), `${id.toLowerCase()}.json`);
 }
 function run(command, args, input = '') {
@@ -92,9 +93,12 @@ export async function setApiKey(id, key) {
     finally {
         await unlink(temp).catch(() => undefined);
     }
+    secretCache.set(id, key);
     return method === 'dpapi' ? { method } : { method, warning: 'API key is stored in a user-restricted file without encryption.' };
 }
 export async function readSavedKey(id) {
+    if (secretCache.has(id))
+        return secretCache.get(id);
     const path = secretPath(id);
     let raw;
     try {
@@ -127,9 +131,15 @@ export async function readSavedKey(id) {
     }
     else
         throw new SecretStorageError('decrypt');
-    return normalizeKey(value) || undefined;
+    const normalized = normalizeKey(value) || undefined;
+    if (normalized)
+        secretCache.set(id, normalized);
+    return normalized;
 }
 async function resolveApiKey(id) {
+    if (secretCache.has(id)) {
+        return { key: secretCache.get(id), source: 'saved' };
+    }
     // Explicitly saved provider credentials win over environment fallbacks.
     const saved = await readSavedKey(id);
     if (saved)
@@ -143,12 +153,74 @@ async function resolveApiKey(id) {
 export async function getApiKey(id) { return (await resolveApiKey(id)).key; }
 export async function getApiKeySource(id) { return (await resolveApiKey(id)).source; }
 export async function deleteApiKey(id) {
+    secretCache.delete(id);
     try {
         await unlink(secretPath(id));
     }
     catch (error) {
         if (error.code !== 'ENOENT')
             throw error;
+    }
+}
+export async function getSecret(id) {
+    if (secretCache.has(id))
+        return secretCache.get(id);
+    const key = await getApiKey(id);
+    if (key)
+        secretCache.set(id, key);
+    return key;
+}
+export async function setSecret(id, key) {
+    const result = await setApiKey(id, key);
+    secretCache.set(id, prepareApiKey(key));
+    return result;
+}
+export async function deleteSecret(id) {
+    secretCache.delete(id);
+    await deleteApiKey(id);
+}
+function toCustomId(name) {
+    const clean = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!clean)
+        throw new Error('Invalid secret name');
+    return clean.startsWith('custom-') ? clean : `custom-${clean}`;
+}
+export async function getCustomSecret(name) {
+    const id = toCustomId(name);
+    if (secretCache.has(id))
+        return secretCache.get(id);
+    if (secretCache.has(name))
+        return secretCache.get(name);
+    const val = await readSavedKey(id);
+    if (val !== undefined) {
+        secretCache.set(name, val);
+        return val;
+    }
+    const rawId = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (rawId && rawId !== id) {
+        const rawVal = await readSavedKey(rawId);
+        if (rawVal !== undefined) {
+            secretCache.set(name, rawVal);
+            return rawVal;
+        }
+    }
+    return undefined;
+}
+export async function setCustomSecret(name, value) {
+    const id = toCustomId(name);
+    await setApiKey(id, value);
+    const prepared = prepareApiKey(value);
+    secretCache.set(id, prepared);
+    secretCache.set(name, prepared);
+}
+export async function deleteCustomSecret(name) {
+    const id = toCustomId(name);
+    secretCache.delete(id);
+    secretCache.delete(name);
+    await deleteApiKey(id);
+    const rawId = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (rawId && rawId !== id) {
+        await deleteApiKey(rawId).catch(() => undefined);
     }
 }
 //# sourceMappingURL=secrets.js.map

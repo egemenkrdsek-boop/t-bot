@@ -1,0 +1,859 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import type { Config } from './types.js';
+import type { Session } from './sessions.js';
+import type { SkillId } from './skills.js';
+import type { Message, AgentInput, AgentEvent, ApprovalRequest, Provider } from './types.js';
+import type { ImageProviderConfig } from './tools/image.js';
+import { getCustomSecret, setCustomSecret, getApiKey } from './secrets.js';
+import { loadConfig, saveConfig, resolveProviderConfig, configDirectory, type AppConfig } from './config.js';
+import { createProvider } from './providers.js';
+import { getMemoryStats, reclaimMemory } from './memory-guard.js';
+import { globalTokenTracker } from './token-optimizer.js';
+import { globalGroundingLedger } from './grounding.js';
+import { recallFacts } from './memory.js';
+import { runAgent } from './agent.js';
+import { runUltracode } from './ultracode.js';
+import { startGoal, runGoal, getGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal } from './workflows.js';
+import { SessionStore } from './sessions.js';
+
+/**
+ * Options required to initialize and run the zero-backend Telegram Bot Bridge.
+ */
+export interface TelegramBridgeOptions {
+  config: Config;
+  session: Session;
+  workspace: string;
+  getYolo: () => boolean;
+  activeSkills: SkillId[];
+  onLog?: (text: string) => void;
+}
+
+/**
+ * Internal state for an ongoing tool approval request.
+ */
+interface PendingApproval {
+  tool: string;
+  chatId: string;
+  resolve: (approved: boolean) => void;
+  timeoutId: NodeJS.Timeout;
+}
+
+interface TelegramUser {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+}
+
+interface TelegramChat {
+  id: number;
+  type: 'private' | 'group' | 'supergroup' | 'channel';
+  title?: string;
+  username?: string;
+  first_name?: string;
+  last_name?: string;
+}
+
+interface TelegramMessage {
+  message_id: number;
+  from?: TelegramUser;
+  chat: TelegramChat;
+  date: number;
+  text?: string;
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+}
+
+// Module-level bridge state
+let isRunning = false;
+let currentBotUsername: string | undefined;
+let abortController: AbortController | null = null;
+let currentOptions: TelegramBridgeOptions | null = null;
+let activeApproval: PendingApproval | null = null;
+let handledCount = 0;
+let isAgentBusy = false;
+
+/**
+ * Escapes characters that have special meaning in Telegram Markdown v1.
+ */
+function escapeMarkdown(text: string): string {
+  return text.replace(/([*_`\[\]])/g, '\\$1');
+}
+
+/**
+ * Sends a chat action (e.g. typing) to Telegram.
+ */
+async function sendChatAction(token: string, chatId: string, action = 'typing'): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action }),
+    });
+  } catch {
+    // Ignore transient chat action failures
+  }
+}
+
+/**
+ * Sends a raw text message chunk, falling back to plain text if Markdown parsing fails.
+ */
+async function sendRawTelegramChunk(token: string, chatId: string, text: string): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: 'Markdown',
+      }),
+    });
+    if (res.ok) return true;
+
+    // If Telegram returned 400 Bad Request (commonly markdown parse error), retry without parse_mode
+    const fallback = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+      }),
+    });
+    return fallback.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Splits text into chunks conforming to Telegram's 4096 character limit and sends each chunk.
+ */
+export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<void> {
+  const MAX_CHUNK = 4000;
+  if (!text) return;
+
+  if (text.length <= MAX_CHUNK) {
+    await sendRawTelegramChunk(token, chatId, text);
+    return;
+  }
+
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_CHUNK) {
+      await sendRawTelegramChunk(token, chatId, remaining);
+      break;
+    }
+    let splitIdx = remaining.lastIndexOf('\n', MAX_CHUNK);
+    if (splitIdx < MAX_CHUNK / 3) {
+      splitIdx = MAX_CHUNK;
+    }
+    const chunk = remaining.slice(0, splitIdx);
+    await sendRawTelegramChunk(token, chatId, chunk);
+    remaining = remaining.slice(splitIdx).trimStart();
+  }
+}
+
+/**
+ * Sends a photo to a Telegram chat using native FormData, Blob, and fs.readFile.
+ */
+export async function sendTelegramPhoto(
+  token: string,
+  chatId: string,
+  filePath: string,
+  caption?: string
+): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 20 * 1024 * 1024) {
+      return false;
+    }
+
+    const buffer = await fs.readFile(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+    const blob = new Blob([buffer], { type: mimeType });
+
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('photo', blob, path.basename(filePath));
+    if (caption) {
+      form.append('caption', caption.slice(0, 1000));
+    }
+
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: 'POST',
+      body: form,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persists an allowed chat ID to the configuration file using saveConfig.
+ */
+async function persistAllowedChatId(config: Config, chatId: string, onLog?: (text: string) => void): Promise<void> {
+  if (!Array.isArray(config.telegramAllowedChatIds)) {
+    config.telegramAllowedChatIds = [];
+  }
+  if (!config.telegramAllowedChatIds.includes(chatId)) {
+    config.telegramAllowedChatIds.push(chatId);
+  }
+
+  try {
+    await saveConfig(config as AppConfig);
+    onLog?.(`[Telegram Bot] Yetkili Chat ID kaydedildi: ${chatId}`);
+  } catch {
+    // If the revision is outdated or missing, reload fresh config and persist
+    try {
+      const fresh = await loadConfig();
+      if (!Array.isArray(fresh.telegramAllowedChatIds)) {
+        fresh.telegramAllowedChatIds = [];
+      }
+      if (!fresh.telegramAllowedChatIds.includes(chatId)) {
+        fresh.telegramAllowedChatIds.push(chatId);
+      }
+      await saveConfig(fresh);
+      config.telegramAllowedChatIds = fresh.telegramAllowedChatIds;
+      onLog?.(`[Telegram Bot] Yetkili Chat ID (fresh config) kaydedildi: ${chatId}`);
+    } catch (saveErr) {
+      onLog?.(`[Telegram Bot] Konfigürasyon kaydedilemedi: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`);
+    }
+  }
+}
+
+/**
+ * Resolves optional image provider configuration if supported.
+ */
+async function getImageProviderConfig(config: Config): Promise<ImageProviderConfig | undefined> {
+  if (config.provider !== 'openai' && config.provider !== 'gemini' && config.provider !== 'openrouter') {
+    return undefined;
+  }
+  const apiKey = await getApiKey(config.provider);
+  return apiKey ? { provider: config.provider as 'openai' | 'gemini' | 'openrouter', apiKey } : undefined;
+}
+
+/**
+ * Scans workspace directories for screenshots and generated images created during a run turn.
+ */
+async function collectGeneratedImages(workspace: string, startTime: number): Promise<string[]> {
+  const discovered: string[] = [];
+  const searchDirs = [
+    path.join(workspace, 'generated-images'),
+    path.join(workspace, '.tbot', 'screenshots'),
+    workspace,
+  ];
+
+  for (const dir of searchDirs) {
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const lower = entry.name.toLowerCase();
+        if (dir === workspace && !lower.startsWith('screenshot-') && !lower.endsWith('.png')) {
+          continue;
+        }
+        if (!/\.(png|jpg|jpeg|webp)$/i.test(lower)) continue;
+
+        const fullPath = path.join(dir, entry.name);
+        try {
+          const stats = await fs.stat(fullPath);
+          if (stats.mtimeMs >= startTime - 2000) {
+            discovered.push(fullPath);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  return discovered;
+}
+
+/**
+ * Handles remote tool approval dialog with 60-second timeout.
+ */
+async function requestRemoteToolApproval(
+  request: ApprovalRequest,
+  chatId: string,
+  token: string,
+  getYolo: () => boolean
+): Promise<boolean> {
+  // If YOLO is enabled, approve immediately without prompting
+  if (getYolo()) {
+    return true;
+  }
+
+  // Clear previous pending approval if any
+  if (activeApproval) {
+    clearTimeout(activeApproval.timeoutId);
+    activeApproval.resolve(false);
+    activeApproval = null;
+  }
+
+  const argsSnippet = JSON.stringify(request.arguments, null, 2);
+  const truncatedArgs = argsSnippet.length > 500 ? `${argsSnippet.slice(0, 500)}...` : argsSnippet;
+
+  const promptText = `⚠️ *Araç Onayı Gerekiyor:* \`${request.tool}\`
+${request.description ? `*Açıklama:* ${request.description}\n` : ''}*Argümanlar:*
+\`\`\`json
+${truncatedArgs}
+\`\`\`
+
+Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın (60sn)`;
+
+  await sendTelegramMessage(token, chatId, promptText);
+
+  return new Promise<boolean>((resolve) => {
+    const timeoutId = setTimeout(async () => {
+      if (activeApproval && activeApproval.resolve === resolve) {
+        activeApproval = null;
+        await sendTelegramMessage(
+          token,
+          chatId,
+          `⏱️ *Araç Onayı Zaman Aşımı (60sn)*\n\`${request.tool}\` işlemi zamanında yanıtlanmadığı için iptal edildi.`
+        );
+        resolve(false);
+      }
+    }, 60_000);
+    timeoutId.unref();
+
+    activeApproval = {
+      tool: request.tool,
+      chatId,
+      resolve,
+      timeoutId,
+    };
+  });
+}
+
+/**
+ * Dispatches and executes an autonomous or user turn via T Bot's agent engine.
+ */
+async function executeAgentTurn(
+  message: string,
+  chatId: string,
+  token: string,
+  options: TelegramBridgeOptions,
+  signal: AbortSignal,
+  mode: 'agent' | 'ultracode' | 'goal' = 'agent'
+): Promise<void> {
+  isAgentBusy = true;
+  const startTime = Date.now();
+  const sessionStore = new SessionStore(configDirectory());
+  const discoveredPaths = new Set<string>();
+
+  // Send periodic "typing" notification every 4.5 seconds
+  void sendChatAction(token, chatId, 'typing');
+  const typingTimer = setInterval(() => {
+    void sendChatAction(token, chatId, 'typing');
+  }, 4500);
+  typingTimer.unref();
+
+  try {
+    const resolved = await resolveProviderConfig(options.config as AppConfig, options.workspace);
+    const provider = createProvider(resolved);
+    const imageProvider = await getImageProviderConfig(options.config);
+
+    const onEvent = (event: AgentEvent) => {
+      if (event.type === 'tool_end') {
+        // Capture generated images from image_generate
+        if (event.call.name === 'image_generate' && event.result.startsWith('Generated image saved: ')) {
+          const imgPath = event.result.slice('Generated image saved: '.length).trim();
+          if (imgPath) discoveredPaths.add(path.resolve(options.workspace, imgPath));
+        }
+        // Capture screenshots from browser_screenshot
+        if (event.call.name === 'browser_screenshot' && event.result.startsWith('Screenshot saved: ')) {
+          const shotPath = event.result.slice('Screenshot saved: '.length).trim();
+          if (shotPath) discoveredPaths.add(path.resolve(options.workspace, shotPath));
+        }
+        // Capture computer screenshots
+        if (event.call.name === 'computer' && event.call.arguments?.action === 'screenshot') {
+          try {
+            const parsed = JSON.parse(event.result) as { path?: string };
+            if (typeof parsed.path === 'string') {
+              discoveredPaths.add(path.resolve(options.workspace, parsed.path));
+            }
+          } catch {
+            const match = event.result.match(/([a-zA-Z]:[\\/][^"'\r\n]+\.png)/i);
+            if (match && match[1]) discoveredPaths.add(match[1]);
+          }
+        }
+      }
+    };
+
+    const approve = (request: ApprovalRequest) =>
+      requestRemoteToolApproval(request, chatId, token, options.getYolo);
+
+    const agentInput: AgentInput = {
+      message,
+      history: options.session.messages,
+      provider,
+      workspace: options.workspace,
+      onEvent,
+      approve,
+      signal,
+      imageProvider,
+    };
+
+    let updatedMessages: Message[] = [];
+
+    if (mode === 'ultracode') {
+      updatedMessages = await runUltracode({ ...agentInput, workerProvider: provider });
+    } else if (mode === 'goal') {
+      updatedMessages = await runGoal(agentInput, runAgent);
+    } else {
+      updatedMessages = await runAgent(agentInput);
+    }
+
+    options.session.messages = updatedMessages;
+    await sessionStore.save(options.session).catch(() => {});
+
+    // Send latest assistant response
+    const lastAssistant = [...updatedMessages]
+      .reverse()
+      .find((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim().length > 0);
+
+    if (lastAssistant && lastAssistant.content.trim()) {
+      await sendTelegramMessage(token, chatId, lastAssistant.content);
+    } else {
+      await sendTelegramMessage(token, chatId, '✅ İşlem tamamlandı.');
+    }
+
+    // Inspect disk for newly produced images or screenshots
+    const scanned = await collectGeneratedImages(options.workspace, startTime);
+    for (const p of scanned) {
+      discoveredPaths.add(p);
+    }
+
+    // Send any generated photos or screenshots directly to the user
+    for (const imgPath of discoveredPaths) {
+      const base = path.basename(imgPath);
+      const isScreenshot = base.toLowerCase().startsWith('screenshot') || base.toLowerCase().startsWith('browser');
+      const caption = isScreenshot ? `📸 Ekran Görüntüsü: \`${base}\`` : `🎨 Üretilen Görsel: \`${base}\``;
+      await sendTelegramPhoto(token, chatId, imgPath, caption);
+    }
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    options.onLog?.(`[Telegram Bot] Ajan çalıştırma hatası: ${errorMsg}`);
+    await sendTelegramMessage(token, chatId, `❌ *Hata:* ${escapeMarkdown(errorMsg)}`);
+  } finally {
+    clearInterval(typingTimer);
+    isAgentBusy = false;
+  }
+}
+
+/**
+ * Handles incoming Telegram message updates.
+ */
+async function handleIncomingMessage(
+  msg: TelegramMessage,
+  token: string,
+  signal: AbortSignal,
+  options: TelegramBridgeOptions
+): Promise<void> {
+  const chatId = String(msg.chat.id);
+  const text = (msg.text || '').trim();
+  if (!text) return;
+
+  const allowed = options.config.telegramAllowedChatIds || [];
+
+  // Register first user automatically if allowed list is empty
+  if (allowed.length === 0) {
+    await persistAllowedChatId(options.config, chatId, options.onLog);
+    const welcome = `🎉 *T Bot 2.0 Yerel Ağ Geçidine Hoş Geldiniz!*\n\nChat ID'niz (\`${chatId}\`) ana yetkili kullanıcı olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
+    await sendTelegramMessage(token, chatId, welcome);
+    options.onLog?.(`[Telegram Bot] İlk yetkili kullanıcı eklendi: Chat ID ${chatId} (${msg.from?.first_name || 'Kullanıcı'})`);
+  } else if (!allowed.includes(chatId)) {
+    options.onLog?.(`[Telegram Bot] Yetkisiz erişim denemesi: Chat ID ${chatId} (${msg.from?.username || msg.from?.first_name || 'Bilinmeyen'})`);
+    await sendTelegramMessage(token, chatId, '⛔ *Yetkisiz Erişim*\nBu T Bot yerel köprüsü özeldir ve yalnızca yetkili kullanıcıya açıktır.');
+    return;
+  }
+
+  // 1. Tool Approval Handling (/onay and /red)
+  if (text === '/onay' || text.toLowerCase() === '/onay') {
+    if (activeApproval && activeApproval.chatId === chatId) {
+      clearTimeout(activeApproval.timeoutId);
+      const { resolve, tool } = activeApproval;
+      activeApproval = null;
+      await sendTelegramMessage(token, chatId, `✅ *Araç Onaylandı:* \`${tool}\` çalıştırılıyor...`);
+      resolve(true);
+    } else {
+      await sendTelegramMessage(token, chatId, 'ℹ️ Şu anda bekleyen bir araç onayı bulunmuyor.');
+    }
+    return;
+  }
+
+  if (text === '/red' || text.toLowerCase() === '/red') {
+    if (activeApproval && activeApproval.chatId === chatId) {
+      clearTimeout(activeApproval.timeoutId);
+      const { resolve, tool } = activeApproval;
+      activeApproval = null;
+      await sendTelegramMessage(token, chatId, `❌ *Araç Reddedildi:* \`${tool}\` işlemi iptal edildi.`);
+      resolve(false);
+    } else {
+      await sendTelegramMessage(token, chatId, 'ℹ️ Şu anda bekleyen bir araç onayı bulunmuyor.');
+    }
+    return;
+  }
+
+  // If a tool approval is currently pending, prompt the user to resolve it first
+  if (activeApproval && activeApproval.chatId === chatId) {
+    await sendTelegramMessage(
+      token,
+      chatId,
+      `⚠️ *Bekleyen Araç Onayı Var:*\n\`${activeApproval.tool}\` için onay bekleniyor. Lütfen önce \`/onay\` veya \`/red\` yazın.`
+    );
+    return;
+  }
+
+  // 2. /start or /help
+  if (text === '/start' || text === '/help') {
+    const helpText = `🤖 *T Bot 2.0 Yerel Bot Köprüsü*
+
+T Bot yerel terminal ajanı ile doğrudan Telegram üzerinden iletişimdesiniz. %100 yerel ve DPAPI korumalı.
+
+📋 *Kullanılabilir Komutlar:*
+• \`/status\` - Sistem durumu (Sağlayıcı, RAM, Token Tasarrufu, Grounding)
+• \`/goal <hedef>\` - Otonom hedefi başlat, durumunu gör veya yönet
+• \`/ultracode <görev>\` - Ultracode çoklu ajan akışı ile araştır & uygula & incele
+• \`/memory\` - Proje hafızasındaki bilgileri listele
+• \`/clear\` - Oturum geçmişini ve RAM'i temizle
+• \`/onay\` - Bekleyen araç işlemini onayla
+• \`/red\` - Bekleyen araç işlemini reddet
+
+💡 *Doğrudan İstek:*
+Herhangi bir metin göndererek doğrudan T Bot ajanını çalıştırabilirsiniz. Oluşan ekran görüntüleri ve üretilen görseller doğrudan telefonunuza gönderilir.`;
+    await sendTelegramMessage(token, chatId, helpText);
+    return;
+  }
+
+  // 3. /status
+  if (text === '/status') {
+    const mem = getMemoryStats();
+    const tokenReport = globalTokenTracker.getReport();
+    const grounding = globalGroundingLedger.getStatus();
+    const yolo = options.getYolo() ? '⚡ Açık (Otomatik Onay)' : '🛡️ Kapalı (Kullanıcı Onayı)';
+
+    const statusText = `📊 *T Bot 2.0 Sistem Durumu*
+
+⚙️ *Model & Sağlayıcı:*
+• Sağlayıcı: \`${options.config.provider}\`
+• Model: \`${options.config.model}\`
+• YOLO Modu: ${yolo}
+
+💾 *Bellek (RAM) Durumu:*
+• Heap Kullanımı: \`${mem.heapUsedMB} MB / ${mem.heapTotalMB} MB\`
+• RSS: \`${mem.rssMB} MB\`
+• Bellek Baskısı: \`${mem.pressure.toUpperCase()}\`
+
+🪙 *Token Tasarrufu:*
+• Gönderilen Girdi: \`${tokenReport.totalSentInputTokens.toLocaleString()} tokens\`
+• Üretilen Çıktı: \`${tokenReport.totalOutputTokens.toLocaleString()} tokens\`
+• Tasarruf Edilen: \`${tokenReport.totalSavedTokens.toLocaleString()} tokens\` (%${tokenReport.savingsPercent})
+• Toplam Tur: \`${tokenReport.turnsCount}\`
+
+🛡️ *Grounding & Doğrulama:*
+• Doğrulama Durumu: ${grounding.verified ? '✅ Doğrulandı' : '⚠️ Uyarılar Mevcut'}
+• İncelenen Dosyalar: \`${grounding.inspectedCount}\`
+• Değiştirilen Dosyalar: \`${grounding.modifiedCount}\`
+• Doğrulanan Komutlar: \`${grounding.verifiedCommands}\`
+${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `  - ${w}`).join('\n')}` : ''}
+
+🤖 *Telegram Köprüsü:*
+• İşlenen Mesaj: \`${handledCount}\`
+• Durum: \`Aktif & Dinliyor\``;
+
+    await sendTelegramMessage(token, chatId, statusText);
+    return;
+  }
+
+  // 4. /memory
+  if (text === '/memory') {
+    try {
+      const facts = await recallFacts(options.workspace);
+      if (facts.length === 0) {
+        await sendTelegramMessage(token, chatId, '🧠 *Proje Hafızası*\n\nHenüz kayıtlı bir bilgi bulunmuyor.');
+      } else {
+        const list = facts
+          .map((f) => `• *${escapeMarkdown(f.key)}* (${f.scope}):\n  \`${escapeMarkdown(f.value)}\``)
+          .join('\n\n');
+        await sendTelegramMessage(token, chatId, `🧠 *Proje Hafızası (${facts.length} kayıt):*\n\n${list}`);
+      }
+    } catch (err) {
+      await sendTelegramMessage(token, chatId, `❌ Hafıza okunamadı: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+
+  // 5. /clear
+  if (text === '/clear') {
+    options.session.messages = [];
+    const reclaimResult = await reclaimMemory(options.session, true);
+    const sessionStore = new SessionStore(configDirectory());
+    await sessionStore.save(options.session).catch(() => {});
+
+    await sendTelegramMessage(
+      token,
+      chatId,
+      `🧹 *Oturum Temizlendi!*\n\nMesaj geçmişi sıfırlandı ve bellek boşaltıldı.\n• Öncesi: \`${reclaimResult.beforeMB} MB\`\n• Sonrası: \`${reclaimResult.afterMB} MB\`\n• Geri Kazanılan: \`${reclaimResult.freedMB} MB\``
+    );
+    return;
+  }
+
+  // Guard against concurrent execution on mutating tasks
+  if (isAgentBusy) {
+    await sendTelegramMessage(
+      token,
+      chatId,
+      '⏳ *T Bot Meşgul*\nŞu anda devam eden bir görevi işliyor. Lütfen tamamlanmasını bekleyin.'
+    );
+    return;
+  }
+
+  // 6. /ultracode <görev>
+  if (text.startsWith('/ultracode')) {
+    const task = text.replace(/^\/ultracode\s*/i, '').trim();
+    if (!task) {
+      await sendTelegramMessage(token, chatId, 'ℹ️ *Kullanım:* `/ultracode <görev>`\nÖrnek: `/ultracode API hata yönetimini refactor et`');
+      return;
+    }
+
+    await sendTelegramMessage(token, chatId, `🚀 *Ultracode Akışı Başlatıldı*\n\nGörev: \`${task}\`\nAraştırma, uygulama ve bağımsız inceleme adımları çalıştırılıyor...`);
+    void executeAgentTurn(task, chatId, token, options, signal, 'ultracode');
+    return;
+  }
+
+  // 7. /goal <hedef>
+  if (text.startsWith('/goal')) {
+    const sub = text.replace(/^\/goal\s*/i, '').trim();
+    const action = sub.toLowerCase();
+
+    if (!sub || action === 'status') {
+      const goal = await getGoal(options.workspace).catch(() => undefined);
+      if (goal) {
+        await sendTelegramMessage(
+          token,
+          chatId,
+          `🎯 *Aktif Hedef Durumu*\n\n• Hedef: \`${goal.objective}\`\n• Durum: \`${goal.status}\`\n• Son Çalışma: \`${goal.lastRun ?? 'bilinmiyor'}\`${goal.lastResult ? `\n• Son İlerleme:\n\`${goal.lastResult.slice(0, 500)}\`` : ''}`
+        );
+      } else {
+        await sendTelegramMessage(token, chatId, '🎯 Kayıtlı hedef yok. Başlatmak için: `/goal <hedef>`');
+      }
+      return;
+    }
+
+    if (action === 'pause') {
+      await pauseGoal(options.workspace).catch(() => {});
+      await sendTelegramMessage(token, chatId, '⏸️ Hedef duraklatıldı.');
+      return;
+    }
+
+    if (action === 'cancel') {
+      await cancelGoal(options.workspace).catch(() => {});
+      await sendTelegramMessage(token, chatId, '🛑 Hedef iptal edildi.');
+      return;
+    }
+
+    if (action === 'done' || action === 'complete') {
+      await completeGoal(options.workspace).catch(() => {});
+      await sendTelegramMessage(token, chatId, '🏁 Hedef tamamlandı olarak işaretlendi.');
+      return;
+    }
+
+    if (action === 'resume') {
+      await resumeGoal(options.workspace).catch(() => {});
+      await sendTelegramMessage(token, chatId, '▶️ Hedef sürdürülüyor...');
+      void executeAgentTurn('', chatId, token, options, signal, 'goal');
+      return;
+    }
+
+    // New goal initialization and run
+    try {
+      const existing = await getGoal(options.workspace).catch(() => undefined);
+      if (existing && (existing.status === 'active' || existing.status === 'paused')) {
+        await cancelGoal(options.workspace).catch(() => {});
+      }
+      await startGoal(options.workspace, sub);
+      await sendTelegramMessage(token, chatId, `🎯 *Yeni Hedef Başlatıldı:*\n\`${sub}\`\nOtonom ajan çalıştırılıyor...`);
+      void executeAgentTurn('', chatId, token, options, signal, 'goal');
+    } catch (err) {
+      await sendTelegramMessage(token, chatId, `❌ Hedef başlatılamadı: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+
+  // 8. Normal text messages -> Standard agent run
+  await sendTelegramMessage(token, chatId, `⚡ *İstek Alındı:* \`${text.slice(0, 100)}${text.length > 100 ? '...' : ''}\`\nT Bot çalışıyor...`);
+  void executeAgentTurn(text, chatId, token, options, signal, 'agent');
+}
+
+/**
+ * Long-polling loop using native fetch and Telegram getUpdates.
+ */
+async function runPollingLoop(
+  token: string,
+  signal: AbortSignal,
+  options: TelegramBridgeOptions
+): Promise<void> {
+  let offset = 0;
+
+  options.onLog?.('[Telegram Bot] Long-Polling döngüsü başlatıldı.');
+
+  while (!signal.aborted && isRunning) {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offset,
+          timeout: 25,
+          limit: 100,
+          allowed_updates: ['message'],
+        }),
+        signal,
+      });
+
+      if (!res.ok) {
+        if (signal.aborted || !isRunning) break;
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+
+      const data = (await res.json()) as { ok: boolean; result?: TelegramUpdate[] };
+      if (!data.ok || !Array.isArray(data.result)) {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+
+      for (const update of data.result) {
+        if (update.update_id >= offset) {
+          offset = update.update_id + 1;
+        }
+        if (update.message) {
+          handledCount++;
+          await handleIncomingMessage(update.message, token, signal, options);
+        }
+      }
+
+      if (data.result.length === 0) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch (err: any) {
+      if (signal.aborted || !isRunning || err?.name === 'AbortError') {
+        break;
+      }
+      options.onLog?.(`[Telegram Bot] Polling uyarısı: ${err?.message || String(err)}`);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  options.onLog?.('[Telegram Bot] Long-Polling döngüsü sonlandırıldı.');
+}
+
+/**
+ * Starts the Zero-Backend Local Telegram Bot Gateway Bridge.
+ */
+export async function startTelegramBotBridge(options: {
+  config: Config;
+  session: Session;
+  workspace: string;
+  getYolo: () => boolean;
+  activeSkills: SkillId[];
+  onLog?: (text: string) => void;
+}): Promise<{ ok: boolean; username?: string; error?: string }> {
+  if (isRunning) {
+    return { ok: true, username: currentBotUsername };
+  }
+
+  // Retrieve token securely stored via Windows DPAPI
+  const token = await getCustomSecret('telegram_bot_token');
+  if (!token || !token.trim()) {
+    return {
+      ok: false,
+      error: 'Telegram bot token bulunamadı. Lütfen secrets içinde telegram_bot_token değerini kaydedin.',
+    };
+  }
+
+  // Validate bot token using getMe
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = (await res.json()) as { ok: boolean; result?: { username?: string; first_name?: string } };
+    if (!res.ok || !data.ok || !data.result) {
+      return {
+        ok: false,
+        error: `Telegram Bot API doğrulaması başarısız oldu: HTTP ${res.status}`,
+      };
+    }
+
+    currentBotUsername = data.result.username || data.result.first_name || 'tbot';
+    options.onLog?.(`[Telegram Bot] @${currentBotUsername} başarıyla doğrulandı.`);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Telegram sunucularına erişilemedi: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // Mark as running and start background long-polling
+  isRunning = true;
+  currentOptions = options;
+  abortController = new AbortController();
+
+  void runPollingLoop(token, abortController.signal, options);
+
+  return { ok: true, username: currentBotUsername };
+}
+
+/**
+ * Gracefully stops the Telegram Bot Gateway Bridge and releases resources.
+ */
+export function stopTelegramBotBridge(): void {
+  if (!isRunning) return;
+
+  isRunning = false;
+
+  if (activeApproval) {
+    clearTimeout(activeApproval.timeoutId);
+    activeApproval.resolve(false);
+    activeApproval = null;
+  }
+
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+
+  currentOptions = null;
+  currentBotUsername = undefined;
+}
+
+/**
+ * Returns the current runtime status of the Telegram Bot Gateway Bridge.
+ */
+export function getTelegramBotStatus(): {
+  running: boolean;
+  username?: string;
+  allowedChats: string[];
+  handledCount: number;
+} {
+  return {
+    running: isRunning,
+    username: currentBotUsername,
+    allowedChats: currentOptions?.config.telegramAllowedChatIds || [],
+    handledCount,
+  };
+}
+
+/**
+ * Checks whether the Telegram Bot Bridge is actively running.
+ */
+export function isTelegramBotRunning(): boolean {
+  return isRunning;
+}

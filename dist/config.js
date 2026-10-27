@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, writeFile, unlink, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -7,7 +7,57 @@ import { EFFORT_LEVELS } from './effort.js';
 export const configDirectory = () => join(process.env.APPDATA || join(homedir(), '.config'), 'TBot');
 const revisions = new WeakMap();
 const remember = (config, revision) => { revisions.set(config, revision); return config; };
-const defaultConfig = () => ({ provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} });
+export const DEFAULT_CONFIG = { provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} };
+const defaultConfig = () => ({ ...DEFAULT_CONFIG, workspacePermissions: {} });
+function isProcessAlive(pid) {
+    if (!pid || isNaN(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === 'EPERM';
+    }
+}
+async function acquireLock(lockPath) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const handle = await open(lockPath, 'wx', 0o600);
+            await handle.writeFile(String(process.pid));
+            return handle;
+        }
+        catch (error) {
+            if (error.code === 'EEXIST') {
+                let isStale = false;
+                try {
+                    const stats = await stat(lockPath);
+                    if (Date.now() - stats.mtimeMs > 30_000) {
+                        isStale = true;
+                    }
+                    else {
+                        const content = await readFile(lockPath, 'utf8').catch(() => '');
+                        const pid = parseInt(content.trim(), 10);
+                        if (!pid || !isProcessAlive(pid)) {
+                            isStale = true;
+                        }
+                    }
+                }
+                catch {
+                    isStale = true;
+                }
+                if (isStale) {
+                    await unlink(lockPath).catch(() => undefined);
+                    continue;
+                }
+            }
+            throw error;
+        }
+    }
+    const handle = await open(lockPath, 'wx', 0o600);
+    await handle.writeFile(String(process.pid));
+    return handle;
+}
 function validBaseUrl(value) {
     if (typeof value !== 'string' || !value.trim())
         return false;
@@ -20,6 +70,39 @@ function validBaseUrl(value) {
         return false;
     }
 }
+export function normalizeConfig(input) {
+    const defaults = DEFAULT_CONFIG;
+    const permissions = {};
+    if (input.workspacePermissions && typeof input.workspacePermissions === 'object' && !Array.isArray(input.workspacePermissions)) {
+        for (const [key, permission] of Object.entries(input.workspacePermissions)) {
+            if (permission === 'ask' || permission === 'allow') {
+                permissions[key] = permission;
+            }
+        }
+    }
+    const efforts = {};
+    if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
+        for (const [key, level] of Object.entries(input.efforts)) {
+            if (typeof level === 'string' && EFFORT_LEVELS.includes(level)) {
+                efforts[key] = level;
+            }
+        }
+    }
+    const result = {
+        provider: typeof input.provider === 'string' ? input.provider : defaults.provider,
+        model: typeof input.model === 'string' ? input.model : defaults.model,
+        ...(typeof input.baseUrl === 'string' && validBaseUrl(input.baseUrl) ? { baseUrl: input.baseUrl } : {}),
+        workspacePermissions: permissions,
+        efforts
+    };
+    if (typeof input.telegramBotToken === 'boolean') {
+        result.telegramBotToken = input.telegramBotToken;
+    }
+    if (Array.isArray(input.telegramAllowedChatIds)) {
+        result.telegramAllowedChatIds = input.telegramAllowedChatIds.filter((id) => typeof id === 'string');
+    }
+    return result;
+}
 // Remove malformed or credential-bearing endpoints without ever including their values in errors.
 async function cleanInvalidBaseUrl(raw) {
     const dir = configDirectory();
@@ -27,7 +110,7 @@ async function cleanInvalidBaseUrl(raw) {
     const lockPath = join(dir, 'config.lock');
     let lock;
     try {
-        lock = await open(lockPath, 'wx', 0o600);
+        lock = await acquireLock(lockPath);
     }
     catch (error) {
         if (error.code === 'EEXIST')
@@ -48,11 +131,13 @@ async function cleanInvalidBaseUrl(raw) {
     }
     finally {
         await unlink(temp).catch(() => undefined);
-        try {
-            await lock.close();
-        }
-        finally {
-            await unlink(lockPath);
+        if (lock) {
+            try {
+                await lock.close();
+            }
+            finally {
+                await unlink(lockPath).catch(() => undefined);
+            }
         }
     }
 }
@@ -95,7 +180,17 @@ export async function loadConfig() {
             if (typeof level === 'string' && EFFORT_LEVELS.includes(level))
                 efforts[key] = level;
     }
-    return remember({ provider: input.provider ?? defaults.provider, model: input.model ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}), workspacePermissions: permissions, efforts }, raw);
+    const telegramBotToken = typeof input.telegramBotToken === 'boolean' ? input.telegramBotToken : undefined;
+    const telegramAllowedChatIds = Array.isArray(input.telegramAllowedChatIds) ? input.telegramAllowedChatIds.filter((id) => typeof id === 'string') : undefined;
+    return remember({
+        provider: input.provider ?? defaults.provider,
+        model: input.model ?? defaults.model,
+        ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+        workspacePermissions: permissions,
+        efforts,
+        ...(telegramBotToken !== undefined ? { telegramBotToken } : {}),
+        ...(telegramAllowedChatIds ? { telegramAllowedChatIds } : {})
+    }, raw);
 }
 export async function saveConfig(config) {
     const dir = configDirectory();
@@ -108,7 +203,7 @@ export async function saveConfig(config) {
         throw new Error('Invalid base URL in config');
     let lock;
     try {
-        lock = await open(lockPath, 'wx', 0o600);
+        lock = await acquireLock(lockPath);
     }
     catch (error) {
         if (error.code === 'EEXIST')
@@ -129,7 +224,15 @@ export async function saveConfig(config) {
         if (current !== revisions.get(config))
             throw new Error('Configuration changed since it was loaded; reload before saving');
         // Persist only known non-secret fields.
-        const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions, efforts: config.efforts ?? {} };
+        const value = {
+            provider: config.provider,
+            model: config.model,
+            ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+            workspacePermissions: config.workspacePermissions,
+            efforts: config.efforts ?? {},
+            ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
+            ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
+        };
         const contents = JSON.stringify(value, null, 2) + '\n';
         await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });
         await rename(temp, path);
@@ -137,11 +240,13 @@ export async function saveConfig(config) {
     }
     finally {
         await unlink(temp).catch(() => undefined);
-        try {
-            await lock.close();
-        }
-        finally {
-            await unlink(lockPath);
+        if (lock) {
+            try {
+                await lock.close();
+            }
+            finally {
+                await unlink(lockPath).catch(() => undefined);
+            }
         }
     }
 }

@@ -42,7 +42,7 @@ export async function handleComputerTool(name: string, args: Record<string, unkn
   if (action === 'screenshot') {
     const directory = join(context.workspace, '.tbot', 'screenshots');
     await mkdir(directory, { recursive: true });
-    request = { ...args, screenshotPath: join(directory, "screenshot-${randomUUID()}.png") };
+    request = { ...args, screenshotPath: join(directory, `screenshot-${randomUUID()}.png`) };
   }
   const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
   return await new Promise<string>((resolve, reject) => {

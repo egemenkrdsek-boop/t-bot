@@ -5,3 +5,15 @@ export const MCP_PRESETS = [
   { id: 'vercel', label: 'Vercel', description: 'Yerel TBot MCP adaptörü (Vercel API tokenı)', kind: 'local', endpoint: null },
 ] as const;
 export type McpService = (typeof MCP_PRESETS)[number]['id'];
+
+export interface McpServerDefinition {
+  id: string;
+  name?: string;
+  label?: string;
+  description?: string;
+  kind?: 'remote' | 'local' | 'stdio';
+  endpoint?: string | null;
+  url?: string | null;
+  command?: string;
+  args?: string[];
+}

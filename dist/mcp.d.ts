@@ -1,4 +1,4 @@
-import type { McpService } from './mcp-presets.js';
+import type { McpService, McpServerDefinition } from './mcp-presets.js';
 import type { ToolCall, ToolDefinition } from './types.js';
 export interface McpConnection {
     service: McpService;
@@ -11,5 +11,20 @@ export interface McpOptions {
     readOnly?: boolean;
     project?: string;
     team?: string;
+    url?: string;
+    command?: string;
+    args?: string[];
 }
-export declare function connectMcp(service: McpService, token: string, options?: McpOptions): Promise<McpConnection>;
+export type McpServiceInput = McpService | McpServerDefinition | {
+    id?: string;
+    name?: string;
+    url?: string;
+    command?: string;
+    args?: string[];
+    [key: string]: unknown;
+};
+export declare function parseStdioCommand(raw: string): {
+    command: string;
+    args: string[];
+};
+export declare function connectMcp(service: McpServiceInput, token?: string, options?: McpOptions): Promise<McpConnection>;

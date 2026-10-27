@@ -6,7 +6,10 @@ export interface AppConfig {
     baseUrl?: string;
     workspacePermissions: Record<string, WorkspacePermission>;
     efforts?: Record<string, EffortLevel>;
+    telegramBotToken?: boolean;
+    telegramAllowedChatIds?: string[];
 }
+export type Config = AppConfig;
 export interface ResolvedProviderConfig {
     id: string;
     model: string;
@@ -15,6 +18,8 @@ export interface ResolvedProviderConfig {
     effort: EffortLevel;
 }
 export declare const configDirectory: () => string;
+export declare const DEFAULT_CONFIG: AppConfig;
+export declare function normalizeConfig(input: Partial<AppConfig> | Record<string, unknown>): AppConfig;
 export declare function loadConfig(): Promise<AppConfig>;
 export declare function saveConfig(config: AppConfig): Promise<void>;
 export declare function getWorkspacePermission(config: AppConfig, workspace: string): WorkspacePermission;

@@ -128,8 +128,58 @@ export function createProvider(config) {
                     url = endpoint(base, 'messages');
                     headers['x-api-key'] = config.apiKey;
                     headers['anthropic-version'] = '2023-06-01';
+                    headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
                     const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-                    body = { model: config.model, max_tokens: 4096, stream: true, ...(system ? { system } : {}), messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'tool' ? 'user' : m.role, content: m.role === 'tool' ? [{ type: 'tool_result', tool_use_id: m.toolCallId, content: [{ type: 'text', text: m.content }, ...anthropicImages(m)] }] : [...(m.content ? [{ type: 'text', text: m.content }] : []), ...anthropicImages(m), ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))] })), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}) };
+                    const nonSystem = messages.filter(m => m.role !== 'system');
+                    let lastUserIndex = -1;
+                    for (let i = nonSystem.length - 1; i >= 0; i--) {
+                        if (nonSystem[i].role === 'user' || nonSystem[i].role === 'tool') {
+                            lastUserIndex = i;
+                            break;
+                        }
+                    }
+                    const anthropicMessages = nonSystem.map((m, idx) => {
+                        const isCacheTarget = idx === lastUserIndex;
+                        if (m.role === 'tool') {
+                            const toolResultBlocks = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
+                            if (isCacheTarget && toolResultBlocks.length) {
+                                toolResultBlocks[toolResultBlocks.length - 1].cache_control = { type: 'ephemeral' };
+                            }
+                            return {
+                                role: 'user',
+                                content: [{
+                                        type: 'tool_result',
+                                        tool_use_id: m.toolCallId,
+                                        content: toolResultBlocks,
+                                        ...(isCacheTarget ? { cache_control: { type: 'ephemeral' } } : {})
+                                    }]
+                            };
+                        }
+                        const blocks = [
+                            ...(m.content ? [{ type: 'text', text: m.content }] : []),
+                            ...anthropicImages(m),
+                            ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))
+                        ];
+                        if (isCacheTarget && blocks.length) {
+                            blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+                        }
+                        return { role: m.role, content: blocks };
+                    });
+                    body = {
+                        model: config.model,
+                        max_tokens: 4096,
+                        stream: true,
+                        ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
+                        messages: anthropicMessages,
+                        ...(tools.length ? {
+                            tools: tools.map((t, idx) => ({
+                                name: t.name,
+                                description: t.description,
+                                input_schema: t.parameters,
+                                ...(idx === tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {})
+                            }))
+                        } : {})
+                    };
                 }
                 else if (spec.id === 'gemini') {
                     url = endpoint(base, `models/${encodeURIComponent(config.model)}:streamGenerateContent`) + '?alt=sse';
@@ -141,7 +191,7 @@ export function createProvider(config) {
                     url = endpoint(base, 'chat/completions');
                     if (config.apiKey)
                         headers.authorization = `Bearer ${config.apiKey}`;
-                    body = { model: config.model, messages: openaiMessages(messages), stream: true, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+                    body = { model: config.model, messages: openaiMessages(messages), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
                 }
                 const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
                 if (effort.effective) {
@@ -165,6 +215,7 @@ export function createProvider(config) {
                 const complete = [];
                 let inputTokens;
                 let outputTokens;
+                let cachedTokens;
                 let finished = false;
                 let toolFinish = false;
                 for await (const chunk of sse(response)) {
@@ -186,10 +237,18 @@ export function createProvider(config) {
                             finished = true;
                         if (chunk.type === 'message_delta' && chunk.delta?.stop_reason === 'tool_use')
                             toolFinish = true;
-                        if (chunk.type === 'message_start')
+                        if (chunk.type === 'message_start') {
                             inputTokens = chunk.message?.usage?.input_tokens;
-                        if (chunk.type === 'message_delta')
+                            const cacheRead = chunk.message?.usage?.cache_read_input_tokens;
+                            if (typeof cacheRead === 'number')
+                                cachedTokens = (cachedTokens ?? 0) + cacheRead;
+                        }
+                        if (chunk.type === 'message_delta') {
                             outputTokens = chunk.usage?.output_tokens;
+                            const cacheRead = chunk.usage?.cache_read_input_tokens;
+                            if (typeof cacheRead === 'number')
+                                cachedTokens = (cachedTokens ?? 0) + cacheRead;
+                        }
                     }
                     else if (spec.id === 'gemini') {
                         for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
@@ -210,6 +269,9 @@ export function createProvider(config) {
                         }
                         inputTokens = chunk.usageMetadata?.promptTokenCount ?? inputTokens;
                         outputTokens = chunk.usageMetadata?.candidatesTokenCount ?? outputTokens;
+                        if (typeof chunk.usageMetadata?.cachedContentTokenCount === 'number') {
+                            cachedTokens = chunk.usageMetadata.cachedContentTokenCount;
+                        }
                     }
                     else {
                         if (chunk.__done)
@@ -228,6 +290,9 @@ export function createProvider(config) {
                         }
                         inputTokens = chunk.usage?.prompt_tokens ?? inputTokens;
                         outputTokens = chunk.usage?.completion_tokens ?? outputTokens;
+                        if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === 'number') {
+                            cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+                        }
                     }
                 }
                 if ((pending.size || complete.length) && (!finished || !toolFinish))
@@ -241,8 +306,8 @@ export function createProvider(config) {
                 }
                 if (complete.length)
                     yield { type: 'tool_calls', calls: complete };
-                if (inputTokens !== undefined || outputTokens !== undefined)
-                    yield { type: 'usage', inputTokens, outputTokens };
+                if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined)
+                    yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) };
             }
             catch (error) {
                 yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' };

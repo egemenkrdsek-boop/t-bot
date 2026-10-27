@@ -90,16 +90,71 @@ export function createProvider(config: ProviderConfig): Provider {
     try {
       let url: string; let body: Obj; const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'text/event-stream' };
       if (spec.id === 'anthropic') {
-        url = endpoint(base, 'messages'); headers['x-api-key'] = config.apiKey!; headers['anthropic-version'] = '2023-06-01';
+        url = endpoint(base, 'messages');
+        headers['x-api-key'] = config.apiKey!;
+        headers['anthropic-version'] = '2023-06-01';
+        headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
+
         const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-        body = { model: config.model, max_tokens: 4096, stream: true, ...(system ? { system } : {}), messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'tool' ? 'user' : m.role, content: m.role === 'tool' ? [{ type: 'tool_result', tool_use_id: m.toolCallId, content: [{ type: 'text', text: m.content }, ...anthropicImages(m)] }] : [...(m.content ? [{ type: 'text', text: m.content }] : []), ...anthropicImages(m), ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))] })), ...(tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}) };
+        const nonSystem = messages.filter(m => m.role !== 'system');
+        let lastUserIndex = -1;
+        for (let i = nonSystem.length - 1; i >= 0; i--) {
+          if (nonSystem[i].role === 'user' || nonSystem[i].role === 'tool') {
+            lastUserIndex = i;
+            break;
+          }
+        }
+
+        const anthropicMessages = nonSystem.map((m, idx) => {
+          const isCacheTarget = idx === lastUserIndex;
+          if (m.role === 'tool') {
+            const toolResultBlocks: Obj[] = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
+            if (isCacheTarget && toolResultBlocks.length) {
+              toolResultBlocks[toolResultBlocks.length - 1].cache_control = { type: 'ephemeral' };
+            }
+            return {
+              role: 'user',
+              content: [{
+                type: 'tool_result',
+                tool_use_id: m.toolCallId,
+                content: toolResultBlocks,
+                ...(isCacheTarget ? { cache_control: { type: 'ephemeral' } } : {})
+              }]
+            };
+          }
+          const blocks: Obj[] = [
+            ...(m.content ? [{ type: 'text', text: m.content }] : []),
+            ...anthropicImages(m),
+            ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))
+          ];
+          if (isCacheTarget && blocks.length) {
+            blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+          }
+          return { role: m.role, content: blocks };
+        });
+
+        body = {
+          model: config.model,
+          max_tokens: 4096,
+          stream: true,
+          ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
+          messages: anthropicMessages,
+          ...(tools.length ? {
+            tools: tools.map((t, idx) => ({
+              name: t.name,
+              description: t.description,
+              input_schema: t.parameters,
+              ...(idx === tools.length - 1 ? { cache_control: { type: 'ephemeral' } } : {})
+            }))
+          } : {})
+        };
       } else if (spec.id === 'gemini') {
         url = endpoint(base, `models/${encodeURIComponent(config.model)}:streamGenerateContent`) + '?alt=sse'; headers['x-goog-api-key'] = config.apiKey!;
         const names = new Map(messages.flatMap(m => (m.toolCalls ?? []).map(c => [c.id, c.name] as const)));
         body = { contents: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: m.role === 'tool' ? [{ functionResponse: { name: names.get(m.toolCallId ?? '') ?? '', response: { result: m.content } } }, ...geminiImages(m)] : [...(m.content ? [{ text: m.content }] : []), ...geminiImages(m), ...(m.toolCalls ?? []).map(c => ({ functionCall: { name: c.name, args: c.arguments }, ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}) }))] })), ...(messages.some(m => m.role === 'system') ? { systemInstruction: { parts: [{ text: messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') }] } } : {}), ...(tools.length ? { tools: [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }] } : {}) };
       } else {
         url = endpoint(base, 'chat/completions'); if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
-        body = { model: config.model, messages: openaiMessages(messages), stream: true, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+        body = { model: config.model, messages: openaiMessages(messages), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
       }
       const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
       if (effort.effective) {
@@ -114,7 +169,7 @@ export function createProvider(config: ProviderConfig): Provider {
         return;
       }
       if (!response.ok) throw new Error(`Provider request failed (HTTP ${response.status}).`);
-      const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let finished = false; let toolFinish = false;
+      const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined; let finished = false; let toolFinish = false;
       for await (const chunk of sse(response)) {
         if (chunk.error || chunk.type === 'error') throw new Error('Provider reported a stream error.');
         if (spec.id === 'anthropic') {
@@ -122,12 +177,23 @@ export function createProvider(config: ProviderConfig): Provider {
           if (chunk.type === 'content_block_delta') { if (chunk.delta?.type === 'text_delta') yield { type: 'text', text: chunk.delta.text }; if (chunk.delta?.type === 'input_json_delta') { const call = pending.get(chunk.index); if (call) call.args += chunk.delta.partial_json; } }
           if (chunk.type === 'message_stop') finished = true;
           if (chunk.type === 'message_delta' && chunk.delta?.stop_reason === 'tool_use') toolFinish = true;
-          if (chunk.type === 'message_start') inputTokens = chunk.message?.usage?.input_tokens;
-          if (chunk.type === 'message_delta') outputTokens = chunk.usage?.output_tokens;
+          if (chunk.type === 'message_start') {
+            inputTokens = chunk.message?.usage?.input_tokens;
+            const cacheRead = chunk.message?.usage?.cache_read_input_tokens;
+            if (typeof cacheRead === 'number') cachedTokens = (cachedTokens ?? 0) + cacheRead;
+          }
+          if (chunk.type === 'message_delta') {
+            outputTokens = chunk.usage?.output_tokens;
+            const cacheRead = chunk.usage?.cache_read_input_tokens;
+            if (typeof cacheRead === 'number') cachedTokens = (cachedTokens ?? 0) + cacheRead;
+          }
         } else if (spec.id === 'gemini') {
           for (const part of chunk.candidates?.[0]?.content?.parts ?? []) { if (typeof part.text === 'string') yield { type: 'text', text: part.text }; if (part.functionCall) { const args = part.functionCall.args ?? {}; if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be a JSON object.'); if (typeof part.functionCall.name !== 'string' || !part.functionCall.name) throw new Error('Incomplete tool call received.'); complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) }); } }
           if (chunk.candidates?.[0]?.finishReason === 'STOP') { finished = true; toolFinish = true; }
           inputTokens = chunk.usageMetadata?.promptTokenCount ?? inputTokens; outputTokens = chunk.usageMetadata?.candidatesTokenCount ?? outputTokens;
+          if (typeof chunk.usageMetadata?.cachedContentTokenCount === 'number') {
+            cachedTokens = chunk.usageMetadata.cachedContentTokenCount;
+          }
         } else {
           if (chunk.__done) finished = true;
           if (chunk.choices?.[0]?.finish_reason === 'tool_calls') toolFinish = true;
@@ -135,13 +201,16 @@ export function createProvider(config: ProviderConfig): Provider {
           if (typeof delta?.content === 'string') yield { type: 'text', text: delta.content };
           for (const part of delta?.tool_calls ?? []) { const current = pending.get(part.index) ?? { id: '', name: '', args: '' }; current.id += part.id ?? ''; current.name += part.function?.name ?? ''; current.args += part.function?.arguments ?? ''; pending.set(part.index, current); }
           inputTokens = chunk.usage?.prompt_tokens ?? inputTokens; outputTokens = chunk.usage?.completion_tokens ?? outputTokens;
+          if (typeof chunk.usage?.prompt_tokens_details?.cached_tokens === 'number') {
+            cachedTokens = chunk.usage.prompt_tokens_details.cached_tokens;
+          }
         }
       }
       if ((pending.size || complete.length) && (!finished || !toolFinish)) throw new Error('Incomplete provider stream; tool calls were discarded.');
       if (!finished) throw new Error('Incomplete provider stream.');
       for (const call of pending.values()) { if (!call.id || !call.name) throw new Error('Incomplete tool call received.'); complete.push({ id: call.id, name: call.name, arguments: objectArgs(call.args) }); }
       if (complete.length) yield { type: 'tool_calls', calls: complete };
-      if (inputTokens !== undefined || outputTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens };
+      if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) } as ProviderEvent;
     } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' }; }
   } };
 }
@@ -169,4 +238,3 @@ export async function validateOpenRouterKey(key: string, signal?: AbortSignal): 
     throw new Error('OpenRouter anahtarı doğrulanamadı.');
   }
 }
-

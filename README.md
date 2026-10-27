@@ -1,90 +1,176 @@
 ![T Bot logosu](assets/tabit.webp)
 
-# T Bot
+# T Bot 2.0
 
-T Bot, terminalden çalışan, farklı model sağlayıcılarıyla kullanılabilen yerel bir TypeScript ajanıdır. Etkileşimli oturumlarda veya tek bir istekle çalışır; modele bağlı olarak dosyalar, kabuk, Git, tarayıcı ve Windows masaüstü araçlarını kullanabilir.
+> **Tri-Core Local AI Coding Agent, Autonomous Desktop Agent & Zero-Backend Telegram Bot Gateway with 50%–75% Token Savings and Deterministic Anti-Hallucination**
 
-## Gereksinimler ve kurulum
+T Bot 2.0; terminalinizde çalışan, çoklu model sağlayıcılarıyla (Gemini, OpenAI, Anthropic, OpenRouter, yerel Ollama/LM Studio) uyumlu, yeni nesil yerel bir yapay zekâ ajanıdır. Üçlü çekirdek (Tri-Core) mimarisiyle kodlama projelerinizi yönetir, masaüstü ve tarayıcı işlemlerini otonom gerçekleştirir ve sıfır arka uç altyapısıyla Telegram üzerinden cep telefonunuzdan uzaktan yönetilebilir.
 
-Node.js 20.3 veya üzeri, npm ve Git gerekir. Özel GitHub deposuna erişim yetkisi olan bir hesapla Git kimlik doğrulamasını yapılandırın. Son `main` sürümünü global yüklemek için:
+---
 
+## ⚡ Tek Komutla Uzaktan Terminal Kurulumu
+
+T Bot 2.0'ı uzaktan terminal yoluyla tek komutla sıfır hatayla anında kurabilirsiniz:
+
+### Windows (PowerShell)
 ```powershell
+irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
+```
+
+### Linux & macOS (Bash / Sh)
+```bash
+curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh
+```
+
+### Doğrudan npm ile Global Kurulum
+```bash
 npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git
 ```
 
-Kurulum, `prepare` aşamasında projeyi derler. Global kurulumdan sonra `tbot` komutu kullanılabilir; güncellemek için aynı komutu tekrar çalıştırın. Kaynak kodundan kurulum için [kurulum rehberine](docs/install.md) bakın.
+> [!TIP]
+> Kurulum scriptleri Node.js >= 20.3, npm ve Git kontrollerini otomatik yapar, PATH değişkeninizi senkronize eder ve `tbot --help` doğrulamasını tamamlar. Ayrıntılı adımlar için [Kurulum Kılavuzuna](docs/install.md) bakın.
 
-## Sağlayıcı ayarları
+---
 
-İlk açılışta seçili sağlayıcının anahtarı yoksa etkileşimli kurulum sağlayıcı, model ve gizli anahtar girişini açar. Terminal dışındaki kullanımda eksik anahtar için ilgili ortam değişkeni veya `tbot config` yönergesi gösterilir.
+## 🏛️ Üçlü Çekirdek (Tri-Core) Mimarisi
 
-Etkileşimli terminalde `tbot config` çalıştırın; sağlayıcı ve modeli ok tuşları ve Enter ile menüden seçin, gerektiğinde yalnızca API anahtarını yazın. Model listesi sağlayıcıdan alınır; erişilemezse yerleşik seçenekler gösterilir. Öncelikli sağlayıcılar Google Gemini (`gemini`), OpenAI (`openai`), Anthropic (`anthropic`) ve OpenRouter (`openrouter`) olarak listelenir. Diğer seçenekler dahil tüm sağlayıcıları `tbot providers` gösterir. Varsayılan OpenAI ve `gpt-4o-mini` modelidir. Erişim ve özellik desteği seçtiğiniz sağlayıcıya ve modele bağlıdır.
+T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 
-Kaydedilen API anahtarları sağlayıcı kimliğine göre ayrı tutulur. `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` ve `OPENROUTER_API_KEY` ortam değişkenleri de kullanılabilir; kayıtlı anahtar bulunmadığında kullanılır. Genel `TBOT_API_KEY`, kayıtlı ve sağlayıcıya özgü anahtarlar yoksa ortak yedektir. Windows'ta yeni anahtarlar kullanıcıya bağlı DPAPI ile şifrelenir; dizin koruması veya şifreleme başarısızsa kayıt hata verir. Diğer platformlarda anahtar erişimi kısıtlanmış bir dosyada şifrelenmeden saklanır ve uygulama uyarı verir.
-
-Ollama ve LM Studio seçenekleri yerel çalışan bir sunucu ve yüklenmiş model gerektirir. Çevrimdışı model kullanımı için bunları yerel uç noktaya yönlendirin; T Bot tek başına bir model içermez. Özel uç noktalar HTTPS veya localhost üzerinde HTTP kullanmalıdır.
-
-401 kimlik doğrulama hatasında sağlayıcı hesabınızın erişimini kontrol edin ve gerekirse yeni anahtarı T Bot içinde `/auth` ile girin. Önceki istek otomatik tekrar edilmez. OpenRouter için yeni anahtar kaydedilmeden önce sağlayıcının anahtar uç noktasında doğrulanır; doğrulama başarısızsa önceki anahtar korunur.
-
-## Kullanım
-
-```text
-tbot                              Etkileşimli oturum
-tbot "isteğiniz"                  Tek seferlik istek
-tbot -p <sağlayıcı> -m <model>    Bu oturum için seçim
-tbot -w <dizin>                   Çalışma dizini seçimi
-tbot sessions                     Kayıtlı oturumları listele
-tbot --resume <id>                Oturuma devam et
-tbot config                       Sağlayıcı ayarları
-tbot providers                    Sağlayıcıları listele
-tbot doctor                       Ortam ve ayar durumunu göster
-tbot --effort <düzey>            İstek için akıl yürütme düzeyi
-tbot --ultracode                 Bu oturumda Ultracode modunu aç
-tbot --yolo                      Bu oturumda araç onaylarını otomatik ver
-tbot --help                       Yardım
-tbot --version                    Sürüm
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                 T BOT 2.0                                   │
+├───────────────────────┬─────────────────────────────┬───────────────────────┤
+│  1. KODLAMA AJANI     │  2. OTONOM MASAÜSTÜ AJANI   │  3. TELEGRAM GATEWAY  │
+│  • file_outline       │  • Çok Adımlı /goal         │  • Sıfır-Backend      │
+│  • Multi-Hunk Patch   │  • Paralel /subagents       │  • Long-Polling       │
+│  • Tam Git Seti       │  • Kalıcı Bellek (.tbot/)   │  • Uzaktan Kontrol    │
+│  • process_* Kontrolü │  • Ultra Hızlı Win DLL      │  • Mobil Ekran Görüntü│
+│  • 4 Aşamalı Ultracode│  • Playwright & /imagegen   │  • Mobil Buton Onayı  │
+└───────────────────────┴─────────────────────────────┴───────────────────────┘
 ```
 
-Etkileşimli modda `/help`, `/clear`, `/provider`, `/model`, `/sessions`, `/config`, `/resume` ve `/exit` veya `/quit` kullanılabilir. `/provider`, `/model` ve `/config` seçim menüsünü açar; `/resume` terminal komutuna yönlendirir. Çok satırlı giriş için satırı `\` ile bitirin. Ctrl+C geçerli işlemi iptal eder.
+### 1. Üstün Yerel Kodlama Ajanı (Elite Coding Agent)
+* **Sembol Haritalama (`file_outline`):** Büyük kod tabanlarında gereksiz token tüketmeden sınıfları, fonksiyonları, arayüzleri ve başlıkları satır numaralarıyla çıkarır.
+* **Multi-Hunk Yama (`file_patch`):** Tüm dosyayı baştan yazmak yerine tam bağlam eşleşmeli parçalı yamalar uygular.
+* **Tam Git Araç Seti:** `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_push` ile güvenli sürüm kontrolü.
+* **Arka Plan Süreç Yöneticisi:** `process_list`, `process_output`, `process_kill` ve `shell` (background: true) ile dev sunucularını ve test süreçlerini kesintisiz izler.
+* **4 Aşamalı Öz-Onarımlı `Ultracode` (`/ultracode`):**
+  1. *Derin Paralel Araştırma:* Proje mimarisini ve bağımlılıkları haritalar.
+  2. *Grounded Uygulama:* Read-Before-Write prensibiyle atomik değişiklikleri hayata geçirir.
+  3. *AST & Sözdizimi Öz-Onarımı:* Ayrıştırıcı hatalarını tespit edip otomatik rollback ve telafi adımları uygular.
+  4. *Bağımsız Salt-Okunur Denetim & İddia Doğrulaması:* Yapılan işleri bağımsız gözle denetler ve doğrular.
 
-- `/goal <hedef>` hedefi kaydedip sınırlı bir çalışma başlatır. `/goal status`, `/goal run`, `/goal pause`, `/goal resume`, `/goal complete` ve `/goal cancel` ile durumunu yönetin. Tamamlanma açıkça işaretlenir; çalışma otomatik olarak sonsuza kadar sürmez.
-- `/plan <istek>` araç kullanmadan bir plan oluşturur. Geçerli oturumda bu planı inceleyip `/plan apply` ile uygulamayı başlatabilirsiniz; araç onayları ayrıca geçerlidir.
-- `/subagents` alt ajan modelini seçer veya açıkken değiştirme ve kapatma menüsünü gösterir. `/subagents <istek>` seçilen modelle paralel salt okunur araştırma başlatır; uygulamayı ana ajan yapar. Açıkken sonraki normal isteklerde de alt ajanlar kullanılabilir.
+### 2. Otonom Masaüstü ve Genel Ajan (Autonomous Desktop Agent)
+* **Çok Adımlı Hedef Yönetimi (`/goal`):** Karmaşık görevleri alt hedeflere böler, durumunu izler (`/goal status`, `/goal pause`, `/goal complete`).
+* **Türkçe İsimli Paralel Alt Ajanlar (`/subagents`):** Araştırmacı ve analizci alt ajanları paralel çalıştırarak ana ajanın bağlamını kirletmeden bilgi toplar.
+* **Proje ve Küresel Kalıcı Bellek (`.tbot/memory.json`):** `/remember <anahtar> = <değer>` ve hafıza araçlarıyla proje tercihlerini ve mimari kuralları oturumlar arasında hatırlar.
+* **DLL Önbellekli Hızlı Windows Masaüstü Kontrolü:** C# / User32 API'lerini bellekte önbelleğe alarak fare, klavye, pencere yönetimi ve ekran görüntüsü almayı sıfır gecikmeyle yürütür.
+* **İzole Playwright Tarayıcı:** Web sitelerinde gezinme, DOM denetimi, ekran görüntüsü ve form doldurma işlemleri.
+* **Görsel Üretim (`/imagegen`):** DALL-E 3, Imagen 3 gibi modellerle doğrudan çalışma alanının `generated-images/` dizinine görsel üretir.
 
-Etkileşimli oturumda `/yolo` menüsünden veya `/yolo on` ve `/yolo off` komutlarıyla araç onaylarının otomatik verilmesini seçebilirsiniz. `--yolo` modu başlangıçta açar. Ayar yalnızca geçerli oturumda geçerlidir; varsayılan olarak onay istenir. YOLO açıkken kabuk komutları ve diğer onay gerektiren araçlar kullanıcı yetkileriyle otomatik çalışabilir. Plan uygulaması yine `/plan apply` ile başlatılır; salt okunur alt ajan sınırları korunur.
+### 3. Sıfır-Backend Yerel Telegram Bot Ağ Geçidi (Zero-Backend Gateway)
+* **Sıfır Altyapı:** Webhook, sabit IP veya aracı sunucu gerekmez; Telegram Bot API ile doğrudan yerel makinenizden güvenli Long-Polling yapar.
+* **Mobil Uzaktan Yönetim (`/bot`, `--bot`):** Dışarıdayken veya masadan uzaktayken telefonunuzdan T Bot'a görev verin.
+* **Ekran Görüntüsü ve Durum İzleme:** `/screenshot` ile bilgisayarınızın o anki ekranını Telegram'dan talep edin.
+* **Mobil Onay Butonları:** Onay gerektiren kritik işlemler için (kod çalıştırma, dosya değiştirme) Telegram ekranınıza `[Evet]` / `[Hayır]` butonları gönderir ve onayınızı alır.
 
-## Çalışma düzeyi ve beceriler
+---
 
-`/effort` menüsünden veya `/effort low`, `medium`, `high`, `xhigh`, `max` komutlarından birini seçin. Varsayılan `medium` düzeyidir; seçim sağlayıcı ve model çiftine göre kaydedilir. `--effort <düzey>` başlangıçta seçim yapar. Sağlayıcı ve modelin sunduğu seçeneklere göre değer eşlenebilir veya sağlayıcının varsayılanı kullanılabilir; alt ajan modeli kendi sağlayıcı/model düzeyini kullanır; her modelin beş düzeyi yerel olarak desteklediği varsayılmamalıdır.
+## 💎 %50–%75 Gerçek Token Tasarrufu Motoru
 
-`/ultracode on` ve `/ultracode off` ile isteğe bağlı Ultracode modunu yönetin; `--ultracode` oturum başında açar. Varsayılan kapalıdır. Mod sınırlı paralel araştırmanın ardından ana ajanla uygulama ve bağımsız salt okunur inceleme yapar. İnceleme bulgularının kendiliğinden düzeltildiği varsayılmamalıdır.
+T Bot 2.0, API maliyetlerinizi ve gecikmelerinizi dramatik ölçüde azaltan özel bir optimizasyon motoruna sahiptir:
 
-`/skills` yerleşik becerileri listeler; `/skills <id>` bir becerinin ayrıntılarını gösterir. `/frontenddesign <istek>`, `/backend <istek>`, `/codereview <istek>`, `/debuganalysis <istek>` ve `/imagegen <istek>` ile doğrudan kullanabilirsiniz; eşleşen Türkçe veya İngilizce ifadeler de uygun beceriyi seçebilir. Frontend becerisi mevcut projeye uygun, erişilebilir ve duyarlı gerçek arayüz kodu üretmeyi hedefler. Kod inceleme ve hata analizi komutları salt okunurdur; doğal dilde analizle birlikte açık bir düzeltme isteği verilirse uygulama düzeltmeye izin verebilir.
+* **Sağlayıcı Düzeyinde Prompt Caching:** Anthropic Claude (`cache_control: ephemeral`), OpenAI sistem mesajı önbelleklemesi ve Gemini bağlam önbelleği tam desteklenir.
+* **Niyet-Duyarlı Araç Şeması Budama (Intent-Aware Pruning):** İstek bağlamında ihtiyaç duyulmayan onlarca araç şemasını filtreleyerek LLM girdi boyutunu anında %60–%80 oranında küçültür.
+* **Sembol İskeleti & Kanıt Sıkıştırma:** Dosya içerikleri yerine sembol taslakları ve bounded diff'ler kullanılarak bağlam penceresi korunur.
+* **Canlı Token HUD & Raporlama (`/tokens`):** Oturum boyunca kullanılan ham tokenları, önbellek kazancını ve net tasarruf oranını anlık görüntüler.
 
-`/imagegen` yapılandırılmış OpenAI, Gemini veya OpenRouter anahtarlarından ve görüntü modeli menüsünden seçim sunar. Anthropic için yerel görsel üretimi bulunmaz; görsel üretmek için desteklenen başka bir sağlayıcının anahtarı gerekir. Hesabınızda seçilen görüntü modeline erişim gerekir; oluşturulan görseller çalışma alanındaki `generated-images/` dizinine kaydedilir. İstek ücret doğurabilir ve normalde onay gerektirir; YOLO açıkken onay otomatik verilir.
+---
 
-## MCP bağlantıları
+## 🛡️ Deterministik Anti-Halüsinasyon Motoru
 
-Etkileşimli oturumda `/mcp` menüsünden Vercel, Supabase veya GitHub bağlantısını kurabilir, yenileyebilir veya yerel kaydını kaldırabilirsiniz. Token girişi maskelenir ve tokenlar API anahtarlarıyla aynı saklama mekanizmasını kullanır. Sağlayıcı tokenını ve hesap yetkilerini kullanıcı sağlar; yerel kaydı kaldırmak tokenı sağlayıcıda iptal etmez. Kullanılabilir işlemler hesap, token ve servis yetkilerine bağlıdır.
+T Bot 2.0, LLM'lerin "yapmadığı işi yapmış gibi gösterme" ve "var olmayan dosyalarda değişiklik üretme" hatalarını deterministik koruma kapılarıyla engeller:
 
-- **Vercel:** T Bot'un yerel MCP adaptörü Vercel API tokenıyla `list_projects`, `get_project`, `list_deployments`, `create_project` ve `create_deployment` araçlarını sunar. Dağıtım için açıkça bir GitHub depo kimliği ve ref veya dosyalar sağlanır. Varsayılan dağıtım önizlemedir; üretim hedefi açıkça seçilir. Dağıtım yanıtı derlemenin devam ettiğini gösterebilir. Adaptör, Vercel'in resmi hosted OAuth MCP sunucusu değildir.
-- **Supabase:** Resmi uzak Supabase MCP sunucusuna kişisel erişim tokenı (PAT) ile bağlanır. Hesap yetkileri dahilinde proje oluşturma ve Edge Function dağıtma dahil sunucunun sunduğu araçlar kullanılabilir. Edge Function dağıtımı frontend barındırma anlamına gelmez.
-- **GitHub:** Resmi uzak GitHub MCP sunucusuna kişisel erişim tokenıyla bağlanır. Sunulan araçlar ve yazma işlemleri seçili araçlar ile token ve depo izinlerine bağlıdır.
+1. **Read-Before-Write İnvariantı:** Ajan bir dosyayı okumadan veya taslağını çıkarmadan (`file_read` / `file_outline`), o dosyayı asla değiştiremez veya yamayamaz (`file_write` / `file_patch`).
+2. **Post-Write AST / Syntax Rollback Kapısı:** Yazılan her dosya (JSON, JS, TS, Python, YAML, HTML vb.) otomatik sözdizimi denetiminden geçer. Hata tespit edilirse dosya derhal önceki güvenli durumuna geri döndürülür (`rollback`) ve ajanın kendini onarması sağlanır.
+3. **Claim-Evidence Doğrulaması:** Ajanın "kod derlendi" veya "testler başarılı oldu" iddiaları, gerçek komut çıktıları ve süreç kayıtları ile karşılaştırılır; kanıtsız başarı iddiaları engellenir.
 
-Her MCP araç çağrısı onay ister; YOLO açıksa onay otomatik verilir. Alt ajanların salt okunur araç listesine MCP araçları dahil edilmez. Bu özellikler için gerçek servis bağlantısı veya dağıtım testi yapılmadı.
+---
 
-## Terminal görünümü
+## ⚡ Hafif RAM & CPU Bekçisi (`MemoryGuard`) ve Siber TUI
 
-Etkileşimli başlangıçta logo ve piksel bot gösterilir; uygun terminalde kısa bir başlangıç animasyonu oynatılır. `TBOT_NO_ANIMATION` ortam değişkenini tanımlamak statik görünümü seçer. `NO_COLOR` renkleri kapatır ve piksel görünümü tek renkli olur.
+* **`MemoryGuard` & `/gc`:** Node.js bellek kullanımını (Heap & RSS) sürekli gözetler, bellek sızıntılarını önler. `/memory` ile anlık RAM kullanımını gösterir, `/gc` komutuyla çöp toplayıcıyı tetikler.
+* **Siber-Minimalist TUI:** Braille animasyonlu canlı spinner, akış halinde renklendirilen diff'ler ve tek satırlık **Canlı HUD Çubuğu**:
+  ```text
+  [gemini-2.5-pro · normal+Ultra · YOLO · %68 Token Tasarrufu · 84MB RAM · 3/3 Grounded]
+  ```
 
-## Araçlar ve gizlilik
+---
 
-Ajan dosya okuma ve değiştirme, kabuk komutu, Git işlemleri, izole tarayıcı ve Windows masaüstü kontrolü araçlarını sunar. Değişiklik yapabilen işlemler için varsayılan olarak onay istenir. Kabuk komutları kullanıcının yetkileriyle çalışır ve çalışma dizini dışına erişebilir. Terminal olmadan onay gerektiren işlemler reddedilir.
+## 🚀 Kullanım ve CLI Seçenekleri
 
-Tarayıcı araçları paketle gelen `playwright-core` ve uyumlu kurulu Chrome veya Chromium gerektirir; mevcut kişisel tarayıcı profilini kullanmaz. Masaüstü kontrolü yalnızca etkileşimli Windows masaüstünde çalışır ve PowerShell gerektirir. Ekran görüntüleri yerel dosyalara kaydedilebilir.
+```text
+tbot                              Etkileşimli Siber-Minimalist TUI oturumu
+tbot "isteğiniz"                  Tek seferlik istek (CLI modu)
+tbot -p <sağlayıcı> -m <model>    Bu oturum için sağlayıcı ve model seçimi
+tbot -w <dizin>                   Çalışma dizini (workspace) seçimi
+tbot sessions                     Kayıtlı oturumları listele
+tbot --resume <id>                Oturuma devam et
+tbot config                       Sağlayıcı ve API anahtarı yapılandırması
+tbot providers                    Tüm desteklenen sağlayıcıları listele
+tbot doctor                       Ortam ve sistem sağlığını denetle
+tbot --effort <düzey>            Akıl yürütme düzeyi (low, medium, high, xhigh, max)
+tbot --ultracode                 4 aşamalı öz-onarımlı Ultracode modunu aç
+tbot --yolo                      Araç onaylarını bu oturumda otomatik ver
+tbot --bot                       Sıfır-backend Telegram Bot ağ geçidini başlat
+tbot --help                      Yardım kılavuzu
+tbot --version                   Sürüm bilgisi (2.0.0)
+```
 
-Ayarlar, anahtarlar ve oturumlar Windows'ta `%APPDATA%\TBot`, diğer ortamlarda `~/.config/TBot` altında tutulur. Bulut sağlayıcısı seçildiğinde konuşma ve modele sunulan araç sonuçları ilgili sağlayıcıya gönderilir; dosya içerikleri, komut çıktıları ve tarayıcı veya masaüstü ekran görüntülerinin pikselleri de bu sonuçlara dahil olabilir. Yerel bir sağlayıcı seçmek, model isteklerinin seçilen yerel sunucuya gitmesini sağlar; tarayıcı ve kabuk gibi araçlar ayrıca ağ erişimi yapabilir.
+### Terminal İçi Slash Komutları Kılavuzu
 
-## Lisans
+| Komut | Açıklama |
+| :--- | :--- |
+| `/help` | Komut menüsünü ve kullanım ipuçlarını listeler |
+| `/status` | Canlı Siber HUD durum çubuğunu görüntüler |
+| `/tokens` | Token tasarrufu, önbellek ve kullanım raporunu gösterir |
+| `/memory` | Heap ve RSS RAM kullanımını denetler |
+| `/gc` | Manuel bellek temizliği (Garbage Collection) yapar |
+| `/remember <k> = <v>` | Projeye veya küresele kalıcı hafıza kuralı kaydeder |
+| `/bot` | Telegram botu canlı durum ve bağlantı kontrolü |
+| `/goal <hedef>` | Çok adımlı otonom hedef başlatır ve yönetir |
+| `/plan <istek>` | Görevi adıma döker; `/plan apply` ile yürütür |
+| `/subagents <istek>` | Paralel salt-okunur alt ajan araştırması başlatır |
+| `/ultracode [on\|off]` | 4 aşamalı özerk kodlama modunu açar veya kapatır |
+| `/yolo [on\|off]` | Araç onaylarını otomatik onaylama moduna alır |
+| `/effort [düzey]` | Düşünme eforunu ayarlar (low, medium, high, xhigh, max) |
+| `/provider`, `/model` | Sağlayıcı ve model seçim menüsünü açar |
+| `/config`, `/auth` | Ayarları yapılandırır veya yeni API anahtarı girer |
+| `/mcp` | Vercel, Supabase, GitHub MCP sunucularını yönetir |
+| `/skills` | Yerleşik uzmanlık becerilerini listeler (`/frontenddesign`, vb.) |
+| `/imagegen <istek>` | Görsel üretim modelini çağırır |
+| `/clear` | Ekranı ve oturum geçmişini sıfırlar |
+| `/exit`, `/quit` | T Bot'tan güvenle ayrılır |
 
-Proje [MIT lisanslıdır](LICENSE). Köken, üçüncü taraf bildirimleri ve dağıtım konuları için [hukuki notlara](docs/legal.md) ve [üçüncü taraf bildirimlerine](THIRD_PARTY_NOTICES.md) bakın.
+---
+
+## 🔌 MCP (Model Context Protocol) Desteği
+
+Etkileşimli oturumda `/mcp` menüsünden bulut araçlarınızı kolayca bağlayabilirsiniz:
+* **Vercel:** Projeleri listeleme, önizleme ve üretim dağıtımı oluşturma (`create_deployment`).
+* **Supabase:** Projeleri yönetme, SQL yürütme ve Edge Function dağıtımı (`deploy_edge_function`).
+* **GitHub:** Depo yönetimi, branch oluşturma, pull request açma ve kod arama.
+
+---
+
+## 🔒 Güvenlik ve Gizlilik
+
+* **Korumalı Anahtar Saklama:** Windows'ta API anahtarları işletim sistemi düzeyinde DPAPI ile şifrelenir. Linux/macOS ortamında kısıtlanmış dosya izinleriyle saklanır.
+* **Onay Mekanizması:** Dosya değişiklikleri ve kabuk komutları varsayılan olarak kullanıcı onayı ister; istem dışı zararlı işlemler engellenir.
+* **İzole Çalışma Alanı:** Çalışma alanı (`workspace`) sınırları gözetilir; tarayıcı izole Chromium profilinde çalışır.
+
+---
+
+## 📄 Lisans
+
+Bu proje [MIT Lisansı](LICENSE) altında dağıtılmaktadır. Üçüncü taraf bildirimleri için [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasına bakın.

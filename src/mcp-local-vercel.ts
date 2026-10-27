@@ -1,6 +1,68 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
+interface PackedFile {
+  file: string;
+  data: string;
+  encoding: 'base64';
+}
+
+export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<PackedFile[]> {
+  const packed: PackedFile[] = [];
+  const MAX_FILES = 80;
+  const MAX_FILE_SIZE = 250 * 1024; // 250 KB
+
+  const isIgnored = (name: string): boolean => {
+    if (name === 'node_modules' || name === '.git' || name === 'dist' || name === '.tbot') return true;
+    if (name.startsWith('.env')) return true;
+    return false;
+  };
+
+  async function walk(currentDir: string, relDir: string): Promise<void> {
+    if (packed.length >= MAX_FILES) return;
+    let entries;
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (packed.length >= MAX_FILES) break;
+      if (isIgnored(entry.name)) continue;
+
+      const fullPath = path.join(currentDir, entry.name);
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+      const posixRel = relPath.split(path.sep).join('/');
+
+      try {
+        if (entry.isDirectory()) {
+          await walk(fullPath, posixRel);
+        } else if (entry.isFile()) {
+          const stats = await fs.stat(fullPath);
+          if (stats.size <= MAX_FILE_SIZE) {
+            const content = await fs.readFile(fullPath);
+            packed.push({
+              file: posixRel,
+              data: content.toString('base64'),
+              encoding: 'base64',
+            });
+          }
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  }
+
+  await walk(cwd, '');
+  return packed;
+}
 
 /** Local TBot MCP server backed by selected Vercel REST endpoints, not Vercel's hosted MCP. */
 export async function createVercelAdapter(token: string, options: { team?: string; project?: string; readOnly?: boolean; signal?: AbortSignal }) {
@@ -29,7 +91,36 @@ export async function createVercelAdapter(token: string, options: { team?: strin
   ];
   if (options.readOnly === false) tools.push(
     { name: 'create_project', description: 'Create a Vercel project in the configured account/team.', inputSchema: { type: 'object', properties: { name: { type: 'string' }, githubRepo: { type: 'string', description: 'Optional GitHub repository owner/name to connect.' } }, required: ['name'], additionalProperties: false } },
-    { name: 'create_deployment', description: 'Create a Vercel deployment from an explicit GitHub repository and ref or explicitly supplied small base64 files. Preview by default; production only when specified. The response may be BUILDING, not ready.', inputSchema: { type: 'object', properties: { project: { type: 'string' }, target: { type: 'string', enum: ['preview', 'production'] }, repoId: { type: 'string', description: 'GitHub numeric repository ID.' }, ref: { type: 'string', description: 'Git reference.' }, files: { type: 'array', description: 'Explicitly supplied base64 files; never automatically reads the workspace.', maxItems: 100, items: { type: 'object', properties: { file: { type: 'string' }, data: { type: 'string' } }, required: ['file', 'data'], additionalProperties: false } } }, required: ['project'], additionalProperties: false } },
+    {
+      name: 'create_deployment',
+      description: 'Create a Vercel deployment from workspace files, explicit base64 files, or GitHub repository. Preview by default; production only when specified. The response may be BUILDING, not ready.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string', description: 'Project ID or name.' },
+          target: { type: 'string', enum: ['preview', 'production'] },
+          repoId: { type: 'string', description: 'GitHub numeric repository ID.' },
+          ref: { type: 'string', description: 'Git reference.' },
+          files: {
+            type: 'array',
+            description: 'Explicitly supplied base64 files; optional.',
+            maxItems: 100,
+            items: {
+              type: 'object',
+              properties: { file: { type: 'string' }, data: { type: 'string' } },
+              required: ['file', 'data'],
+              additionalProperties: false,
+            },
+          },
+          auto_pack_workspace: {
+            type: 'boolean',
+            description: 'Automatically pack project files from workspace (excluding node_modules, .git, dist, .tbot, .env*, and files >250KB, max 80 files). Defaults to true.',
+          },
+        },
+        required: ['project'],
+        additionalProperties: false,
+      },
+    },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
@@ -51,17 +142,42 @@ export async function createVercelAdapter(token: string, options: { team?: strin
           body.gitRepository = { type: 'github', repo: args.githubRepo };
         }
       } else if (req.params.name === 'create_deployment' && options.readOnly === false) {
-        only('project', 'target', 'repoId', 'ref', 'files'); const project = projectValue(args.project);
+        only('project', 'target', 'repoId', 'ref', 'files', 'auto_pack_workspace');
+        const project = projectValue(args.project);
         if (args.target !== undefined && args.target !== 'preview' && args.target !== 'production') throw new Error('Invalid arguments.');
         body = { name: project, project, ...(args.target === 'production' ? { target: 'production' } : {}) };
-        if (args.files !== undefined) {
-          if (args.repoId !== undefined || args.ref !== undefined || !Array.isArray(args.files) || !args.files.length || args.files.length > 100) throw new Error('Invalid arguments.');
+
+        const hasFiles = Array.isArray(args.files) && args.files.length > 0;
+        const autoPack = args.auto_pack_workspace === true || (
+          args.auto_pack_workspace !== false && !hasFiles && args.repoId === undefined
+        );
+
+        if (autoPack) {
+          const workspaceFiles = await packWorkspaceFiles(process.cwd());
+          let combinedFiles = workspaceFiles;
+          if (hasFiles) {
+            let total = 0;
+            const seen = new Set<string>();
+            const explicit = (args.files as unknown[]).map((item: unknown) => {
+              if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid arguments.');
+              const f = item as Record<string, unknown>;
+              if (Object.keys(f).some(k => !['file', 'data'].includes(k)) || typeof f.file !== 'string' || typeof f.data !== 'string' || f.file.length > 240 || !f.file || f.file.startsWith('/') || /[\\:\x00-\x1f]/.test(f.file) || f.file.split('/').some(part => !part || part === '.' || part === '..') || seen.has(f.file) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.data)) throw new Error('Invalid arguments.');
+              seen.add(f.file);
+              total += f.data.length;
+              if (total > 25_000_000) throw new Error('Invalid arguments.');
+              return { file: f.file, data: f.data, encoding: 'base64' as const };
+            });
+            combinedFiles = [...workspaceFiles.filter(wf => !explicit.some(ef => ef.file === wf.file)), ...explicit];
+          }
+          body.files = combinedFiles;
+        } else if (hasFiles) {
+          if (args.repoId !== undefined || args.ref !== undefined || (args.files as unknown[]).length > 100) throw new Error('Invalid arguments.');
           let total = 0; const seen = new Set<string>();
-          body.files = args.files.map((item: unknown) => {
+          body.files = (args.files as unknown[]).map((item: unknown) => {
             if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid arguments.');
             const f = item as Record<string, unknown>;
             if (Object.keys(f).some(k => !['file', 'data'].includes(k)) || typeof f.file !== 'string' || typeof f.data !== 'string' || f.file.length > 240 || !f.file || f.file.startsWith('/') || /[\\:\x00-\x1f]/.test(f.file) || f.file.split('/').some(part => !part || part === '.' || part === '..') || seen.has(f.file) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.data)) throw new Error('Invalid arguments.');
-            seen.add(f.file); total += f.data.length; if (total > 1_000_000) throw new Error('Invalid arguments.');
+            seen.add(f.file); total += f.data.length; if (total > 25_000_000) throw new Error('Invalid arguments.');
             return { file: f.file, data: f.data, encoding: 'base64' };
           });
         } else {

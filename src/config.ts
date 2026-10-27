@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, writeFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, writeFile, unlink, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -12,12 +12,65 @@ export interface AppConfig {
   baseUrl?: string;
   workspacePermissions: Record<string, WorkspacePermission>;
   efforts?: Record<string, EffortLevel>;
+  telegramBotToken?: boolean;
+  telegramAllowedChatIds?: string[];
 }
+export type Config = AppConfig;
+
 export interface ResolvedProviderConfig { id: string; model: string; apiKey?: string; baseUrl?: string; effort: EffortLevel }
 export const configDirectory = (): string => join(process.env.APPDATA || join(homedir(), '.config'), 'TBot');
 const revisions = new WeakMap<AppConfig, string | null>();
 const remember = (config: AppConfig, revision: string | null): AppConfig => { revisions.set(config, revision); return config; };
-const defaultConfig = (): AppConfig => ({ provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} });
+
+export const DEFAULT_CONFIG: AppConfig = { provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} };
+const defaultConfig = (): AppConfig => ({ ...DEFAULT_CONFIG, workspacePermissions: {} });
+
+function isProcessAlive(pid: number): boolean {
+  if (!pid || isNaN(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function acquireLock(lockPath: string): Promise<Awaited<ReturnType<typeof open>>> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(String(process.pid));
+      return handle;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        let isStale = false;
+        try {
+          const stats = await stat(lockPath);
+          if (Date.now() - stats.mtimeMs > 30_000) {
+            isStale = true;
+          } else {
+            const content = await readFile(lockPath, 'utf8').catch(() => '');
+            const pid = parseInt(content.trim(), 10);
+            if (!pid || !isProcessAlive(pid)) {
+              isStale = true;
+            }
+          }
+        } catch {
+          isStale = true;
+        }
+
+        if (isStale) {
+          await unlink(lockPath).catch(() => undefined);
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  const handle = await open(lockPath, 'wx', 0o600);
+  await handle.writeFile(String(process.pid));
+  return handle;
+}
 
 function validBaseUrl(value: unknown): boolean {
   if (typeof value !== 'string' || !value.trim()) return false;
@@ -28,13 +81,47 @@ function validBaseUrl(value: unknown): boolean {
   } catch { return false; }
 }
 
+export function normalizeConfig(input: Partial<AppConfig> | Record<string, unknown>): AppConfig {
+  const defaults = DEFAULT_CONFIG;
+  const permissions: Record<string, WorkspacePermission> = {};
+  if (input.workspacePermissions && typeof input.workspacePermissions === 'object' && !Array.isArray(input.workspacePermissions)) {
+    for (const [key, permission] of Object.entries(input.workspacePermissions as Record<string, unknown>)) {
+      if (permission === 'ask' || permission === 'allow') {
+        permissions[key] = permission;
+      }
+    }
+  }
+  const efforts: Record<string, EffortLevel> = {};
+  if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
+    for (const [key, level] of Object.entries(input.efforts)) {
+      if (typeof level === 'string' && EFFORT_LEVELS.includes(level as EffortLevel)) {
+        efforts[key] = level as EffortLevel;
+      }
+    }
+  }
+  const result: AppConfig = {
+    provider: typeof input.provider === 'string' ? input.provider : defaults.provider,
+    model: typeof input.model === 'string' ? input.model : defaults.model,
+    ...(typeof input.baseUrl === 'string' && validBaseUrl(input.baseUrl) ? { baseUrl: input.baseUrl } : {}),
+    workspacePermissions: permissions,
+    efforts
+  };
+  if (typeof input.telegramBotToken === 'boolean') {
+    result.telegramBotToken = input.telegramBotToken;
+  }
+  if (Array.isArray(input.telegramAllowedChatIds)) {
+    result.telegramAllowedChatIds = input.telegramAllowedChatIds.filter((id): id is string => typeof id === 'string');
+  }
+  return result;
+}
+
 // Remove malformed or credential-bearing endpoints without ever including their values in errors.
 async function cleanInvalidBaseUrl(raw: string): Promise<string> {
   const dir = configDirectory();
   const path = join(dir, 'config.json');
   const lockPath = join(dir, 'config.lock');
   let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
+  try { lock = await acquireLock(lockPath); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('Configuration is being updated; retry.');
     throw error;
@@ -51,7 +138,9 @@ async function cleanInvalidBaseUrl(raw: string): Promise<string> {
     return cleaned;
   } finally {
     await unlink(temp).catch(() => undefined);
-    try { await lock.close(); } finally { await unlink(lockPath); }
+    if (lock) {
+      try { await lock.close(); } finally { await unlink(lockPath).catch(() => undefined); }
+    }
   }
 }
 
@@ -80,7 +169,18 @@ export async function loadConfig(): Promise<AppConfig> {
   if (input.efforts && typeof input.efforts === 'object' && !Array.isArray(input.efforts)) {
     for (const [key, level] of Object.entries(input.efforts)) if (typeof level === 'string' && EFFORT_LEVELS.includes(level as EffortLevel)) efforts[key] = level as EffortLevel;
   }
-  return remember({ provider: (input.provider as string | undefined) ?? defaults.provider, model: (input.model as string | undefined) ?? defaults.model, ...(input.baseUrl ? { baseUrl: input.baseUrl as string } : {}), workspacePermissions: permissions, efforts }, raw);
+  const telegramBotToken = typeof input.telegramBotToken === 'boolean' ? input.telegramBotToken : undefined;
+  const telegramAllowedChatIds = Array.isArray(input.telegramAllowedChatIds) ? input.telegramAllowedChatIds.filter((id): id is string => typeof id === 'string') : undefined;
+
+  return remember({
+    provider: (input.provider as string | undefined) ?? defaults.provider,
+    model: (input.model as string | undefined) ?? defaults.model,
+    ...(input.baseUrl ? { baseUrl: input.baseUrl as string } : {}),
+    workspacePermissions: permissions,
+    efforts,
+    ...(telegramBotToken !== undefined ? { telegramBotToken } : {}),
+    ...(telegramAllowedChatIds ? { telegramAllowedChatIds } : {})
+  }, raw);
 }
 
 export async function saveConfig(config: AppConfig): Promise<void> {
@@ -91,7 +191,7 @@ export async function saveConfig(config: AppConfig): Promise<void> {
   if (!revisions.has(config)) throw new Error('Load configuration before saving it');
   if (config.baseUrl !== undefined && !validBaseUrl(config.baseUrl)) throw new Error('Invalid base URL in config');
   let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
+  try { lock = await acquireLock(lockPath); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`Configuration is being saved; retry. If a previous process crashed, remove ${lockPath} first.`);
     throw error;
@@ -103,14 +203,24 @@ export async function saveConfig(config: AppConfig): Promise<void> {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; current = null; }
     if (current !== revisions.get(config)) throw new Error('Configuration changed since it was loaded; reload before saving');
     // Persist only known non-secret fields.
-    const value = { provider: config.provider, model: config.model, ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}), workspacePermissions: config.workspacePermissions, efforts: config.efforts ?? {} };
+    const value: Record<string, unknown> = {
+      provider: config.provider,
+      model: config.model,
+      ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+      workspacePermissions: config.workspacePermissions,
+      efforts: config.efforts ?? {},
+      ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
+      ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
+    };
     const contents = JSON.stringify(value, null, 2) + '\n';
     await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });
     await rename(temp, path);
     revisions.set(config, contents);
   } finally {
     await unlink(temp).catch(() => undefined);
-    try { await lock.close(); } finally { await unlink(lockPath); }
+    if (lock) {
+      try { await lock.close(); } finally { await unlink(lockPath).catch(() => undefined); }
+    }
   }
 }
 function workspaceKey(workspace: string): string { const path = resolve(workspace); return process.platform === 'win32' ? path.toLowerCase() : path; }

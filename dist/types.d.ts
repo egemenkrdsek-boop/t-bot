@@ -38,11 +38,15 @@ export type ProviderEvent = {
     type: 'usage';
     inputTokens?: number;
     outputTokens?: number;
+    cachedTokens?: number;
+    savedTokens?: number;
+    savingsPercent?: number;
 } | {
     type: 'error';
     error: string;
     code?: 'authentication';
 };
+export type StreamEvent = ProviderEvent;
 export interface Provider {
     id: string;
     label: string;
@@ -69,6 +73,9 @@ export type AgentEvent = {
     type: 'usage';
     inputTokens?: number;
     outputTokens?: number;
+    cachedTokens?: number;
+    savedTokens?: number;
+    savingsPercent?: number;
 } | {
     type: 'error';
     error: string;
@@ -87,4 +94,29 @@ export interface AgentInput {
     signal?: AbortSignal;
     mcpTools?: McpConnection[];
     imageProvider?: ImageProviderConfig;
+}
+export interface Config {
+    provider: string;
+    model: string;
+    baseUrl?: string;
+    workspacePermissions?: Record<string, 'ask' | 'allow'>;
+    efforts?: Record<string, string>;
+    telegramBotToken?: boolean;
+    telegramAllowedChatIds?: string[];
+    [key: string]: unknown;
+}
+export interface TokenSavingsReport {
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+    savedTokens: number;
+    rawEstimatedTokens: number;
+    savingsPercent: number;
+}
+export interface GroundingStatus {
+    verified: boolean;
+    inspectedCount: number;
+    modifiedCount: number;
+    verifiedCommands: number;
+    warnings: string[];
 }

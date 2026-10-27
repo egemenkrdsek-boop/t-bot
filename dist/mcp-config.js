@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { configDirectory } from './config.js';
@@ -13,6 +13,55 @@ function parseConnection(value) {
     if (typeof record.enabled !== 'boolean' || typeof record.readOnly !== 'boolean' || (record.project !== undefined && typeof record.project !== 'string') || (record.team !== undefined && typeof record.team !== 'string'))
         throw new Error('Invalid MCP connection configuration');
     return { enabled: record.enabled, readOnly: record.readOnly, ...(record.project ? { project: record.project } : {}), ...(record.team ? { team: record.team } : {}) };
+}
+function isProcessAlive(pid) {
+    if (!pid || isNaN(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === 'EPERM';
+    }
+}
+async function acquireLock(lockPath) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const handle = await open(lockPath, 'wx', 0o600);
+            await handle.writeFile(String(process.pid));
+            return handle;
+        }
+        catch (error) {
+            if (error.code === 'EEXIST') {
+                let isStale = false;
+                try {
+                    const stats = await stat(lockPath);
+                    if (Date.now() - stats.mtimeMs > 30_000) {
+                        isStale = true;
+                    }
+                    else {
+                        const content = await readFile(lockPath, 'utf8').catch(() => '');
+                        const pid = parseInt(content.trim(), 10);
+                        if (!pid || !isProcessAlive(pid)) {
+                            isStale = true;
+                        }
+                    }
+                }
+                catch {
+                    isStale = true;
+                }
+                if (isStale) {
+                    await unlink(lockPath).catch(() => undefined);
+                    continue;
+                }
+            }
+            throw error;
+        }
+    }
+    const handle = await open(lockPath, 'wx', 0o600);
+    await handle.writeFile(String(process.pid));
+    return handle;
 }
 async function readConnections() {
     let raw;
@@ -53,7 +102,7 @@ async function updateConnections(update) {
     const lockPath = join(dir, 'mcp.lock');
     let lock;
     try {
-        lock = await open(lockPath, 'wx', 0o600);
+        lock = await acquireLock(lockPath);
     }
     catch (error) {
         if (error.code === 'EEXIST')
@@ -70,11 +119,13 @@ async function updateConnections(update) {
     }
     finally {
         await unlink(temp).catch(() => undefined);
-        try {
-            await lock.close();
-        }
-        finally {
-            await unlink(lockPath);
+        if (lock) {
+            try {
+                await lock.close();
+            }
+            finally {
+                await unlink(lockPath).catch(() => undefined);
+            }
         }
     }
 }

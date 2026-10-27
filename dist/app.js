@@ -3,9 +3,9 @@ import { stdin, stdout } from 'node:process';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSession, SessionStore } from './sessions.js';
-import { parseCli, HELP } from './cli.js';
-import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getEffort, setEffort } from './config.js';
-import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError } from './secrets.js';
+import { parseCli, printUsage } from './cli.js';
+import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getEffort, setEffort, getWorkspacePermission, setWorkspacePermission } from './config.js';
+import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError, setCustomSecret, getCustomSecret } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
@@ -20,6 +20,12 @@ import { connectMcp } from './mcp.js';
 import { MCP_PRESETS } from './mcp-presets.js';
 import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
 import { getGoal, startGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal, runGoal, planTask, executePlan } from './workflows.js';
+import { closeBrowser } from './tools/browser.js';
+import { stopAllBackgroundProcesses } from './tools/shell.js';
+import { startTelegramBotBridge, stopTelegramBotBridge, getTelegramBotStatus } from './bot.js';
+import { globalTokenTracker } from './token-optimizer.js';
+import { rememberFact, recallFacts, forgetFact } from './memory.js';
+import { reclaimMemory, getMemoryStats } from './memory-guard.js';
 const safe = (text) => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions() {
     const sessions = await new SessionStore(configDirectory()).list();
@@ -121,11 +127,11 @@ async function approveOnce(request) {
 export async function main(argv) {
     const options = parseCli(argv);
     if (options.command === 'help') {
-        console.log(HELP);
+        printUsage();
         return;
     }
     if (options.command === 'version') {
-        console.log('T Bot 0.2.0');
+        console.log('T Bot 2.0.0');
         return;
     }
     if (options.command === 'providers') {
@@ -191,6 +197,12 @@ export async function main(argv) {
     const mcpTools = [];
     let mcpHydrated = false;
     const closeMcp = async () => { await Promise.allSettled(mcpTools.splice(0).map(c => c.close())); };
+    const cleanupAllResources = async () => {
+        stopTelegramBotBridge();
+        stopAllBackgroundProcesses();
+        await closeBrowser().catch(() => undefined);
+        await closeMcp().catch(() => undefined);
+    };
     const hydrateMcp = async (signal, emit) => {
         if (mcpHydrated)
             return;
@@ -306,14 +318,77 @@ export async function main(argv) {
             return runSubagents({ ...input, workerProvider });
         return runAgent(input);
     };
-    const modeStatus = () => { const mapping = describeEffort(config.provider, config.model, selectedEffort); return `Effort: ${selectedEffort}${mapping.effective && mapping.effective !== selectedEffort ? ` → ${mapping.effective}` : mapping.supported ? '' : ' (varsayılan)'}${ultracode ? ' · Ultracode' : ''}`; };
+    const modeStatus = () => {
+        const mapping = describeEffort(config.provider, config.model, selectedEffort);
+        return `Effort: ${selectedEffort}${mapping.effective && mapping.effective !== selectedEffort ? ` → ${mapping.effective}` : mapping.supported ? '' : ' (varsayılan)'}${ultracode ? ' · Ultracode' : ''}`;
+    };
     const withAuth = (emit) => (event) => {
         emit(event);
         if (event.type === 'error' && event.code === 'authentication')
             emit({ type: 'status', message: `Anahtar kaynağı: ${keySource}. /auth ile yeni anahtar girin ve sağlayıcı hesabındaki erişimi kontrol edin.` });
     };
-    let yolo = options.yolo === true;
-    const approve = (request) => yolo ? Promise.resolve(true) : approveOnce(request);
+    let yolo = options.yolo === true || getWorkspacePermission(config, workspace) === 'allow';
+    const checkApproval = (tuiApprove) => (request) => {
+        if (yolo || getWorkspacePermission(config, workspace) === 'allow')
+            return Promise.resolve(true);
+        return tuiApprove ? tuiApprove(request) : approveOnce(request);
+    };
+    const ensureBotBridge = async (customToken, suspendUi) => {
+        let token = customToken ?? await getCustomSecret('telegram_bot_token');
+        if (!token?.trim()) {
+            const ask = suspendUi ? () => suspendUi(() => inputSecret('Telegram Bot Token: ')) : () => inputSecret('Telegram Bot Token: ');
+            const entered = await ask();
+            if (!entered?.trim())
+                return { ok: false, message: 'Token girilmedi; Telegram Bot başlatılamadı.' };
+            token = prepareApiKey(entered);
+            await setCustomSecret('telegram_bot_token', token);
+            config.telegramBotToken = true;
+            await saveConfig(config);
+        }
+        const res = await startTelegramBotBridge({
+            config: config,
+            session,
+            workspace,
+            getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
+            activeSkills: BUILTIN_SKILLS.map(s => s.id),
+            onLog: (text) => {
+                if (!stdin.isTTY)
+                    console.error(text);
+            }
+        });
+        if (res.ok) {
+            return { ok: true, message: `Telegram Bot Köprüsü başarıyla başlatıldı: @${res.username || 'tbot'}` };
+        }
+        else {
+            return { ok: false, message: `Telegram Bot başlatılamadı: ${res.error || 'Bilinmeyen hata'}` };
+        }
+    };
+    if (options.bot) {
+        try {
+            const token = await getCustomSecret('telegram_bot_token');
+            if (token?.trim()) {
+                const res = await startTelegramBotBridge({
+                    config: config,
+                    session,
+                    workspace,
+                    getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
+                    activeSkills: BUILTIN_SKILLS.map(s => s.id),
+                    onLog: (msg) => { if (!stdin.isTTY)
+                        console.error(msg); }
+                });
+                if (res.ok)
+                    console.error(`[Telegram Bot] Köprü arka planda aktif: @${res.username}`);
+                else
+                    console.error(`[Telegram Bot] Başlatılamadı: ${res.error}`);
+            }
+            else {
+                console.error('[Telegram Bot] Bot tokenı bulunamadı. Yapılandırmak için /bot token <TOKEN> kullanın.');
+            }
+        }
+        catch (err) {
+            console.error(`[Telegram Bot] Hata: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
     if (options.message) {
         if (yolo)
             console.error('YOLO açık: araç onayları bu oturumda otomatik verilir.');
@@ -323,14 +398,24 @@ export async function main(argv) {
         try {
             await hydrateMcp(controller.signal, showEvent);
             console.error(describeEffort(config.provider, config.model, selectedEffort).message);
-            session.messages = await runRouted({ message: options.message, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
-                    process.exitCode = 1; }), approve, signal: controller.signal });
+            session.messages = await runRouted({
+                message: options.message,
+                history: session.messages,
+                provider,
+                workspace,
+                mcpTools,
+                imageProvider: await imageConfig(),
+                onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
+                    process.exitCode = 1; }),
+                approve: checkApproval(),
+                signal: controller.signal
+            });
             await store.save(session);
             stdout.write('\n');
         }
         finally {
             process.off('SIGINT', cancel);
-            await closeMcp();
+            await cleanupAllResources();
         }
         return;
     }
@@ -338,32 +423,58 @@ export async function main(argv) {
         throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
     const { startTui } = await import('./tui.js');
     try {
-        await startTui({ workspace, provider, model: config.model, history: session.messages, yolo, modeStatus,
+        await startTui({
+            workspace,
+            provider,
+            model: config.model,
+            history: session.messages,
+            yolo,
+            modeStatus,
             onSubmit: async (message, emit, tuiApprove, signal) => {
                 await hydrateMcp(signal, emit);
-                const input = { message, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                const input = {
+                    message,
+                    history: session.messages,
+                    provider,
+                    workspace,
+                    mcpTools,
+                    imageProvider: await imageConfig(),
+                    onEvent: withAuth(emit),
+                    approve: checkApproval(tuiApprove),
+                    signal
+                };
                 session.messages = await runRouted(input);
                 await store.save(session);
                 return session.messages;
             },
             onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
-                if (['/frontenddesign', '/backend'].includes(command) || (command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) || (command === '/plan' && text.trim().toLowerCase() === 'apply') || (command === '/subagents' && text.trim()))
+                if (['/frontenddesign', '/backend'].includes(command) ||
+                    (command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) ||
+                    (command === '/plan' && text.trim().toLowerCase() === 'apply') ||
+                    (command === '/subagents' && text.trim())) {
                     await hydrateMcp(signal, emit);
-                const input = { message: text, history: session.messages, provider, workspace, mcpTools, imageProvider: await imageConfig(), onEvent: withAuth(emit), approve: (request) => yolo ? Promise.resolve(true) : tuiApprove(request), signal };
+                }
+                const input = {
+                    message: text,
+                    history: session.messages,
+                    provider,
+                    workspace,
+                    mcpTools,
+                    imageProvider: await imageConfig(),
+                    onEvent: withAuth(emit),
+                    approve: checkApproval(tuiApprove),
+                    signal
+                };
                 if (command === '/imagegen') {
                     if (!text.trim()) {
-                        emit({ type: 'status', message: 'Kullanım: /imagegen <görsel isteği>' });
-                        return;
-                    }
-                    if (/\b(edit|modify|retouch)\b|düzenle|değiştir|düzenlenmiş|duzenle|degistir/i.test(text)) {
-                        emit({ type: 'error', error: 'Mevcut görsel düzenleme bu araçta desteklenmiyor; /imagegen yeni görsel üretir.' });
+                        emit({ type: 'status', message: 'Kullanım: /imagegen <görsel isteği veya düzenleme komutu>' });
                         return;
                     }
                     const available = await Promise.all(['openai', 'gemini', 'openrouter'].map(async (id) => ({ id, apiKey: await getApiKey(id) })));
                     signal.throwIfAborted();
                     const usable = available.filter(item => !!item.apiKey);
                     if (!usable.length) {
-                        emit({ type: 'error', error: 'Görsel üretimi için OpenAI, Gemini veya OpenRouter API anahtarı yapılandırın.' });
+                        emit({ type: 'error', error: 'Görsel üretimi/düzenlemesi için OpenAI, Gemini veya OpenRouter API anahtarı yapılandırın.' });
                         return;
                     }
                     const imageId = await suspendUi(() => selectOption('Görsel sağlayıcısı', usable.map(item => ({ label: item.id === 'openai' ? 'OpenAI' : item.id === 'gemini' ? 'Gemini' : 'OpenRouter', value: item.id }))));
@@ -375,7 +486,7 @@ export async function main(argv) {
                     const imageModel = await suspendUi(() => selectOption('Görsel modeli', IMAGE_MODELS[imageId].choices.map(model => ({ label: model, value: model }))));
                     if (!imageModel || signal.aborted)
                         return;
-                    emit({ type: 'status', message: `${imageId} / ${imageModel}: görsel isteği hazırlanıyor.` });
+                    emit({ type: 'status', message: `${imageId} / ${imageModel}: görsel işlemi hazırlanıyor...` });
                     const result = await executeTool({ id: randomUUID(), name: 'image_generate', arguments: { prompt: text } }, { workspace, approve: input.approve, signal, imageProvider: { provider: imageId, apiKey: chosenKey, model: imageModel } });
                     emit({ type: result.startsWith('Tool error:') ? 'error' : 'status', ...(result.startsWith('Tool error:') ? { error: result } : { message: result }) });
                     session.messages.push({ role: 'user', content: `/imagegen ${text}` }, { role: 'assistant', content: result });
@@ -480,6 +591,135 @@ export async function main(argv) {
             },
             onCommand: async (command, setYolo) => {
                 const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
+                if (name === '/tokens') {
+                    const report = globalTokenTracker.getReport();
+                    return [
+                        '💎 Canlı Token Tasarrufu & Oturum Raporu',
+                        '────────────────────────────────────────────────',
+                        `  Toplam Ham Token     : ${report.totalRawTokens.toLocaleString()}`,
+                        `  Gönderilen Girdi     : ${report.totalSentInputTokens.toLocaleString()}`,
+                        `  Üretilen Çıktı       : ${report.totalOutputTokens.toLocaleString()}`,
+                        `  Önbelleklenen Token  : ${report.totalCachedTokens.toLocaleString()}`,
+                        `  Budanan Şema Token   : ${report.totalPrunedSchemaTokens.toLocaleString()}`,
+                        `  Sıkıştırılmış Geçmiş : ${report.totalCompressedHistoryTokens.toLocaleString()}`,
+                        `  Kazanılan (Tasarruf) : ${report.totalSavedTokens.toLocaleString()} tok`,
+                        `  Tasarruf Oranı       : %${report.savingsPercent}`,
+                        `  Oturum Tur Sayısı    : ${report.turnsCount}`,
+                    ].join('\n');
+                }
+                if (name === '/memory') {
+                    const facts = await recallFacts(workspace);
+                    const mem = getMemoryStats();
+                    const ratioStr = mem.heapTotalMB > 0 ? ` (%${((mem.heapUsedMB / mem.heapTotalMB) * 100).toFixed(1)})` : '';
+                    const lines = [
+                        '💾 Bellek & RAM Koruma Durumu',
+                        '────────────────────────────────────────────────',
+                        `  Heap Kullanımı : ${mem.heapUsedMB} MB / ${mem.heapTotalMB} MB${ratioStr}`,
+                        `  RSS Fiziksel   : ${mem.rssMB} MB`,
+                        `  Bellek Baskısı : ${mem.pressure.toUpperCase()}`,
+                        '',
+                        `🧠 Kayıtlı Proje/Genel Hafıza Maddeleri (${facts.length}):`,
+                        '────────────────────────────────────────────────',
+                    ];
+                    if (!facts.length) {
+                        lines.push('  Henüz kayıtlı hafıza maddesi yok. /remember <anahtar> = <değer> ile ekleyebilirsiniz.');
+                    }
+                    else {
+                        for (const f of facts) {
+                            lines.push(`  • [${f.scope.toUpperCase()}] ${f.key}: ${f.value}`);
+                        }
+                    }
+                    return lines.join('\n');
+                }
+                if (name === '/remember') {
+                    const raw = command.replace(/^\/remember\s*/i, '').trim();
+                    if (!raw)
+                        return 'Kullanım: /remember <anahtar> = <değer> veya /remember <değer>';
+                    let key;
+                    let val;
+                    const eqIdx = raw.indexOf('=');
+                    if (eqIdx >= 0) {
+                        key = raw.slice(0, eqIdx).trim();
+                        val = raw.slice(eqIdx + 1).trim();
+                    }
+                    else {
+                        const words = raw.split(/\s+/).slice(0, 3).join('_').toLowerCase().replace(/[^a-z0-9_]/g, '');
+                        key = words || `fact_${Date.now().toString().slice(-4)}`;
+                        val = raw;
+                    }
+                    if (!key || !val)
+                        return 'Hata: Anahtar ve değer boş olamaz.';
+                    await rememberFact(workspace, key, val, 'project');
+                    return `✓ Kalıcı proje hafızasına kaydedildi: [${key}] = ${val}`;
+                }
+                if (name === '/forget') {
+                    const key = command.replace(/^\/forget\s*/i, '').trim();
+                    if (!key)
+                        return 'Kullanım: /forget <anahtar>';
+                    const removed = await forgetFact(workspace, key);
+                    return removed ? `✓ Hafızadan silindi: ${key}` : `Hafızada "${key}" anahtarı bulunamadı.`;
+                }
+                if (name === '/gc') {
+                    const result = await reclaimMemory(session, true);
+                    return [
+                        '✓ Bellek koruyucusu çalıştırıldı (Garbage Collection & Message Compaction)',
+                        '────────────────────────────────────────────────',
+                        `  Boşaltılan RAM : ${result.freedMB} MB`,
+                        `  Mevcut Heap    : ${result.afterMB} MB`,
+                        `  Sıkıştırılan   : ${result.compactedCount} mesaj / araç çıktısı`,
+                        `  Bellek Baskısı : ${result.pressure.toUpperCase()}`
+                    ].join('\n');
+                }
+                if (name === '/bot') {
+                    const sub = argument?.toLowerCase();
+                    if (!sub || sub === 'status') {
+                        const st = getTelegramBotStatus();
+                        const allowedList = st.allowedChats && st.allowedChats.length > 0 ? st.allowedChats.join(', ') : 'Tüm yetkili sohbetler / henüz kısıtlanmadı';
+                        return [
+                            '🤖 Telegram Bot Köprüsü Durumu',
+                            '────────────────────────────────────────────────',
+                            `  Durum         : ${st.running ? 'EVET (Aktif / Çalışıyor)' : 'HAYIR (Pasif / Durduruldu)'}`,
+                            `  Kullanıcı Adı : ${st.username ? `@${st.username}` : 'Bilinmiyor / Başlatılmadı'}`,
+                            `  İzinli ChatID : ${allowedList}`,
+                            `  İşlenen Mesaj : ${st.handledCount}`,
+                            '',
+                            'Komutlar: /bot start | /bot stop | /bot token <TOKEN> | /bot allow <CHAT_ID> | /bot status'
+                        ].join('\n');
+                    }
+                    if (sub === 'start') {
+                        const launch = await ensureBotBridge();
+                        return launch.message;
+                    }
+                    if (sub === 'stop') {
+                        stopTelegramBotBridge();
+                        return 'Telegram Bot Köprüsü durduruldu.';
+                    }
+                    if (sub === 'token') {
+                        const tokenVal = command.replace(/^\/bot\s+token\s*/i, '').trim();
+                        if (!tokenVal)
+                            return 'Kullanım: /bot token <BOT_TOKEN>';
+                        const prepared = prepareApiKey(tokenVal);
+                        await setCustomSecret('telegram_bot_token', prepared);
+                        config.telegramBotToken = true;
+                        await saveConfig(config);
+                        const launch = await ensureBotBridge(prepared);
+                        return `Token DPAPI kasasına kaydedildi.\n${launch.message}`;
+                    }
+                    if (sub === 'allow') {
+                        const chatId = command.replace(/^\/bot\s+allow\s*/i, '').trim();
+                        if (!chatId)
+                            return 'Kullanım: /bot allow <CHAT_ID>';
+                        const allowed = config.telegramAllowedChatIds ?? [];
+                        if (!allowed.includes(chatId)) {
+                            allowed.push(chatId);
+                            config.telegramAllowedChatIds = allowed;
+                            await saveConfig(config);
+                            return `✓ Chat ID ${chatId} izinli Telegram sohbetleri listesine eklendi.`;
+                        }
+                        return `Chat ID ${chatId} zaten izin listesinde.`;
+                    }
+                    return 'Kullanım: /bot [start | stop | token <TOKEN> | allow <CHAT_ID> | status]';
+                }
                 if (name === '/skills') {
                     if (argument) {
                         const skill = BUILTIN_SKILLS.find(item => item.id === argument);
@@ -513,18 +753,49 @@ export async function main(argv) {
                     return ultracode ? 'Ultracode açık: araştırma, uygulama ve bağımsız inceleme.' : 'Ultracode kapalı.';
                 }
                 if (name === '/yolo') {
+                    if (argument === 'always' || argument === 'workspace') {
+                        setWorkspacePermission(config, workspace, 'allow');
+                        await saveConfig(config);
+                        yolo = true;
+                        setYolo?.(yolo);
+                        return `YOLO kalıcı olarak açıldı: Bu çalışma alanı (${workspace}) için tüm araç onayları otomatik verilecek ve izin kaydedildi.`;
+                    }
+                    if (argument === 'ask' || argument === 'off') {
+                        setWorkspacePermission(config, workspace, 'ask');
+                        await saveConfig(config);
+                        yolo = false;
+                        setYolo?.(yolo);
+                        return 'YOLO kapalı: Bu çalışma alanı için araç onayları sorulacak.';
+                    }
                     if (extra || (argument && argument !== 'on' && argument !== 'off'))
-                        return 'Kullanım: /yolo, /yolo on veya /yolo off';
+                        return 'Kullanım: /yolo, /yolo on, /yolo off, /yolo always veya /yolo workspace';
                     let choice = argument;
                     if (!choice) {
                         choice = await selectOption('YOLO modu', [
                             { label: 'Kapalı — araç işlemlerinde onay iste', value: 'off' },
-                            { label: 'Açık — araç onaylarını otomatik ver', value: 'on' },
+                            { label: 'Açık — araç onaylarını bu oturumda otomatik ver', value: 'on' },
+                            { label: 'Her Zaman (Kalıcı) — bu çalışma alanı için her zaman otomatik izin ver', value: 'always' },
                         ]);
                         if (!choice)
                             return 'YOLO modu değiştirilmedi.';
                     }
-                    yolo = choice === 'on';
+                    if (choice === 'always') {
+                        setWorkspacePermission(config, workspace, 'allow');
+                        await saveConfig(config);
+                        yolo = true;
+                        setYolo?.(yolo);
+                        return `YOLO kalıcı olarak açıldı: Bu çalışma alanı (${workspace}) için izin kaydedildi.`;
+                    }
+                    if (choice === 'off') {
+                        if (getWorkspacePermission(config, workspace) === 'allow') {
+                            setWorkspacePermission(config, workspace, 'ask');
+                            await saveConfig(config);
+                        }
+                        yolo = false;
+                    }
+                    else {
+                        yolo = true;
+                    }
                     setYolo?.(yolo);
                     return yolo ? 'YOLO açık: araç onayları bu oturumda otomatik verilir.' : 'YOLO kapalı: araç onayları sorulur.';
                 }
@@ -570,7 +841,7 @@ export async function main(argv) {
         });
     }
     finally {
-        await closeMcp();
+        await cleanupAllResources();
     }
 }
 //# sourceMappingURL=app.js.map

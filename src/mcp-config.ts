@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { configDirectory } from './config.js';
@@ -8,6 +8,7 @@ export type McpService = 'vercel' | 'supabase' | 'github';
 export interface ConnectionConfig { enabled: boolean; readOnly: boolean; project?: string; team?: string }
 export type McpConnections = Record<McpService, ConnectionConfig>;
 export type McpTokenSource = 'saved' | 'env' | 'missing';
+
 const defaultConnections = (): McpConnections => ({ vercel: { enabled: false, readOnly: false }, supabase: { enabled: false, readOnly: false }, github: { enabled: false, readOnly: false } });
 function validateService(service: McpService): void { if (service !== 'vercel' && service !== 'supabase' && service !== 'github') throw new Error('Unknown MCP service'); }
 function parseConnection(value: unknown): ConnectionConfig {
@@ -16,6 +17,54 @@ function parseConnection(value: unknown): ConnectionConfig {
   if (typeof record.enabled !== 'boolean' || typeof record.readOnly !== 'boolean' || (record.project !== undefined && typeof record.project !== 'string') || (record.team !== undefined && typeof record.team !== 'string')) throw new Error('Invalid MCP connection configuration');
   return { enabled: record.enabled, readOnly: record.readOnly, ...(record.project ? { project: record.project as string } : {}), ...(record.team ? { team: record.team as string } : {}) };
 }
+
+function isProcessAlive(pid: number): boolean {
+  if (!pid || isNaN(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function acquireLock(lockPath: string): Promise<Awaited<ReturnType<typeof open>>> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, 'wx', 0o600);
+      await handle.writeFile(String(process.pid));
+      return handle;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        let isStale = false;
+        try {
+          const stats = await stat(lockPath);
+          if (Date.now() - stats.mtimeMs > 30_000) {
+            isStale = true;
+          } else {
+            const content = await readFile(lockPath, 'utf8').catch(() => '');
+            const pid = parseInt(content.trim(), 10);
+            if (!pid || !isProcessAlive(pid)) {
+              isStale = true;
+            }
+          }
+        } catch {
+          isStale = true;
+        }
+
+        if (isStale) {
+          await unlink(lockPath).catch(() => undefined);
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  const handle = await open(lockPath, 'wx', 0o600);
+  await handle.writeFile(String(process.pid));
+  return handle;
+}
+
 async function readConnections(): Promise<{ connections: McpConnections; legacy: boolean }> {
   let raw: string;
   try { raw = await readFile(join(configDirectory(), 'mcp.json'), 'utf8'); }
@@ -32,11 +81,12 @@ async function readConnections(): Promise<{ connections: McpConnections; legacy:
   if (legacy) { vercel.readOnly = false; supabase.readOnly = false; }
   return { connections: { vercel, supabase, github }, legacy };
 }
+
 async function updateConnections(update: (connections: McpConnections) => void): Promise<McpConnections> {
   const dir = configDirectory(); await mkdir(dir, { recursive: true, mode: 0o700 });
   const lockPath = join(dir, 'mcp.lock');
   let lock;
-  try { lock = await open(lockPath, 'wx', 0o600); }
+  try { lock = await acquireLock(lockPath); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`MCP configuration is being updated; retry. If a process crashed, remove ${lockPath} first.`); throw error; }
   const temp = join(dir, `.mcp-${randomUUID()}.tmp`);
   try {
@@ -45,7 +95,12 @@ async function updateConnections(update: (connections: McpConnections) => void):
     await writeFile(temp, JSON.stringify({ version: 2, ...connections }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     await rename(temp, join(dir, 'mcp.json'));
     return connections;
-  } finally { await unlink(temp).catch(() => undefined); try { await lock.close(); } finally { await unlink(lockPath); } }
+  } finally {
+    await unlink(temp).catch(() => undefined);
+    if (lock) {
+      try { await lock.close(); } finally { await unlink(lockPath).catch(() => undefined); }
+    }
+  }
 }
 export async function loadConnections(): Promise<McpConnections> {
   const result = await readConnections();

@@ -24,6 +24,16 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
 
+function isProcessAlive(pid: number): boolean {
+  if (!pid || isNaN(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Redact common credentials before persistence. This cannot recognize every possible secret. */
 function redactString(value: string): string {
   return value
@@ -69,15 +79,40 @@ export class SessionStore {
     const lock = path.join(this.directory, `.${id}.lock`);
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     for (let attempt = 0; attempt < 50; attempt++) {
-      try { handle = await fs.open(lock, 'wx', 0o600); break; }
+      try {
+        handle = await fs.open(lock, 'wx', 0o600);
+        await handle.writeFile(String(process.pid));
+        break;
+      }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        let stale = false;
+        try {
+          const stats = await fs.stat(lock);
+          if (Date.now() - stats.mtimeMs > 30_000) {
+            stale = true;
+          } else {
+            const content = await fs.readFile(lock, 'utf8').catch(() => '');
+            const pid = parseInt(content.trim(), 10);
+            if (!pid || !isProcessAlive(pid)) {
+              stale = true;
+            }
+          }
+        } catch {
+          stale = true;
+        }
+        if (stale) {
+          await fs.unlink(lock).catch(() => undefined);
+          continue;
+        }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
     if (!handle) throw new Error('Session is locked; retry later or remove a stale lock file');
     try { return await action(); }
-    finally { await handle.close(); await fs.unlink(lock).catch(() => undefined); }
+    finally {
+      try { await handle.close(); } finally { await fs.unlink(lock).catch(() => undefined); }
+    }
   }
   private async read(id: string): Promise<Session | null> {
     const file = this.file(id);

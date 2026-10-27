@@ -1,4 +1,6 @@
 import type { ToolDefinition } from '../types.js';
+export declare function resetIdleTimer(): void;
+export declare function closeIdleBrowser(): Promise<void>;
 export declare const browserToolDefinitions: ToolDefinition[];
 export declare function closeBrowser(): Promise<void>;
 export declare function handleBrowserTool(name: string, args: Record<string, unknown>, options: {

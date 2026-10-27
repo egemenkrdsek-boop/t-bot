@@ -3,7 +3,12 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type @"
+
+$dllPath = Join-Path ([System.IO.Path]::GetTempPath()) "tbot-desktop-native-v2.dll"
+if (Test-Path $dllPath) {
+  [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
+} else {
+  $source = @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
@@ -26,6 +31,10 @@ public static class DesktopNative {
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, int data, UIntPtr extra);
 }
 "@
+  Add-Type -TypeDefinition $source -ReferencedAssemblies 'System.Windows.Forms','System.Drawing' -OutputAssembly $dllPath
+  [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
+}
+
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $action = [string]$request.action
@@ -70,7 +79,7 @@ try {
         $hit = [DesktopNative]::WindowFromPoint($point)
         if ([DesktopNative]::GetForegroundWindow() -ne $handle -or [DesktopNative]::GetAncestor($hit, 2) -ne $handle) { throw 'Target is no longer foreground or the point is covered by another window.' }
         if ($action -eq 'click') {
-          if ($request.button -eq 'right') { [DesktopNative]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero); [DesktopNative]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero) }
+          if ($request.button -eq 'right') { [DesktopNative]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero) }
           else { [DesktopNative]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [DesktopNative]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero) }
         } else { [DesktopNative]::mouse_event(0x0800,0,0,[int]$request.delta,[UIntPtr]::Zero) }
       } elseif ($action -eq 'type') {
@@ -88,6 +97,3 @@ try {
     @{ attempted=$true; action=$action; note='Input dispatch was attempted; application handling cannot be verified.' } | ConvertTo-Json -Compress
   }
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
-
-
-

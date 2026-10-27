@@ -1,0 +1,94 @@
+{
+  "basis": "Statik kaynak incelemesi; uygulama testi, benchmark veya güvenlik taraması yapılmadı. Ekranlar temsili olarak etiketlenmeli.",
+  "product": "T Bot 0.1.0, yerel terminal CLI/TUI ajanı; model isteklerini seçilen sağlayıcıya gönderir. Yerel uygulama olması bulut model API çağrılarının yokluğu anlamına gelmez.",
+  "install": {
+    "requirements": "Node.js >=20.3, npm, Git, özel GitHub deposuna erişim ve Git kimlik doğrulaması",
+    "global_install_update": "npm install --global git+https://github.com/egemenkrdsek-boop/t-bot.git",
+    "local": [
+      "git clone https://github.com/egemenkrdsek-boop/t-bot.git",
+      "cd t-bot",
+      "npm ci",
+      "npm run build",
+      "npm install --global ."
+    ],
+    "note": "Git kurulumu prepare ile derler; global npm komut dizini PATH üzerinde olmalı."
+  },
+  "cli": {
+    "tbot": "Etkileşimli oturum",
+    "tbot \"isteğiniz\"": "Tek seferlik istek",
+    "tbot config": "Sağlayıcı/model yapılandırması",
+    "tbot providers": "Sağlayıcı listesi",
+    "tbot sessions": "Kaydedilmiş oturumlar",
+    "tbot doctor": "Ortam ve yapılandırma durumu",
+    "--provider / -p": "Sağlayıcı seçimi",
+    "--model / -m": "Model seçimi",
+    "--workspace / -w": "Çalışma dizini",
+    "--resume / -r": "Oturum kimliği ile devam",
+    "--yolo": "Bu oturumda araç onaylarını otomatik ver",
+    "--help / -h": "Yardım",
+    "--version / -v": "Sürüm"
+  },
+  "tui": {
+    "/help": "Komutları göster",
+    "/config /provider /model": "Seçim menüsü",
+    "/auth": "Geçerli sağlayıcının anahtarını değiştir; başarısız istek otomatik tekrarlanmaz",
+    "/yolo [on|off]": "Oturumluk otomatik onay; varsayılan kapalı. Argümansız menü açar.",
+    "/clear": "Konuşma ve bekleyen planı temizler",
+    "/sessions": "Geçerli kimliği gösterir; liste için tbot sessions",
+    "/resume": "CLI ile devam için yönlendirir",
+    "/exit /quit": "Çıkış",
+    "/goal <hedef>": "Hedef oluşturur ve sınırlı çalıştırır",
+    "/goal status|run|pause|resume|complete|cancel": "Durum, çalıştırma, duraklatma, devam, açık tamamlama veya iptal; /goal done complete eşanlamlısı",
+    "/plan <istek>": "Araç kullanmadan plan oluşturur",
+    "/plan apply": "Mevcut uygulama oturumunda bellekte bekleyen planı açıkça uygular; normal araç onayları geçerlidir",
+    "/subagents [istek]": "Alt ajan modeli seçer; istek varsa araştırma başlatır. Argümansız açıkken tut/değiştir/kapat menüsü.",
+    "/mcp": "Vercel ve Supabase MCP bağlantılarını yapılandırır veya yerel kaydı kaldırır; tokenı sağlayıcıda iptal etmez."
+  },
+  "subagents": "En fazla 3 bağımsız salt okunur araştırma; aynı anda en fazla 2. Her araştırmada en fazla 6 tur ve 12 araç çağrısı. Ana ajan araştırmaları değerlendirip işi yapar.",
+  "controls": "Menüde yukarı/aşağı seçer, Enter onaylar, Esc iptal eder. Ctrl+C çalışan işlemi iptal eder; boşta çıkış yapar. Satır sonundaki ters eğik çizgi çok satırlı giriş sağlar. TUI araç onayı y/yes ile verilir. TBOT_NO_ANIMATION tanımlandığında logo animasyonu kapatılır.",
+  "security_privacy": {
+    "approval": "Değişiklik yapabilen belirli araç işlemleri varsayılan onay ister; --yolo veya /yolo on bunları oturumda otomatik onaylar. Kabuk kullanıcı yetkileriyle çalışma alanı dışına erişebilir.",
+    "key": "Kaydedilmiş sağlayıcı anahtarı > sağlayıcıya özgü ortam değişkeni > TBOT_API_KEY. Windows yeni kayıtları kullanıcıya bağlı DPAPI ile şifreler; dizin güvenliği veya şifreleme başarısızsa kayıt hata verir, düz metne geri düşmez. Diğer platformlarda yeni anahtarlar erişimi kısıtlı dosyada şifrelenmeden saklanır; uygulama uyarı verir. Eski file biçimindeki kayıtlar okunabilir.",
+    "storage": "Ayarlar ve oturumlar %APPDATA%/TBot veya APPDATA yoksa ~/.config/TBot; hedef çalışma alanında .tbot/goal.json.",
+    "network": "Konuşma ve ilgili araç sonuçları seçilen model sağlayıcısına gönderilebilir; dosya içeriği ve komut çıktısı dahil olabilir. Tarayıcı ve bilgisayar aracı ekran görüntülerinin doğrulanmış piksel içerikleri de model isteğine eklenebilir; ekrandaki hassas bilgiler sağlayıcıya ulaşabilir. Görüntü ekleri oturum dosyasına kaydedilmez, ancak ekran görüntüsü dosyaları çalışma alanında kalabilir. Yerel Ollama/LM Studio için çalışan yerel sunucu ve model gerekir; araçlar ayrıca ağa erişebilir.",
+    "401": "/auth ile yeni anahtar girin ve sağlayıcı hesabının erişimini kontrol edin."
+  },
+  "capabilities_limits": {
+    "tools": "Dosya, kabuk, Git status/diff/log, izole tarayıcı ve Windows masaüstü araçları.",
+    "browser": "playwright-core paketli; uyumlu kurulu Chrome/Chromium gerekir.",
+    "computer": "Yalnızca etkileşimli Windows masaüstü, PowerShell gerekir.",
+    "providers": "Gemini, OpenAI, Anthropic, OpenRouter, Groq, Together, DeepSeek, xAI, Mistral, Fireworks, Cerebras, Ollama, LM Studio ve özel OpenAI uyumlu kod yolu. Model keşfi ve yetenekler sağlayıcı ve erişime bağlıdır; tüm modeller için uyumluluk garanti edilmez."
+  },
+  "claims_to_avoid": [
+    "Ölçülmemiş KPI, ROI, token tasarrufu veya performans yüzdesi",
+    "Tüm sağlayıcı ve modellerin tam uyumlu olduğu",
+    "Güvenlik taraması tamamlandı iddiası",
+    "Uygulamanın tamamen çevrimdışı olduğu",
+    "Gerçek uygulama ekran görüntüsü olmayan çizimleri gerçek olarak sunmak"
+  ],
+  "sources": [
+    "package.json",
+    "src/cli.ts",
+    "src/app.ts",
+    "src/workflows.ts",
+    "src/subagents.ts",
+    "src/tui.ts",
+    "src/menu.ts",
+    "src/config.ts",
+    "src/secrets.ts",
+    "src/providers.ts",
+    "src/tools/index.ts",
+    "docs/install.md",
+    "src/mcp.ts",
+    "src/mcp-config.ts",
+    "src/mcp-presets.ts",
+    "src/mcp-local-vercel.ts"
+  ],
+  "mcp": {
+    "vercel": "T Bot yerel Vercel REST/MCP adaptörü; list_projects, get_project, list_deployments ile sınırlı salt okunur. Vercel API tokenı ve yetkiler kullanıcı tarafından sağlanır.",
+    "supabase": "Resmi uzak Supabase MCP; kullanıcı PAT ve erişim yetkilerini sağlar. Salt okunur veya kullanıcı seçimiyle sağlayıcı yetkileri kapsamında yazma modu.",
+    "approval": "Her MCP araç çağrısında onay gerekir; oturumda YOLO açıkken onaylar otomatik verilir. Alt ajanların salt okunur araç izin listesi MCP araçlarını içermez.",
+    "tokens": "Kayıtlı token, ilgili ortam değişkeninden (VERCEL_TOKEN veya SUPABASE_ACCESS_TOKEN) önceliklidir; anahtarla aynı saklama mekanizması kullanılır.",
+    "verification": "Gerçek servis entegrasyonu bu görevde test edilmedi."
+  }
+}

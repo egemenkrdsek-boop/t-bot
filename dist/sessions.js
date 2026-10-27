@@ -5,6 +5,17 @@ const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
+function isProcessAlive(pid) {
+    if (!pid || isNaN(pid) || pid <= 0)
+        return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return error.code === 'EPERM';
+    }
+}
 /** Redact common credentials before persistence. This cannot recognize every possible secret. */
 function redactString(value) {
     return value
@@ -55,11 +66,33 @@ export class SessionStore {
         for (let attempt = 0; attempt < 50; attempt++) {
             try {
                 handle = await fs.open(lock, 'wx', 0o600);
+                await handle.writeFile(String(process.pid));
                 break;
             }
             catch (error) {
                 if (error.code !== 'EEXIST')
                     throw error;
+                let stale = false;
+                try {
+                    const stats = await fs.stat(lock);
+                    if (Date.now() - stats.mtimeMs > 30_000) {
+                        stale = true;
+                    }
+                    else {
+                        const content = await fs.readFile(lock, 'utf8').catch(() => '');
+                        const pid = parseInt(content.trim(), 10);
+                        if (!pid || !isProcessAlive(pid)) {
+                            stale = true;
+                        }
+                    }
+                }
+                catch {
+                    stale = true;
+                }
+                if (stale) {
+                    await fs.unlink(lock).catch(() => undefined);
+                    continue;
+                }
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
         }
@@ -69,8 +102,12 @@ export class SessionStore {
             return await action();
         }
         finally {
-            await handle.close();
-            await fs.unlink(lock).catch(() => undefined);
+            try {
+                await handle.close();
+            }
+            finally {
+                await fs.unlink(lock).catch(() => undefined);
+            }
         }
     }
     async read(id) {

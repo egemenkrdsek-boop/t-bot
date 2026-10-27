@@ -9,6 +9,7 @@ export async function selectOption(title: string, choices: MenuChoice[]): Promis
   let selected = 0;
   let rendered = 0;
   const clean = (value: string): string => value.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+
   const draw = (): void => {
     if (rendered) process.stdout.write(`\x1b[${rendered}A\x1b[J`);
     const height = Math.max(1, Math.min(choices.length, Math.max(3, (process.stdout.rows || 24) - 6), 12));
@@ -22,26 +23,37 @@ export async function selectOption(title: string, choices: MenuChoice[]): Promis
     process.stdout.write(`${theme.bold(clean(title))}\n${rows.join('\n')}\n${theme.muted(`${footer}↑/↓ select · Enter confirm · Esc cancel`)}\n`);
     rendered = rows.length + 2;
   };
+
   return new Promise(resolve => {
     const stdin = process.stdin;
+    const stdout = process.stdout;
     const previousRaw = stdin.isRaw;
     const wasPaused = stdin.isPaused();
     let pending = '';
     let escapeTimer: ReturnType<typeof setTimeout> | undefined;
     let done = false;
+
+    const onResize = (): void => {
+      if (done) return;
+      draw();
+    };
+    stdout.on('resize', onResize);
+
     const finish = (value?: string): void => {
       if (done) return;
       done = true;
       if (escapeTimer) clearTimeout(escapeTimer);
+      stdout.off('resize', onResize);
       stdin.removeListener('data', onData);
       stdin.removeListener('end', onEnd);
       stdin.removeListener('error', onEnd);
       if (!stdin.destroyed) stdin.setRawMode(Boolean(previousRaw));
       if (wasPaused) stdin.pause();
-      process.stdout.write(`\x1b[${rendered}A\x1b[J`);
-      if (value !== undefined) process.stdout.write(`${theme.muted(clean(title))} ${theme.accent(clean(choices[selected]!.label))}\n`);
+      stdout.write(`\x1b[${rendered}A\x1b[J`);
+      if (value !== undefined) stdout.write(`${theme.muted(clean(title))} ${theme.accent(clean(choices[selected]!.label))}\n`);
       resolve(value);
     };
+
     const onEnd = (): void => finish();
     const onData = (chunk: Buffer | string): void => {
       if (escapeTimer) { clearTimeout(escapeTimer); escapeTimer = undefined; }
@@ -57,6 +69,7 @@ export async function selectOption(title: string, choices: MenuChoice[]): Promis
         if (char === '\r' || char === '\n') { finish(choices[selected]!.value); return; }
       }
     };
+
     stdin.setRawMode(true);
     stdin.on('data', onData);
     stdin.once('end', onEnd);

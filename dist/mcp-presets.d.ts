@@ -19,3 +19,14 @@ export declare const MCP_PRESETS: readonly [{
     readonly endpoint: null;
 }];
 export type McpService = (typeof MCP_PRESETS)[number]['id'];
+export interface McpServerDefinition {
+    id: string;
+    name?: string;
+    label?: string;
+    description?: string;
+    kind?: 'remote' | 'local' | 'stdio';
+    endpoint?: string | null;
+    url?: string | null;
+    command?: string;
+    args?: string[];
+}

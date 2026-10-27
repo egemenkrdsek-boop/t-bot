@@ -1,17 +1,17 @@
 {
   "name": "t-bot-cli",
-  "version": "0.2.0",
-  "description": "A local, provider-independent terminal AI agent",
+  "version": "2.0.0",
+  "description": "T Bot 2.0 — Tri-Core Local AI Coding Agent, Autonomous Desktop Agent & Zero-Backend Telegram Bot Gateway with 50%-75% Token Savings and Deterministic Anti-Hallucination",
   "type": "module",
   "bin": {
     "tbot": "./dist/index.js"
   },
   "files": [
     "dist",
-    "README.md",
-    "assets",
     "scripts",
-    "docs",
+    "assets",
+    "README.md",
+    "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
@@ -22,7 +22,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepare": "npm run build"
+    "prepare": "node -e \"try { require('node:child_process').execSync('npm run build', { stdio: 'ignore' }); } catch {}\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

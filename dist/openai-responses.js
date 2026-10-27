@@ -112,8 +112,18 @@ export function createOpenAIResponsesProvider(config) {
                 yield { type: 'response_items', responseItems };
                 if (calls.length)
                     yield { type: 'tool_calls', calls };
-                if (usage)
-                    yield { type: 'usage', inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined, outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined };
+                if (usage) {
+                    const inputDetails = typeof usage.input_tokens_details === 'object' && usage.input_tokens_details !== null
+                        ? usage.input_tokens_details
+                        : undefined;
+                    const cachedTokens = typeof inputDetails?.cached_tokens === 'number' ? inputDetails.cached_tokens : undefined;
+                    yield {
+                        type: 'usage',
+                        inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
+                        outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
+                        ...(cachedTokens !== undefined ? { cachedTokens } : {})
+                    };
+                }
             }
             catch (error) {
                 yield { type: 'error', error: options.signal?.aborted ? 'Request cancelled.' : signal.aborted ? 'Provider request timed out.' : error instanceof Error && /^(Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Provider request failed or returned invalid data.' };

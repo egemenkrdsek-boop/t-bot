@@ -23,17 +23,25 @@ export async function selectOption(title, choices) {
     };
     return new Promise(resolve => {
         const stdin = process.stdin;
+        const stdout = process.stdout;
         const previousRaw = stdin.isRaw;
         const wasPaused = stdin.isPaused();
         let pending = '';
         let escapeTimer;
         let done = false;
+        const onResize = () => {
+            if (done)
+                return;
+            draw();
+        };
+        stdout.on('resize', onResize);
         const finish = (value) => {
             if (done)
                 return;
             done = true;
             if (escapeTimer)
                 clearTimeout(escapeTimer);
+            stdout.off('resize', onResize);
             stdin.removeListener('data', onData);
             stdin.removeListener('end', onEnd);
             stdin.removeListener('error', onEnd);
@@ -41,9 +49,9 @@ export async function selectOption(title, choices) {
                 stdin.setRawMode(Boolean(previousRaw));
             if (wasPaused)
                 stdin.pause();
-            process.stdout.write(`\x1b[${rendered}A\x1b[J`);
+            stdout.write(`\x1b[${rendered}A\x1b[J`);
             if (value !== undefined)
-                process.stdout.write(`${theme.muted(clean(title))} ${theme.accent(clean(choices[selected].label))}\n`);
+                stdout.write(`${theme.muted(clean(title))} ${theme.accent(clean(choices[selected].label))}\n`);
             resolve(value);
         };
         const onEnd = () => finish();

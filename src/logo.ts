@@ -68,3 +68,46 @@ export function logo(width: number, frame = -1): string[] {
   }
   return lines;
 }
+
+/** Render static logo frame directly to stdout. */
+export function renderLogo(width?: number): void {
+  const logoWidth = width ?? process.stdout.columns ?? 70;
+  const lines = logo(logoWidth, -1);
+  process.stdout.write(`\n${lines.join('\n')}\n`);
+}
+
+/**
+ * Terminal-responsive animated logo.
+ * If terminal rows < 12 or columns < 50, renders static logo directly
+ * to prevent cursor drift/clipping.
+ */
+export async function animateLogo(width?: number, isExiting?: () => boolean): Promise<void> {
+  const cols = width ?? process.stdout.columns ?? 70;
+  const rows = process.stdout.rows ?? 24;
+
+  // Terminal boyutu kontrolü: rows < 12 veya columns < 50 ise imleç kaymasını önlemek için statik bas
+  const skipAnimation =
+    rows < 12 ||
+    cols < 50 ||
+    process.env.TBOT_NO_ANIMATION !== undefined ||
+    process.env.TERM === 'dumb' ||
+    process.env.TBOT_ASCII === '1' ||
+    !unicode;
+
+  if (skipAnimation) {
+    renderLogo(cols);
+    return;
+  }
+
+  // İlk kare
+  process.stdout.write(`\n${logo(cols, 0).join('\n')}\n`);
+
+  // Dalga animasyonu (5 kare)
+  for (let frame = 1; frame <= 5; frame++) {
+    if (isExiting?.()) break;
+    await new Promise<void>(resolve => setTimeout(resolve, 110));
+    if (isExiting?.()) break;
+    // 7 satır yukarı çıkıp yeniden çiz
+    process.stdout.write(`\x1b[7A\r${logo(cols, frame === 5 ? -1 : frame).join('\n')}\n`);
+  }
+}

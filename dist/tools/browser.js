@@ -9,6 +9,25 @@ let launching;
 const tabs = new Map();
 let nextId = 1;
 const snapshots = new WeakMap();
+let idleTimer;
+const BROWSER_IDLE_TIMEOUT_MS = 60_000;
+export function resetIdleTimer() {
+    if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+    }
+    if (context || launching) {
+        idleTimer = setTimeout(() => {
+            void closeBrowser().catch(() => { });
+        }, BROWSER_IDLE_TIMEOUT_MS);
+        idleTimer.unref();
+    }
+}
+export async function closeIdleBrowser() {
+    if (context || launching) {
+        await closeBrowser();
+    }
+}
 const cap = (s, n = 6000) => s.length > n ? s.slice(0, n) + '\n[truncated]' : s;
 const clean = (s) => s.replace(/(password|passwd|token|secret|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
 const str = (value, label) => {
@@ -69,6 +88,10 @@ async function browser() {
             context.on('page', remember);
             const launched = context;
             context.on('close', () => {
+                if (idleTimer) {
+                    clearTimeout(idleTimer);
+                    idleTimer = undefined;
+                }
                 if (context === launched) {
                     context = undefined;
                     tabs.clear();
@@ -79,6 +102,7 @@ async function browser() {
             });
             for (const page of context.pages())
                 remember(page);
+            resetIdleTimer();
             return context;
         }
         catch (error) {
@@ -124,6 +148,10 @@ function displayUrl(raw) {
     }
 }
 export async function closeBrowser() {
+    if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+    }
     if (launching) {
         try {
             await launching;
@@ -171,88 +199,93 @@ async function runBrowserTool(name, args, options) {
         await closeBrowser();
         return 'Browser closed.';
     }
-    if (name === 'browser_new_tab') {
-        const p = await (await browser()).newPage();
-        return JSON.stringify({ tab: remember(p) });
-    }
-    if (name === 'browser_tabs') {
-        await browser();
-        return JSON.stringify(await Promise.all([...tabs].map(async ([id, p]) => ({ id, url: displayUrl(p.url()), title: clean(cap(await p.title(), 300)) }))));
-    }
-    const page = await pageFor(args.tab);
-    if (name === 'browser_close_tab') {
-        await page.close();
-        return 'Tab closed.';
-    }
-    if (name === 'browser_navigate') {
-        await page.goto(safeUrl(str(args.url, 'url')), { waitUntil: 'domcontentloaded', timeout: 20000 });
-        return JSON.stringify({ url: displayUrl(page.url()), title: clean(cap(await page.title(), 300)) });
-    }
-    if (name === 'browser_inspect') {
-        const maxChars = args.maxChars === undefined ? 6000 : args.maxChars;
-        if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 12000)
-            throw new Error('maxChars must be an integer between 1000 and 12000');
-        const previous = [...(snapshots.get(page) ?? [])];
-        snapshots.delete(page);
-        const generation = randomUUID();
-        const data = await page.evaluate(({ previous, generation, maxChars }) => {
-            const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
-            // These temporary attributes are a low-risk inspection aid, not a page action.
-            for (const selector of previous)
-                document.querySelector(selector)?.removeAttribute('data-tbot-ref');
-            const elements = [];
-            let text = '';
-            const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
-            let node;
-            let visited = 0;
-            const textLimit = Math.min(6000, Math.floor(maxChars / 2));
-            while ((node = walker.nextNode()) && visited++ < 2500) {
-                if (node.nodeType === Node.TEXT_NODE && text.length < textLimit && node.parentElement && visible(node.parentElement) && !node.parentElement.closest('script,style,textarea,select,[contenteditable="true"]'))
-                    text += ' ' + (node.textContent || '').slice(0, textLimit - text.length);
-                if (node.nodeType === Node.ELEMENT_NODE && elements.length < 50) {
-                    const el = node;
-                    if (el.matches('a,button,input,textarea,select,[role="button"],[role="link"],[role="textbox"]') && visible(el))
-                        elements.push(el);
-                }
-            }
-            const items = elements.map((el, index) => {
-                const element = el;
-                const ref = `${generation}-${index + 1}`;
-                element.setAttribute('data-tbot-ref', ref);
-                const input = element;
-                const sensitive = /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([input.type, input.name, input.id, input.autocomplete, element.getAttribute('aria-label')].join(' '));
-                return { selector: `[data-tbot-ref="${ref}"]`, tag: element.tagName.toLowerCase(), role: element.getAttribute('role'), label: sensitive ? '[sensitive field]' : (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.textContent?.slice(0, 200) || '').trim().slice(0, 200), type: input.type || undefined };
-            });
-            return { text, items };
-        }, { previous, generation, maxChars });
-        snapshots.set(page, new Set(data.items.map((item) => item.selector)));
-        return cap(JSON.stringify({ url: displayUrl(page.url()), title: clean(await page.title()), text: data.text, elements: data.items }, (_k, v) => typeof v === 'string' ? clean(v) : v), maxChars);
-    }
-    if (name === 'browser_click' || name === 'browser_fill') {
-        const selector = str(args.selector, 'selector');
-        if (selector.includes('data-tbot-ref') && !snapshots.get(page)?.has(selector))
-            throw new Error('Stale browser reference; inspect the page again');
-        const locator = page.locator(selector);
-        if (await locator.count() !== 1)
-            throw new Error('Selector must match exactly one element; inspect the page again');
-        if (name === 'browser_click') {
-            await locator.click();
-            return 'Clicked.';
+    try {
+        if (name === 'browser_new_tab') {
+            const p = await (await browser()).newPage();
+            return JSON.stringify({ tab: remember(p) });
         }
-        const value = typeof args.value === 'string' ? args.value : (() => { throw new Error('value must be a string'); })();
-        const sensitive = await locator.evaluate((el) => { const e = el; return /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([e.type, e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.getAttribute('placeholder')].join(' ')); });
-        if (sensitive)
-            throw new Error('Filling sensitive fields is not allowed');
-        await locator.fill(value);
-        return 'Filled.';
+        if (name === 'browser_tabs') {
+            await browser();
+            return JSON.stringify(await Promise.all([...tabs].map(async ([id, p]) => ({ id, url: displayUrl(p.url()), title: clean(cap(await p.title(), 300)) }))));
+        }
+        const page = await pageFor(args.tab);
+        if (name === 'browser_close_tab') {
+            await page.close();
+            return 'Tab closed.';
+        }
+        if (name === 'browser_navigate') {
+            await page.goto(safeUrl(str(args.url, 'url')), { waitUntil: 'domcontentloaded', timeout: 20000 });
+            return JSON.stringify({ url: displayUrl(page.url()), title: clean(cap(await page.title(), 300)) });
+        }
+        if (name === 'browser_inspect') {
+            const maxChars = args.maxChars === undefined ? 6000 : args.maxChars;
+            if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 12000)
+                throw new Error('maxChars must be an integer between 1000 and 12000');
+            const previous = [...(snapshots.get(page) ?? [])];
+            snapshots.delete(page);
+            const generation = randomUUID();
+            const data = await page.evaluate(({ previous, generation, maxChars }) => {
+                const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+                // These temporary attributes are a low-risk inspection aid, not a page action.
+                for (const selector of previous)
+                    document.querySelector(selector)?.removeAttribute('data-tbot-ref');
+                const elements = [];
+                let text = '';
+                const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+                let node;
+                let visited = 0;
+                const textLimit = Math.min(6000, Math.floor(maxChars / 2));
+                while ((node = walker.nextNode()) && visited++ < 2500) {
+                    if (node.nodeType === Node.TEXT_NODE && text.length < textLimit && node.parentElement && visible(node.parentElement) && !node.parentElement.closest('script,style,textarea,select,[contenteditable="true"]'))
+                        text += ' ' + (node.textContent || '').slice(0, textLimit - text.length);
+                    if (node.nodeType === Node.ELEMENT_NODE && elements.length < 50) {
+                        const el = node;
+                        if (el.matches('a,button,input,textarea,select,[role="button"],[role="link"],[role="textbox"]') && visible(el))
+                            elements.push(el);
+                    }
+                }
+                const items = elements.map((el, index) => {
+                    const element = el;
+                    const ref = `${generation}-${index + 1}`;
+                    element.setAttribute('data-tbot-ref', ref);
+                    const input = element;
+                    const sensitive = /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([input.type, input.name, input.id, input.autocomplete, element.getAttribute('aria-label')].join(' '));
+                    return { selector: `[data-tbot-ref="${ref}"]`, tag: element.tagName.toLowerCase(), role: element.getAttribute('role'), label: sensitive ? '[sensitive field]' : (element.getAttribute('aria-label') || element.getAttribute('placeholder') || element.textContent?.slice(0, 200) || '').trim().slice(0, 200), type: input.type || undefined };
+                });
+                return { text, items };
+            }, { previous, generation, maxChars });
+            snapshots.set(page, new Set(data.items.map((item) => item.selector)));
+            return cap(JSON.stringify({ url: displayUrl(page.url()), title: clean(await page.title()), text: data.text, elements: data.items }, (_k, v) => typeof v === 'string' ? clean(v) : v), maxChars);
+        }
+        if (name === 'browser_click' || name === 'browser_fill') {
+            const selector = str(args.selector, 'selector');
+            if (selector.includes('data-tbot-ref') && !snapshots.get(page)?.has(selector))
+                throw new Error('Stale browser reference; inspect the page again');
+            const locator = page.locator(selector);
+            if (await locator.count() !== 1)
+                throw new Error('Selector must match exactly one element; inspect the page again');
+            if (name === 'browser_click') {
+                await locator.click();
+                return 'Clicked.';
+            }
+            const value = typeof args.value === 'string' ? args.value : (() => { throw new Error('value must be a string'); })();
+            const sensitive = await locator.evaluate((el) => { const e = el; return /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([e.type, e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.getAttribute('placeholder')].join(' ')); });
+            if (sensitive)
+                throw new Error('Filling sensitive fields is not allowed');
+            await locator.fill(value);
+            return 'Filled.';
+        }
+        if (name === 'browser_screenshot') {
+            const dir = join(options.workspace, '.tbot', 'screenshots');
+            await mkdir(dir, { recursive: true });
+            const path = join(dir, `browser-${Date.now()}.png`);
+            await page.screenshot({ path, mask: [page.locator('input, textarea, select, [contenteditable="true"]')], timeout: 10000 });
+            return `Screenshot saved: ${path}`;
+        }
+        throw new Error(`Unknown browser tool: ${name}`);
     }
-    if (name === 'browser_screenshot') {
-        const dir = join(options.workspace, '.tbot', 'screenshots');
-        await mkdir(dir, { recursive: true });
-        const path = join(dir, `browser-${Date.now()}.png`);
-        await page.screenshot({ path, mask: [page.locator('input, textarea, select, [contenteditable="true"]')], timeout: 10000 });
-        return `Screenshot saved: ${path}`;
+    finally {
+        resetIdleTimer();
     }
-    throw new Error(`Unknown browser tool: ${name}`);
 }
 //# sourceMappingURL=browser.js.map
