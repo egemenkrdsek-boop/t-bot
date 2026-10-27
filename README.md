@@ -16,9 +16,9 @@ Kurulum, `prepare` aşamasında projeyi derler. Global kurulumdan sonra `tbot` k
 
 ## Sağlayıcı ayarları
 
-Etkileşimli terminalde `tbot config` çalıştırın; sağlayıcı kimliği, model, isteğe bağlı API adresi ve anahtar saklama seçeneklerini girin. Kullanılabilir kimlikler `tbot providers` ile listelenir: OpenAI, OpenRouter, Groq, Together, DeepSeek, xAI, Mistral, Fireworks, Cerebras, Anthropic, Gemini, Ollama, LM Studio ve özel OpenAI uyumlu uç nokta. Varsayılan OpenAI ve `gpt-4o-mini` modelidir; seçilen sağlayıcıda erişiminiz olan bir model belirtin.
+Etkileşimli terminalde `tbot config` çalıştırın; sağlayıcı kimliği, model, isteğe bağlı API adresi ve anahtar saklama seçeneklerini girin. Öncelikli sağlayıcılar Google Gemini (`gemini`), OpenAI (`openai`), Anthropic (`anthropic`) ve OpenRouter (`openrouter`) olarak listelenir. Diğer seçenekler dahil tüm sağlayıcıları `tbot providers` gösterir. Varsayılan OpenAI ve `gpt-4o-mini` modelidir. Model kimliğini serbestçe girebilirsiniz; erişim ve özellik desteği seçtiğiniz sağlayıcıya ve modele bağlıdır.
 
-Anahtar, sağlayıcıya özgü ortam değişkeniyle (örneğin `OPENAI_API_KEY`) veya genel `TBOT_API_KEY` ile de sağlanabilir; sağlayıcıya özgü değişken önceliklidir. Windows'ta kaydedilen anahtarlar mümkün olduğunda kullanıcıya bağlı DPAPI ile şifrelenir. Şifreleme kullanılamazsa ve diğer platformlarda anahtar erişimi kısıtlanmış bir dosyada şifrelenmeden saklanır; uygulama bu durumu bildirir.
+Kaydedilen API anahtarları sağlayıcı kimliğine göre ayrı tutulur. `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` ve `OPENROUTER_API_KEY` ortam değişkenleri de kullanılabilir; bunlar kaydedilen anahtardan önceliklidir. Genel `TBOT_API_KEY`, sağlayıcıya özgü ortam değişkeni yoksa tüm sağlayıcılar için ortak yedek anahtardır ve kayıtlı anahtardan önce gelir. Windows'ta kaydedilen anahtarlar mümkün olduğunda kullanıcıya bağlı DPAPI ile şifrelenir. Şifreleme kullanılamazsa ve diğer platformlarda anahtar erişimi kısıtlanmış bir dosyada şifrelenmeden saklanır; uygulama bu durumu bildirir.
 
 Ollama ve LM Studio seçenekleri yerel çalışan bir sunucu ve yüklenmiş model gerektirir. Çevrimdışı model kullanımı için bunları yerel uç noktaya yönlendirin; T Bot tek başına bir model içermez. Özel uç noktalar HTTPS veya localhost üzerinde HTTP kullanmalıdır.
 

@@ -21,3 +21,5 @@ Git üzerinden kurulumda `prepare` yaşam döngüsü derlemeyi çalıştırır.
 Global kurulum, derlenmiş `dist` dosyalarını ve masaüstü aracı için `scripts` dizinini içerir. Kurulumdan sonra `tbot` komutu kullanılabilir. Komut bulunamazsa npm global çalıştırılabilir dosya dizininin PATH içinde olduğunu kontrol edin (`npm prefix -g`).
 
 Güncellemek için depo klasöründe güncel değişiklikleri alın, ardından `npm ci`, `npm run build` ve `npm install --global .` adımlarını yeniden çalıştırın. Uygulama ayarları ve oturumları kullanıcı veri dizininde tutulur; bunları veya `.env` dosyalarını depoya eklemeyin.
+
+Sağlayıcıyı `tbot config` ile seçin. Google Gemini (`gemini`), OpenAI (`openai`), Anthropic (`anthropic`) ve OpenRouter (`openrouter`) listenin başındadır; diğer seçenekler `tbot providers` ile görülebilir. Model kimliği serbest girilir ve her sağlayıcının kaydedilen API anahtarı ayrıdır.

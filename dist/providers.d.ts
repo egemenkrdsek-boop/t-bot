@@ -7,9 +7,19 @@ export interface ProviderConfig {
     timeoutMs?: number;
 }
 export declare const PROVIDER_CATALOG: readonly [{
+    readonly id: "gemini";
+    readonly label: "Gemini";
+    readonly baseUrl: "https://generativelanguage.googleapis.com/v1beta";
+    readonly requiresApiKey: true;
+}, {
     readonly id: "openai";
     readonly label: "OpenAI";
     readonly baseUrl: "https://api.openai.com/v1";
+    readonly requiresApiKey: true;
+}, {
+    readonly id: "anthropic";
+    readonly label: "Anthropic";
+    readonly baseUrl: "https://api.anthropic.com/v1";
     readonly requiresApiKey: true;
 }, {
     readonly id: "openrouter";
@@ -66,15 +76,5 @@ export declare const PROVIDER_CATALOG: readonly [{
     readonly label: "Custom OpenAI compatible";
     readonly baseUrl: "";
     readonly requiresApiKey: false;
-}, {
-    readonly id: "anthropic";
-    readonly label: "Anthropic";
-    readonly baseUrl: "https://api.anthropic.com/v1";
-    readonly requiresApiKey: true;
-}, {
-    readonly id: "gemini";
-    readonly label: "Gemini";
-    readonly baseUrl: "https://generativelanguage.googleapis.com/v1beta";
-    readonly requiresApiKey: true;
 }];
 export declare function createProvider(config: ProviderConfig): Provider;

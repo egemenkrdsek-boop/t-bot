@@ -2,7 +2,9 @@ import type { Message, Provider, ProviderEvent, ToolCall, ToolDefinition } from 
 
 export interface ProviderConfig { id: string; model: string; baseUrl?: string; apiKey?: string; timeoutMs?: number; }
 export const PROVIDER_CATALOG = [
+  { id: 'gemini', label: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', requiresApiKey: true },
   { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', requiresApiKey: true },
+  { id: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', requiresApiKey: true },
   { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', requiresApiKey: true },
   { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', requiresApiKey: true },
   { id: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', requiresApiKey: true },
@@ -14,8 +16,6 @@ export const PROVIDER_CATALOG = [
   { id: 'ollama', label: 'Ollama', baseUrl: 'http://localhost:11434/v1', requiresApiKey: false },
   { id: 'lmstudio', label: 'LM Studio', baseUrl: 'http://localhost:1234/v1', requiresApiKey: false },
   { id: 'custom', label: 'Custom OpenAI compatible', baseUrl: '', requiresApiKey: false },
-  { id: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', requiresApiKey: true },
-  { id: 'gemini', label: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', requiresApiKey: true },
 ] as const;
 
 type Obj = Record<string, any>;
