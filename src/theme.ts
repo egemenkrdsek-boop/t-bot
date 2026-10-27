@@ -1,52 +1,52 @@
 /**
- * Göz Yormayan Siber-Zen & Kristal-Buz ANSI Paleti
- * Terminal Arka Planında Parlak Açık Vurgular ve Dengeli Mat Tonlar
+ * Göz Yormayan Açık Tabit (tabit.webp) & Siber-Zen ANSI Paleti
+ * Terminal Arka Planında Parlak Açık Tabit Yeşili, Açık Yaprak/Nane Yeşili ve Saf Beyaz Tonlar
  */
 const color = Boolean(process.stdout.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb');
 export const paint = (code: string) => (value: string): string => (color ? `\x1b[${code}m${value}\x1b[0m` : value);
 
 export const theme = {
-  // Yumuşak Zümrüt / Mint (#38D9A9)
-  brand: paint('1;38;2;56;217;169'),
-  accent: paint('38;2;56;217;169'),
+  // Parlak Açık Tabit Yeşili (#94D82D - tabit.webp açık ana marka yeşili)
+  brand: paint('1;38;2;148;216;45'),
+  accent: paint('38;2;148;216;45'),
 
-  // Açık Parlak Kristal Tonlar (Crystal-Ice & Bright-Mint)
-  iceWhite: paint('1;38;2;248;250;252'),
-  brightMint: paint('1;38;2;99;230;190'),
-  crystalCyan: paint('38;2;165;243;252'),
-  softLavender: paint('38;2;192;132;252'),
+  // Açık Parlak Tabit Tonları (Saf Beyaz, Parlak Filiz Yeşili, Açık Yaprak & Nane Yeşili)
+  iceWhite: paint('1;38;2;250;253;248'),
+  brightMint: paint('1;38;2;160;228;90'),
+  crystalCyan: paint('38;2;184;236;130'),
+  softLavender: paint('38;2;204;242;158'),
 
-  // Yumuşak Kehribar (#F59F00)
-  amber: paint('38;2;245;159;0'),
-  warning: paint('38;2;245;159;0'),
+  // Açık Sıcak Kehribar (#FCC419)
+  amber: paint('38;2;252;196;25'),
+  warning: paint('38;2;252;196;25'),
 
-  // Mat Adaçayı (#2B8A66)
-  forest: paint('38;2;43;138;102'),
+  // Tabit Orijinal Yaprak Yeşili (#78B82A - tabit.webp temel yeşili)
+  forest: paint('38;2;120;184;42'),
 
-  // Yumuşak Arduvaz (#8696A7)
-  muted: paint('38;2;134;150;167'),
+  // Açık Adaçayı Grisi (#A3B89E)
+  muted: paint('38;2;163;184;158'),
 
-  // Göz Yormayan Yumuşak Kırık Beyaz (#DAE4EB)
-  text: paint('38;2;218;228;235'),
+  // Göz Yormayan Ferah Kırık Beyaz (#EEF5EB)
+  text: paint('38;2;238;245;235'),
 
-  // Yumuşak Mercan Kırmızı (#FA5252)
-  danger: paint('38;2;250;82;82'),
-  error: paint('38;2;250;82;82'),
+  // Yumuşak Mercan Kırmızı (#FF6B6B)
+  danger: paint('38;2;255;107;107'),
+  error: paint('38;2;255;107;107'),
 
-  // Çelik Çerçeve (#495867)
-  panel: paint('38;2;73;88;103'),
+  // Yumuşak Yaprak Çerçeve (#5F735A)
+  panel: paint('38;2;95;115;90'),
 
-  // Buz Mavisi Rozet (#74C0FC)
-  badge: paint('1;38;2;116;192;252'),
+  // Parlak Açık Yeşil Rozet (#A9E34B)
+  badge: paint('1;38;2;169;227;75'),
 
-  // Sakin Camgöbeği (#66D9E8)
-  cyan: paint('38;2;102;217;232'),
+  // Ferah Açık Nane / Filiz Yeşili (#8CE99A)
+  cyan: paint('38;2;140;233;154'),
 
-  // Yumuşak Yeşil (#51CF66)
-  success: paint('38;2;81;207;102'),
+  // Canlı Açık Tabit Yeşili (#82C91E)
+  success: paint('38;2;130;201;30'),
 
-  // Soluk Arduvaz (#5C6B7A)
-  dim: paint('38;2;92;107;122'),
+  // Sakin Zeytin / Adaçayı Grisi (#74886E)
+  dim: paint('38;2;116;136;110'),
 
   // Kalın Yazı
   bold: paint('1'),

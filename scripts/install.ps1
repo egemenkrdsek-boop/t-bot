@@ -12,15 +12,15 @@ $ErrorActionPreference = 'Stop'
 function Show-Header {
     Write-Host ""
     Write-Host "    ████████╗    ██████╗  ██████╗ ████████╗" -ForegroundColor White
-    Write-Host "    ╚══██╔══╝    ██╔══██╗██╔═══██╗╚══██╔══╝" -ForegroundColor Cyan
-    Write-Host "       ██║       ██████╔╝██║   ██║   ██║   " -ForegroundColor Cyan
+    Write-Host "    ╚══██╔══╝    ██╔══██╗██╔═══██╗╚══██╔══╝" -ForegroundColor Green
+    Write-Host "       ██║       ██████╔╝██║   ██║   ██║   " -ForegroundColor Green
     Write-Host "       ██║       ██╔══██╗██║   ██║   ██║   " -ForegroundColor White
-    Write-Host "       ██║       ██████╔╝╚██████╔╝   ██║   " -ForegroundColor Cyan
+    Write-Host "       ██║       ██████╔╝╚██████╔╝   ██║   " -ForegroundColor Green
     Write-Host "       ╚═╝       ╚═════╝  ╚═════╝    ╚═╝   " -ForegroundColor White
     Write-Host ""
-    Write-Host "  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Crystal-Ice Edition)" -ForegroundColor White
-    Write-Host "  https://github.com/egemenkrdsek-boop/t-bot" -ForegroundColor Cyan
-    Write-Host "  ──────────────────────────────────────────────────────────────────────────────" -ForegroundColor Cyan
+    Write-Host "  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Tabit Edition)" -ForegroundColor White
+    Write-Host "  https://github.com/egemenkrdsek-boop/t-bot" -ForegroundColor Green
+    Write-Host "  ──────────────────────────────────────────────────────────────────────────────" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -43,7 +43,7 @@ Show-Header
 # ------------------------------------------------------------------------------
 # Adım 1: Sistem Gereksinimleri Kontrolü (Node.js >= 20.3, npm, git)
 # ------------------------------------------------------------------------------
-Write-Host "[1/3] Sistem gereksinimleri kontrol ediliyor..." -ForegroundColor Cyan
+Write-Host "[1/3] Sistem gereksinimleri kontrol ediliyor..." -ForegroundColor Green
 
 # Node.js Kontrolü
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
@@ -94,7 +94,7 @@ Write-Host ""
 # ------------------------------------------------------------------------------
 # Adım 2: T Bot 2.0 Global Kurulumu
 # ------------------------------------------------------------------------------
-Write-Host "[2/3] T Bot 2.0 paketi kuruluyor..." -ForegroundColor Cyan
+Write-Host "[2/3] T Bot 2.0 paketi kuruluyor..." -ForegroundColor Green
 
 $repoUrl = "git+https://github.com/egemenkrdsek-boop/t-bot.git"
 $isLocalRepo = $false
@@ -130,7 +130,7 @@ Write-Host ""
 # ------------------------------------------------------------------------------
 # Adım 3: Doğrulama (tbot --help) ve Kalıcı PATH Senkronizasyonu
 # ------------------------------------------------------------------------------
-Write-Host "[3/3] Kurulum doğrulanıyor ve PATH yapılandırılıyor..." -ForegroundColor Cyan
+Write-Host "[3/3] Kurulum doğrulanıyor ve PATH yapılandırılıyor..." -ForegroundColor Green
 
 try {
     $npmPrefix = (npm prefix -g).Trim()
@@ -182,15 +182,15 @@ if ($tbotCmd) {
 }
 
 Write-Host ""
-Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Green
 Write-Host "[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için terminale 'tbot' yazın." -ForegroundColor White
-Write-Host "========================================================================" -ForegroundColor Cyan
+Write-Host "========================================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Hızlı Başlangıç İpuçları:" -ForegroundColor White
-Write-Host "    tbot                  Etkileşimli Crystal-Ice Cyber-Zen TUI oturumu başlatır" -ForegroundColor Cyan
-Write-Host "    tbot config           Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla" -ForegroundColor Cyan
-Write-Host "    tbot doctor           Ortam ve sistem sağlığını denetle" -ForegroundColor Cyan
-Write-Host "    tbot --bot            Sıfır-Backend Telegram Bot ağ geçidini başlat" -ForegroundColor Cyan
-Write-Host "    tbot --ultracode      4-Aşamalı Öz-Onarımlı otonom kodlama modunu aç" -ForegroundColor Cyan
-Write-Host "    tbot --help           Tüm komutları ve bayrakları listele" -ForegroundColor Cyan
+Write-Host "    tbot                  Etkileşimli Tabit Cyber-Zen TUI oturumu başlatır" -ForegroundColor Green
+Write-Host "    tbot config           Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla" -ForegroundColor Green
+Write-Host "    tbot doctor           Ortam ve sistem sağlığını denetle" -ForegroundColor Green
+Write-Host "    tbot --bot            Sıfır-Backend Telegram Bot ağ geçidini başlat" -ForegroundColor Green
+Write-Host "    tbot --ultracode      4-Aşamalı Öz-Onarımlı otonom kodlama modunu aç" -ForegroundColor Green
+Write-Host "    tbot --help           Tüm komutları ve bayrakları listele" -ForegroundColor Green
 Write-Host ""

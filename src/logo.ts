@@ -1,7 +1,8 @@
 import { theme, unicode } from './theme.js';
 
-// Sol rozet (14x14 matris): W = Saf Parlak Kristal Beyaz (#FFFFFF) T sembolü,
-// G = Parlak Kristal Mint & Buz Camgöbeği (#63E6BE -> #A5F3FC) açık gradyan zemin.
+// Sol rozet (14x14 matris - assets/tabit.webp sol ikonundan örneklenmiştir):
+// W = Saf Parlak Tabit Beyazı (#FFFFFF) T sembolü,
+// G = Açık ve Parlak Tabit Yeşili (#84CC32 -> #B8EC6E) diyagonal gradyan zemin.
 const mark = [
   'GGGGGGGGGGGGG.',
   'GGGGGGGGGGGGGG',
@@ -42,8 +43,8 @@ function lerp(a: number, b: number, t: number): number {
 }
 
 /**
- * Rozet (mark) pikselleri için parlak açık Kristal Mint (#63E6BE) -> Buz Camgöbeği (#A5F3FC)
- * diyagonal gradyanı ve Saf Parlak Kristal Beyaz (#FFFFFF) T sembolü rengi üretir.
+ * Rozet (mark) pikselleri için tabit.webp'nin açık ve parlak Tabit yeşili (#84CC32 -> #B8EC6E)
+ * diyagonal gradyanı ve Saf Parlak Beyaz (#FFFFFF) T sembolü rengi üretir.
  */
 function markPixelColor(
   pixel: string,
@@ -61,30 +62,30 @@ function markPixelColor(
     if (pixel === 'W') {
       return background ? '48;2;255;255;255' : '1;38;2;255;255;255';
     }
-    // G pikselleri: #63E6BE (99, 230, 190) -> #A5F3FC (165, 243, 252) diyagonal açık gradyan
+    // G pikselleri: tabit.webp'nin açık ve parlak yeşili (#84CC32: 132,204,50 -> #B8EC6E: 184,236,110)
     if (highlight) {
-      return `${prefix};2;236;254;255`;
+      return `${prefix};2;226;250;170`;
     }
     const diag = (x + y) / 26;
-    const r = lerp(99, 165, diag);
-    const g = lerp(230, 243, diag);
-    const b = lerp(190, 252, diag);
+    const r = lerp(132, 184, diag);
+    const g = lerp(204, 236, diag);
+    const b = lerp(50, 110, diag);
     return `${prefix};2;${r};${g};${b}`;
   }
 
   if (color256) {
     if (pixel === 'W') return `${prefix};5;231`;
-    return `${prefix};5;${highlight ? '195' : '122'}`;
+    return `${prefix};5;${highlight ? '192' : '149'}`;
   }
 
   return background
-    ? (pixel === 'G' ? (highlight ? '106' : '102') : '107')
-    : (pixel === 'G' ? (highlight ? '96' : '92') : '97');
+    ? (pixel === 'G' ? '102' : '107')
+    : (pixel === 'G' ? '92' : '97');
 }
 
 /**
- * "T BOT" (word) pikselleri için Saf Parlak Beyaz (#FFFFFF) -> Açık Buz Mavisi (#E0F2FE -> #A5F3FC)
- * parlak açık tonlu gradyan rengi üretir.
+ * "T BOT" (word) pikselleri için tabit.webp'deki Saf Parlak Beyaz (#FFFFFF) ->
+ * Açık Filiz/Nane Yeşili Beyazı (#F4FCE8 -> #C8F096) parlak açık tonlu gradyan rengi üretir.
  */
 function wordPixelColor(
   x: number,
@@ -101,23 +102,23 @@ function wordPixelColor(
     const t = Math.max(0, Math.min(1, (x / Math.max(1, totalWidth)) * 0.65 + (y / 14) * 0.35));
     if (t <= 0.5) {
       const localT = t * 2;
-      const r = lerp(255, 224, localT);
-      const g = lerp(255, 242, localT);
-      const b = lerp(255, 254, localT);
+      const r = lerp(255, 244, localT);
+      const g = lerp(255, 252, localT);
+      const b = lerp(255, 232, localT);
       return `1;38;2;${r};${g};${b}`;
     }
     const localT = (t - 0.5) * 2;
-    const r = lerp(224, 165, localT);
-    const g = lerp(242, 243, localT);
-    const b = lerp(254, 252, localT);
+    const r = lerp(244, 200, localT);
+    const g = lerp(252, 240, localT);
+    const b = lerp(232, 150, localT);
     return `1;38;2;${r};${g};${b}`;
   }
 
   if (color256) {
-    return `1;38;5;${highlight ? '231' : '195'}`;
+    return `1;38;5;${highlight ? '231' : '192'}`;
   }
 
-  return highlight ? '1;97' : '1;96';
+  return highlight ? '1;97' : '1;92';
 }
 
 /** Terminal hücresi başına iki dikey sub-pixel çizer; düz metin yedeği içerir. */
@@ -129,13 +130,13 @@ export function logo(width: number, frame = -1): string[] {
   const color256 = /256color/i.test(process.env.TERM ?? '');
 
   const lines: string[] = [];
-  // 8 karelik (frame = 0..7) diyagonal gümüş-beyaz / parlak buz ışıltı dalgası
+  // 8 karelik (frame = 0..7) diyagonal saf beyaz / açık parlak Tabit yeşili ışıltı dalgası
   const wavePos = frame >= 0 ? frame * 8 : -100;
   const wordWidth = word[0]!.length;
 
   for (let y = 0; y < mark.length; y += 2) {
     let row = '  ';
-    // 1. Sol Rozet (14x14 Crystal-Mint & Ice-Cyan + Saf Beyaz T)
+    // 1. Sol Rozet (14x14 Açık Parlak Tabit Yeşili + Saf Beyaz T)
     for (let x = 0; x < mark[y]!.length; x += compact ? 2 : 1) {
       const diag = x + y * 0.75;
       const highlight = frame >= 0 && Math.abs(diag - wavePos) < 4.5;
@@ -212,9 +213,9 @@ export function renderLogo(width?: number): void {
 }
 
 /**
- * Terminal Duyarlı Hareketli Logo Çizimi (Crystal-Ice & Bright-Mint Shimmer).
+ * Terminal Duyarlı Hareketli Logo Çizimi (Açık Parlak Tabit Yeşili & Saf Beyaz Işıltı).
  * Başlarken \x1b[?25l ile imleci gizler, try ... finally içinde \x1b[?25h ile geri açar.
- * 8 karelik diyagonal gümüş-beyaz / parlak buz ışıltısı akıp geçer ve parlak açık renklerde sabitlenir.
+ * 8 karelik diyagonal saf beyaz / açık filiz yeşili ışıltısı akıp geçer ve parlak açık renklerde sabitlenir.
  */
 export async function animateLogo(
   widthOrDelay?: number,

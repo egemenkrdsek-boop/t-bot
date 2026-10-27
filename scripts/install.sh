@@ -6,12 +6,12 @@
 
 set -e
 
-# Renk Ayarları (Parlak Beyaz/Cyan ANSI Renkleri ve NO_COLOR Kontrolü)
+# Renk Ayarları (Açık Tabit Yeşili & Saf Parlak Beyaz ANSI Renkleri ve NO_COLOR Kontrolü)
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   BRIGHT_WHITE="\033[97;1m"
-  BRIGHT_CYAN="\033[96;1m"
-  CYAN="\033[36m"
-  GREEN="\033[32;1m"
+  BRIGHT_CYAN="\033[38;2;160;228;90;1m"
+  CYAN="\033[38;2;132;204;50m"
+  GREEN="\033[38;2;148;216;45;1m"
   YELLOW="\033[33m"
   RED="\033[31;1m"
   BOLD="\033[1m"
@@ -38,7 +38,7 @@ show_header() {
   printf "${BRIGHT_CYAN}       ██║       ██████╔╝╚██████╔╝   ██║   ${RESET}\n"
   printf "${BRIGHT_WHITE}       ╚═╝       ╚═════╝  ╚═════╝    ╚═╝   ${RESET}\n"
   printf "\n"
-  printf "${BRIGHT_WHITE}  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Crystal-Ice Edition)${RESET}\n"
+  printf "${BRIGHT_WHITE}  T Bot 2.0 — Tri-Core Local AI Agent & Autonomous Gateway (Tabit Edition)${RESET}\n"
   printf "${BRIGHT_CYAN}  https://github.com/egemenkrdsek-boop/t-bot${RESET}\n"
   printf "${CYAN}  ──────────────────────────────────────────────────────────────────────────────${RESET}\n"
   printf "\n"
@@ -169,7 +169,7 @@ printf "${BRIGHT_WHITE}[OK] T Bot 2.0 başarıyla kuruldu! Başlatmak için term
 printf "${BRIGHT_CYAN}========================================================================${RESET}\n"
 printf "\n"
 printf "  ${BRIGHT_WHITE}Hızlı Başlangıç İpuçları:${RESET}\n"
-printf "    ${BRIGHT_CYAN}tbot${RESET}                  ${BRIGHT_WHITE}Etkileşimli Crystal-Ice Cyber-Zen TUI oturumu başlatır${RESET}\n"
+printf "    ${BRIGHT_CYAN}tbot${RESET}                  ${BRIGHT_WHITE}Etkileşimli Tabit Cyber-Zen TUI oturumu başlatır${RESET}\n"
 printf "    ${BRIGHT_CYAN}tbot config${RESET}           ${BRIGHT_WHITE}Sağlayıcı (Gemini, OpenAI, Anthropic, OpenRouter) ayarla${RESET}\n"
 printf "    ${BRIGHT_CYAN}tbot doctor${RESET}           ${BRIGHT_WHITE}Ortam ve sistem sağlığını denetle${RESET}\n"
 printf "    ${BRIGHT_CYAN}tbot --bot${RESET}            ${BRIGHT_WHITE}Sıfır-Backend Telegram Bot ağ geçidini başlat${RESET}\n"
