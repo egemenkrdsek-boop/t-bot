@@ -19,9 +19,19 @@ const mark = [
   '.GGGGGGGGGGGGG',
 ] as const;
 
+const word = [
+  '11110 00000 00100',
+  '10001 00000 00100',
+  '10001 01110 11111',
+  '11110 10001 00100',
+  '10001 10001 00100',
+  '10001 10001 00101',
+  '11110 01110 00010',
+] as const;
+
 /** Render two image pixels per terminal cell, with a plain-text fallback. */
 export function logo(width: number): string[] {
-  if (!unicode || process.env.NO_COLOR !== undefined || width < 24) return [`  ${theme.bold('[t] Bot')}`];
+  if (!unicode || process.env.NO_COLOR !== undefined || width < 53) return [`  ${theme.bold('[t] Bot')}`];
   const trueColor = /truecolor|24bit/i.test(process.env.COLORTERM ?? '');
   const color256 = /256color/i.test(process.env.TERM ?? '');
   const color = (pixel: string, background: boolean): string => {
@@ -37,8 +47,9 @@ export function logo(width: number): string[] {
     for (let x = 0; x < mark[y]!.length; x++) {
       row += `\x1b[${color(mark[y]![x]!, false)};${color(mark[y + 1]![x]!, true)}m▀`;
     }
-    row += '\x1b[0m';
-    if (y === 6) row += `   ${theme.bold('Bot')}`;
+    row += '\x1b[0m   ';
+    // Double each font pixel in both axes to match the 14-pixel mark height.
+    for (const pixel of word[y / 2]!) row += pixel === '1' ? '██' : '  ';
     lines.push(row);
   }
   return lines;
