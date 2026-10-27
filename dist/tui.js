@@ -5,42 +5,45 @@ const safe = (text) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 const write = (text) => { process.stdout.write(text); };
 export async function startTui(options) {
     const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+    let rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
     const lines = [];
     let waiting;
     let closed = false;
     let controller;
     let streaming = false;
     let exiting = false;
-    rl.on('line', line => {
-        if (waiting) {
-            const resolve = waiting;
-            waiting = undefined;
-            resolve(line);
-        }
-        else
-            lines.push(line);
-    });
-    rl.on('close', () => { closed = true; if (waiting) {
-        const resolve = waiting;
-        waiting = undefined;
-        resolve(undefined);
-    } });
-    rl.on('SIGINT', () => {
-        if (controller) {
-            controller.abort();
+    const attach = () => {
+        rl.on('line', line => {
             if (waiting) {
                 const resolve = waiting;
                 waiting = undefined;
-                resolve(undefined);
+                resolve(line);
             }
-            write(`\n${theme.muted('Cancelling…')}\n`);
-        }
-        else {
-            exiting = true;
-            rl.close();
-        }
-    });
+            else
+                lines.push(line);
+        });
+        rl.on('close', () => { closed = true; if (waiting) {
+            const resolve = waiting;
+            waiting = undefined;
+            resolve(undefined);
+        } });
+        rl.on('SIGINT', () => {
+            if (controller) {
+                controller.abort();
+                if (waiting) {
+                    const resolve = waiting;
+                    waiting = undefined;
+                    resolve(undefined);
+                }
+                write(`\n${theme.muted('Cancelling…')}\n`);
+            }
+            else {
+                exiting = true;
+                rl.close();
+            }
+        });
+    };
+    attach();
     const read = async (prompt) => {
         if (interactive)
             write(prompt);
@@ -129,7 +132,23 @@ export async function startTui(options) {
                     write(`${theme.muted('Conversation cleared.')}\n`);
                     continue;
                 }
-                const result = await options.onCommand?.(input);
+                let result;
+                const menu = interactive && (command === '/provider' || command === '/model' || command === '/config');
+                if (menu)
+                    rl.close();
+                try {
+                    result = await options.onCommand?.(input);
+                }
+                catch (error) {
+                    result = `Error: ${error instanceof Error ? error.message : String(error)}`;
+                }
+                finally {
+                    if (menu) {
+                        closed = false;
+                        rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+                        attach();
+                    }
+                }
                 write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);
                 continue;
             }

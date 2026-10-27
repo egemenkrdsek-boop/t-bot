@@ -17,7 +17,7 @@ const write = (text: string): void => { process.stdout.write(text); };
 
 export async function startTui(options: TuiOptions): Promise<void> {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+  let rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
   const lines: string[] = [];
   let waiting: ((line: string | undefined) => void) | undefined;
   let closed = false;
@@ -25,7 +25,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   let streaming = false;
   let exiting = false;
 
-  rl.on('line', line => {
+  const attach = (): void => { rl.on('line', line => {
     if (waiting) { const resolve = waiting; waiting = undefined; resolve(line); }
     else lines.push(line);
   });
@@ -33,7 +33,8 @@ export async function startTui(options: TuiOptions): Promise<void> {
   rl.on('SIGINT', () => {
     if (controller) { controller.abort(); if (waiting) { const resolve = waiting; waiting = undefined; resolve(undefined); } write(`\n${theme.muted('Cancelling…')}\n`); }
     else { exiting = true; rl.close(); }
-  });
+  }); };
+  attach();
   const read = async (prompt: string): Promise<string | undefined> => {
     if (interactive) write(prompt);
     if (lines.length) return lines.shift();
@@ -92,7 +93,18 @@ export async function startTui(options: TuiOptions): Promise<void> {
           continue;
         }
         if (command === '/clear') { await options.onCommand?.(input); if (interactive) process.stdout.write('\x1b[2J\x1b[H'); write(`${theme.muted('Conversation cleared.')}\n`); continue; }
-        const result = await options.onCommand?.(input);
+        let result: string | undefined;
+        const menu = interactive && (command === '/provider' || command === '/model' || command === '/config');
+        if (menu) rl.close();
+        try { result = await options.onCommand?.(input); }
+        catch (error) { result = `Error: ${error instanceof Error ? error.message : String(error)}`; }
+        finally {
+          if (menu) {
+            closed = false;
+            rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
+            attach();
+          }
+        }
         write(`${safe(result ?? 'Unknown command. Type /help for commands.')}\n`);
         continue;
       }

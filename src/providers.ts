@@ -20,7 +20,8 @@ export const PROVIDER_CATALOG = [
 
 type Obj = Record<string, any>;
 function safeUrl(value: string): URL {
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('Provider endpoint is invalid. Configure a valid HTTPS URL or localhost URL.'); }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) || url.username || url.password || url.search || url.hash) throw new Error('Endpoint must use HTTPS, or HTTP on localhost, and must not contain credentials, query or fragment.');
   return url;

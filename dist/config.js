@@ -7,6 +7,54 @@ export const configDirectory = () => join(process.env.APPDATA || join(homedir(),
 const revisions = new WeakMap();
 const remember = (config, revision) => { revisions.set(config, revision); return config; };
 const defaultConfig = () => ({ provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} });
+function validBaseUrl(value) {
+    if (typeof value !== 'string' || !value.trim())
+        return false;
+    try {
+        const url = new URL(value);
+        const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        return (url.protocol === 'https:' || (url.protocol === 'http:' && local)) && !url.username && !url.password && !url.search && !url.hash;
+    }
+    catch {
+        return false;
+    }
+}
+// Remove malformed or credential-bearing endpoints without ever including their values in errors.
+async function cleanInvalidBaseUrl(raw) {
+    const dir = configDirectory();
+    const path = join(dir, 'config.json');
+    const lockPath = join(dir, 'config.lock');
+    let lock;
+    try {
+        lock = await open(lockPath, 'wx', 0o600);
+    }
+    catch (error) {
+        if (error.code === 'EEXIST')
+            throw new Error('Configuration is being updated; retry.');
+        throw error;
+    }
+    const temp = join(dir, `.config-${randomUUID()}.tmp`);
+    try {
+        const current = await readFile(path, 'utf8');
+        if (current !== raw)
+            throw new Error('Configuration changed while loading; retry.');
+        const value = JSON.parse(current);
+        delete value.baseUrl;
+        const cleaned = JSON.stringify(value, null, 2) + '\n';
+        await writeFile(temp, cleaned, { mode: 0o600, flag: 'wx' });
+        await rename(temp, path);
+        return cleaned;
+    }
+    finally {
+        await unlink(temp).catch(() => undefined);
+        try {
+            await lock.close();
+        }
+        finally {
+            await unlink(lockPath);
+        }
+    }
+}
 export async function loadConfig() {
     let raw;
     try {
@@ -17,7 +65,11 @@ export async function loadConfig() {
             return remember(defaultConfig(), null);
         throw error;
     }
-    const value = JSON.parse(raw);
+    let value = JSON.parse(raw);
+    if (value && typeof value === 'object' && !Array.isArray(value) && 'baseUrl' in value && !validBaseUrl(value.baseUrl)) {
+        raw = await cleanInvalidBaseUrl(raw);
+        value = JSON.parse(raw);
+    }
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new Error('Invalid T Bot config');
     const input = value;
@@ -26,7 +78,7 @@ export async function loadConfig() {
         throw new Error('Invalid provider in config');
     if (input.model !== undefined && typeof input.model !== 'string')
         throw new Error('Invalid model in config');
-    if (input.baseUrl !== undefined && typeof input.baseUrl !== 'string')
+    if (input.baseUrl !== undefined && !validBaseUrl(input.baseUrl))
         throw new Error('Invalid base URL in config');
     if (input.workspacePermissions !== undefined && (!input.workspacePermissions || typeof input.workspacePermissions !== 'object' || Array.isArray(input.workspacePermissions)))
         throw new Error('Invalid workspace permissions in config');
@@ -45,6 +97,8 @@ export async function saveConfig(config) {
     const lockPath = join(dir, 'config.lock');
     if (!revisions.has(config))
         throw new Error('Load configuration before saving it');
+    if (config.baseUrl !== undefined && !validBaseUrl(config.baseUrl))
+        throw new Error('Invalid base URL in config');
     let lock;
     try {
         lock = await open(lockPath, 'wx', 0o600);

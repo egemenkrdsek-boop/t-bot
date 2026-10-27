@@ -6,6 +6,8 @@ import { parseCli, HELP } from './cli.js';
 import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission } from './config.js';
 import { setApiKey } from './secrets.js';
 import { createProvider, PROVIDER_CATALOG } from './providers.js';
+import { discoverModels } from './models.js';
+import { selectOption, inputSecret } from './menu.js';
 import { runAgent } from './agent.js';
 const safe = (text) => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions() {
@@ -17,101 +19,60 @@ async function listSessions() {
     for (const session of sessions)
         console.log(safe(`${session.id}  ${session.updatedAt}  ${session.workspace}  ${session.title}`));
 }
-async function configure(config, onboarding = false, presetProvider = false) {
+async function configure(config, onboarding = false, presetProvider = false, modelOnly = false) {
     if (!stdin.isTTY || !stdout.isTTY)
         throw new Error('Yapılandırma için etkileşimli terminal gerekli.');
-    const rl = createInterface({ input: stdin, output: stdout });
-    const cancel = new AbortController();
-    let enteringSecret = false;
-    rl.on('SIGINT', () => cancel.abort());
-    rl.on('close', () => { if (!enteringSecret)
-        cancel.abort(); });
-    const question = (prompt) => rl.question(prompt, { signal: cancel.signal });
-    try {
-        console.log('Sağlayıcılar: ' + PROVIDER_CATALOG.map(p => p.id).join(', '));
-        if (onboarding)
-            console.log('Başlamak için bir sağlayıcı, model ve API anahtarı seçin.');
-        let id = '';
-        const providerDefault = !onboarding || presetProvider ? config.provider : '';
-        while (!id) {
-            const value = (await question(`Sağlayıcı${providerDefault ? ` [${safe(providerDefault)}]` : ''}: `)).trim() || providerDefault;
-            if (PROVIDER_CATALOG.some(p => p.id === value))
-                id = value;
-            else
-                console.log('Listeden geçerli bir sağlayıcı kimliği girin.');
-        }
-        let model = '';
-        const modelDefault = id === config.provider ? config.model : '';
-        while (!model)
-            model = (await question(`Model${modelDefault ? ` [${safe(modelDefault)}]` : ''}: `)).trim() || modelDefault;
-        const previousBase = id === config.provider ? config.baseUrl ?? '' : '';
-        const baseUrl = (await question(`Özel API adresi (varsayılan için boş) [${safe(previousBase)}]: `)).trim() || previousBase;
-        console.log('API anahtarını ortam değişkeniyle de verebilirsiniz: ' + id.toUpperCase().replace(/-/g, '_') + '_API_KEY.');
-        const spec = PROVIDER_CATALOG.find(p => p.id === id);
-        const selected = { ...config, provider: id, model, baseUrl };
-        const existingKey = (await resolveProviderConfig(selected)).apiKey;
-        const requiredKey = onboarding && spec.requiresApiKey && !existingKey?.trim();
-        const store = requiredKey ? 'e' : (await question('API anahtarı kaydedilsin mi? [e/H]: ')).trim().toLowerCase();
-        if (store === 'e' || store === 'y') {
-            enteringSecret = true;
-            rl.close();
-            const key = await readSecret(`${spec.label} API anahtarı (gizli): `);
-            if (!key.trim())
-                throw new Error('Anahtar boş olamaz. Yeniden başlatıp yapılandırabilirsiniz.');
-            const result = await setApiKey(id, key);
-            console.log(`Anahtar saklama: ${result.method}${result.warning ? ` — ${result.warning}` : ''}`);
-        }
-        config.provider = id;
-        config.model = model;
-        if (baseUrl)
-            config.baseUrl = baseUrl;
-        else
-            delete config.baseUrl;
-        await saveConfig(config);
-        console.log('Ayarlar kaydedildi.');
-        return config;
-    }
-    catch (error) {
-        if (cancel.signal.aborted)
+    const choices = PROVIDER_CATALOG.filter(p => p.id !== 'custom');
+    let id = config.provider;
+    if (!modelOnly) {
+        const ordered = presetProvider ? [...choices].sort((a, b) => Number(b.id === config.provider) - Number(a.id === config.provider)) : choices;
+        const selected = await selectOption('Sağlayıcı seçin', ordered.map(p => ({ label: p.label, value: p.id })));
+        if (!selected)
             throw new Error('İptal edildi.');
-        throw error;
+        id = selected;
     }
-    finally {
-        rl.close();
+    const spec = PROVIDER_CATALOG.find(p => p.id === id);
+    if (!spec)
+        throw new Error('Sağlayıcı bulunamadı.');
+    const selectedConfig = { ...config, provider: id, ...(id === config.provider && config.baseUrl ? { baseUrl: config.baseUrl } : { baseUrl: undefined }) };
+    let apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
+    if (spec.requiresApiKey && (!apiKey?.trim() || (!onboarding && !modelOnly))) {
+        let replace = !apiKey?.trim();
+        if (!replace) {
+            const action = await selectOption(`${spec.label} anahtarı`, [
+                { label: 'Kayıtlı anahtarı kullan', value: 'keep' },
+                { label: 'Yeni anahtar gir', value: 'replace' },
+            ]);
+            if (!action)
+                throw new Error('İptal edildi.');
+            replace = action === 'replace';
+        }
+        if (replace) {
+            const key = await inputSecret(`${spec.label} API anahtarı`);
+            if (!key?.trim())
+                throw new Error('Anahtar girilmedi; yapılandırma iptal edildi.');
+            const result = await setApiKey(id, key);
+            if (result.warning)
+                console.log(safe(result.warning));
+            apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
+        }
     }
-}
-async function readSecret(prompt) {
-    stdout.write(prompt);
-    return new Promise((resolveSecret, reject) => {
-        let value = '';
-        stdin.setRawMode(true);
-        stdin.resume();
-        stdin.setEncoding('utf8');
-        const cleanup = () => { stdin.off('data', onData); stdin.off('end', onEnd); stdin.off('error', onError); stdin.setRawMode(false); stdin.pause(); stdout.write('\n'); };
-        const onEnd = () => { cleanup(); reject(new Error('Girdi kapandı.')); };
-        const onError = (error) => { cleanup(); reject(error); };
-        const onData = (chunk) => {
-            for (const char of chunk) {
-                if (char === '\u0003' || char === '\u0004') {
-                    cleanup();
-                    reject(new Error('İptal edildi.'));
-                    return;
-                }
-                if (char === '\r' || char === '\n') {
-                    cleanup();
-                    resolveSecret(value);
-                    return;
-                }
-                if (char === '\u007f' || char === '\b')
-                    value = value.slice(0, -1);
-                else if (char >= ' ')
-                    value += char;
-            }
-        };
-        stdin.on('data', onData);
-        stdin.once('end', onEnd);
-        stdin.once('error', onError);
-    });
+    const models = await discoverModels(id, apiKey);
+    const options = models.map(model => ({ label: model.label, value: model.id }));
+    if (modelOnly && id === config.provider && config.model && !options.some(model => model.value === config.model))
+        options.unshift({ label: `${config.model} (mevcut)`, value: config.model });
+    if (!options.length)
+        throw new Error(`${spec.label} için model listesi alınamadı. Yerel sunucunun açık ve modelin yüklü olduğunu kontrol edin veya başka bir sağlayıcı seçin.`);
+    const model = await selectOption('Model seçin', options);
+    if (!model)
+        throw new Error('Model seçimi iptal edildi veya model listesi boş.');
+    if (id !== config.provider)
+        delete config.baseUrl;
+    config.provider = id;
+    config.model = model;
+    await saveConfig(config);
+    console.log('Ayarlar kaydedildi.');
+    return config;
 }
 function showEvent(event) {
     if (event.type === 'text')
@@ -189,7 +150,7 @@ export async function main(argv) {
         config = await configure(config, true, Boolean(options.provider));
         resolved = await resolveProviderConfig(config, workspace);
     }
-    const provider = createProvider(resolved);
+    let provider = createProvider(resolved);
     const approve = getWorkspacePermission(config, workspace) === 'allow' ? async () => true : approveOnce;
     if (options.message) {
         const controller = new AbortController();
@@ -223,12 +184,13 @@ export async function main(argv) {
             }
             if (command === '/sessions')
                 return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;
-            if (command === '/provider' || command === '/model')
-                return `Sağlayıcı: ${provider.label}; model: ${config.model}. Değiştirmek için tbot config kullanın.`;
+            if (command === '/provider' || command === '/model' || command === '/config') {
+                config = await configure(config, false, true, command === '/model');
+                provider = createProvider(await resolveProviderConfig(config, workspace));
+                return `Sağlayıcı: ${provider.label}; model: ${config.model}`;
+            }
             if (command === '/resume')
                 return 'Devam etmek için tbot --resume <id> kullanın.';
-            if (command === '/config')
-                return 'Ayarları değiştirmek için oturumdan çıkıp tbot config kullanın.';
             return undefined;
         }
     });

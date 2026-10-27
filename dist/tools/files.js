@@ -10,10 +10,13 @@ const string = (args, key) => {
 };
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
 const p = { type: 'string', description: 'Path relative to the workspace' };
+const offsetParam = { type: 'integer', minimum: 0, description: 'Continuation offset from the previous result' };
+const limitParam = { type: 'integer', minimum: 1, description: 'Maximum items to return' };
+const numberArg = (value, fallback, max) => typeof value === 'number' && Number.isInteger(value) && value >= 0 ? Math.min(value, max) : fallback;
 export const fileToolDefinitions = [
-    { name: 'file_read', description: 'Read a UTF-8 workspace file (bounded output).', parameters: schema({ path: p }, ['path']) },
-    { name: 'file_list', description: 'List a workspace directory.', parameters: schema({ path: p }, []) },
-    { name: 'file_search', description: 'Search UTF-8 workspace files for literal text.', parameters: schema({ path: p, query: { type: 'string' } }, ['query']) },
+    { name: 'file_read', description: 'Read a UTF-8 workspace file (bounded output).', parameters: schema({ path: p, offset: offsetParam, max_bytes: { type: 'integer', minimum: 1, maximum: 100000 } }, ['path']) },
+    { name: 'file_list', description: 'List a workspace directory.', parameters: schema({ path: p, offset: offsetParam, limit: limitParam }, []) },
+    { name: 'file_search', description: 'Search UTF-8 workspace files for literal text.', parameters: schema({ path: p, query: { type: 'string' }, offset: offsetParam, limit: limitParam }, ['query']) },
     { name: 'file_write', description: 'Write a UTF-8 workspace file; overwrites existing content and requires approval.', parameters: schema({ path: p, content: { type: 'string' } }, ['path', 'content']) },
     { name: 'file_patch', description: 'Replace one exact occurrence in a workspace file; requires approval.', parameters: schema({ path: p, old_text: { type: 'string' }, new_text: { type: 'string' } }, ['path', 'old_text', 'new_text']) },
 ];
@@ -76,10 +79,21 @@ export async function handleFileTool(name, args, workspace, signal) {
             throw new Error('Not a regular file');
         const handle = await fs.open(target, 'r');
         try {
-            const buffer = Buffer.alloc(LIMIT + 1);
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            const offset = numberArg(args.offset, 0, Number.MAX_SAFE_INTEGER);
+            const maxBytes = Math.max(1, numberArg(args.max_bytes, 12000, LIMIT));
+            const buffer = Buffer.alloc(maxBytes + 1);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+            let consumed = Math.min(bytesRead, maxBytes);
+            // Avoid splitting a UTF-8 character between pages.
+            if (bytesRead > maxBytes) {
+                while (consumed > 0 && (buffer[consumed] & 0xc0) === 0x80)
+                    consumed--;
+                if (!consumed)
+                    consumed = maxBytes;
+            }
             const decoder = new StringDecoder('utf8');
-            return decoder.write(buffer.subarray(0, Math.min(bytesRead, LIMIT))) + (bytesRead > LIMIT ? '\n[output truncated]' : decoder.end());
+            const text = decoder.write(buffer.subarray(0, consumed)) + decoder.end();
+            return JSON.stringify({ content: text, offset, next_offset: bytesRead > consumed ? offset + consumed : null });
         }
         finally {
             await handle.close();
@@ -87,7 +101,10 @@ export async function handleFileTool(name, args, workspace, signal) {
     }
     if (name === 'file_list') {
         const entries = await fs.readdir(target, { withFileTypes: true });
-        return bounded(entries.slice(0, 2000).map(e => `${e.isDirectory() ? 'dir' : e.isSymbolicLink() ? 'symlink' : 'file'} ${e.name}`).join('\n') + (entries.length > 2000 ? '\n[entries truncated]' : ''));
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        const offset = numberArg(args.offset, 0, Number.MAX_SAFE_INTEGER);
+        const limit = Math.max(1, numberArg(args.limit, 80, 500));
+        return JSON.stringify({ entries: entries.slice(offset, offset + limit).map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : e.isSymbolicLink() ? 'symlink' : 'file' })), next_offset: offset + limit < entries.length ? offset + limit : null });
     }
     if (name === 'file_write') {
         if (typeof args.content !== 'string')
@@ -118,13 +135,18 @@ export async function handleFileTool(name, args, workspace, signal) {
         const query = string(args, 'query');
         const root = await fs.realpath(workspace);
         const found = [];
+        const offset = numberArg(args.offset, 0, 100000);
+        const limit = Math.max(1, numberArg(args.limit, 30, 200));
+        let matches = 0;
         let visited = 0;
         let stopped = false;
+        let capped = false;
         async function walk(dir) { signal?.throwIfAborted(); if (stopped)
-            return; const entries = await fs.readdir(dir, { withFileTypes: true }); for (const entry of entries) {
+            return; const entries = await fs.readdir(dir, { withFileTypes: true }); entries.sort((a, b) => a.name.localeCompare(b.name)); for (const entry of entries) {
             signal?.throwIfAborted();
-            if (++visited > 10000 || found.length >= 500) {
+            if (++visited > 10000) {
                 stopped = true;
+                capped = true;
                 return;
             }
             if (entry.isSymbolicLink() || ['.git', 'node_modules'].includes(entry.name))
@@ -140,11 +162,16 @@ export async function handleFileTool(name, args, workspace, signal) {
                 if (content.includes('\0'))
                     continue;
                 for (const [i, line] of content.split(/\r?\n/).entries()) {
-                    if (line.includes(query))
-                        found.push(`${path.relative(root, full)}:${i + 1}: ${line.slice(0, 1000)}`);
-                    if (found.length >= 500) {
-                        stopped = true;
-                        return;
+                    if (line.includes(query)) {
+                        if (matches++ >= offset) {
+                            const start = Math.max(0, line.indexOf(query) - 100);
+                            found.push(`${path.relative(root, full)}:${i + 1}: ${start ? '…' : ''}${line.slice(start, start + Math.max(300, query.length))}${line.length > start + Math.max(300, query.length) ? '…' : ''}`);
+                        }
+                        ;
+                        if (found.length > limit) {
+                            stopped = true;
+                            return;
+                        }
                     }
                 }
             }
@@ -154,7 +181,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             await walk(target);
         else
             throw new Error('Search path must be a directory');
-        return bounded(found.join('\n') + (stopped ? '\n[search truncated]' : '')) || 'No matches.';
+        return JSON.stringify({ matches: found.slice(0, limit), next_offset: found.length > limit ? offset + limit : null, scan_limit_reached: capped });
     }
     throw new Error(`Unknown file tool: ${name}`);
 }
