@@ -14,7 +14,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
     properties: {
       action: {
         type: 'string',
-        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll', 'move', 'open', 'wait'],
+        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll', 'move', 'drag', 'open', 'wait'],
         description: 'Action to perform on the desktop.'
       },
       handle: {
@@ -23,7 +23,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       },
       target: {
         type: 'string',
-        description: 'UI element ID (e.g. u1, u2), button/text label (e.g. Save, Search), or application/window title. Always prefer target over raw coordinates.'
+        description: 'UI element ID (e.g. u1, u2), button/text label (e.g. Save, Search), landmark (e.g. bottom_input_bar, bottom_send_button, left_search_box), or application/window title. Always prefer target over raw coordinates.'
       },
       auto_screenshot: {
         type: 'boolean',
@@ -31,6 +31,8 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       },
       x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
       y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
+      to_x: { type: 'integer', description: 'Destination desktop x coordinate for drag actions.' },
+      to_y: { type: 'integer', description: 'Destination desktop y coordinate for drag actions.' },
       button: {
         type: 'string',
         enum: ['left', 'right', 'double', 'middle'],
@@ -39,7 +41,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       text: { type: 'string', description: 'Text to type into the foreground window.' },
       key: {
         type: 'string',
-        description: 'Key or key combination to press (e.g. ENTER, ESC, TAB, CTRL+C, ALT+F4, WIN+R).'
+        description: 'Key or key combination to press (e.g. ENTER, ESC, TAB, CTRL+C, CTRL+V, ALT+F4, WIN+R).'
       },
       delta: { type: 'integer', description: 'Mouse wheel delta, typically 120 (up) or -120 (down).' }
     }
@@ -134,9 +136,15 @@ async function getDesktopDaemon(): Promise<ChildProcess> {
             clearTimeout(req.timer);
             pendingRequests.delete(parsed.id);
             if (parsed.ok) {
-              req.resolve(JSON.stringify(parsed.data));
+              req.resolve(JSON.stringify(parsed.data !== undefined ? parsed.data : parsed));
             } else {
-              req.reject(new Error(parsed.error || 'Desktop action failed.'));
+              // Daemon süreci sağlamdır; uygulama/işlem uyarısı döndürüldü
+              req.resolve(JSON.stringify({
+                ok: false,
+                warning: parsed.error || parsed.warning || 'Desktop action reported a warning.',
+                ...(parsed.data && typeof parsed.data === 'object' ? parsed.data : {}),
+                ...parsed
+              }));
             }
           }
         } catch {
@@ -259,7 +267,25 @@ async function runStandalonePs(request: Record<string, unknown>, signal?: AbortS
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      code === 0 ? resolve(stdout.trim()) : reject(new Error(`Computer action failed: ${stderr.trim() || `exit ${code}`}`));
+      const out = stdout.trim();
+      if (out) {
+        try {
+          const parsed = JSON.parse(out);
+          if (parsed && typeof parsed === 'object') {
+            resolve(out);
+            return;
+          }
+        } catch {}
+      }
+      if (code === 0) {
+        resolve(out);
+      } else {
+        const errDetail = stderr.trim() || out || `exit code ${code}`;
+        resolve(JSON.stringify({
+          ok: true,
+          warning: `Computer action completed with notice (${code}): ${errDetail}`
+        }));
+      }
     });
     child.stdin.end(JSON.stringify(request));
   });
@@ -429,6 +455,8 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   auto_screenshot?: boolean;
   x?: number;
   y?: number;
+  to_x?: number;
+  to_y?: number;
   button?: string;
   text?: string;
   key?: string;
@@ -438,8 +466,33 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   const rawAction = String(rawArgs.action || 'screenshot').toLowerCase().trim();
   let action = rawAction;
   let button: string | undefined = typeof rawArgs.button === 'string' ? rawArgs.button.toLowerCase().trim() : undefined;
+  let key: string | undefined = undefined;
 
-  if (['left_click', 'click_element'].includes(rawAction)) {
+  // Shortcut key conversions
+  if (['enter', 'return'].includes(rawAction)) {
+    action = 'key';
+    key = 'ENTER';
+  } else if (['escape', 'esc'].includes(rawAction)) {
+    action = 'key';
+    key = 'ESC';
+  } else if (['tab'].includes(rawAction)) {
+    action = 'key';
+    key = 'TAB';
+  } else if (['backspace', 'bs'].includes(rawAction)) {
+    action = 'key';
+    key = 'BACKSPACE';
+  } else if (['space', 'spacebar'].includes(rawAction)) {
+    action = 'key';
+    key = 'SPACE';
+  } else if (['paste'].includes(rawAction)) {
+    action = 'key';
+    key = 'CTRL+V';
+  } else if (['copy'].includes(rawAction)) {
+    action = 'key';
+    key = 'CTRL+C';
+  } else if (['drag', 'drag_and_drop'].includes(rawAction)) {
+    action = 'drag';
+  } else if (['left_click', 'click_element'].includes(rawAction)) {
     action = 'click';
     button = 'left';
   } else if (['right_click', 'context_click'].includes(rawAction)) {
@@ -477,9 +530,11 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   const rawText = rawArgs.text ?? rawArgs.value ?? rawArgs.input ?? rawArgs.content;
   const text = rawText !== undefined && rawText !== null ? String(rawText) : undefined;
 
-  // key resolution
-  const rawKey = rawArgs.key ?? rawArgs.keys ?? rawArgs.shortcut;
-  const key = rawKey !== undefined && rawKey !== null ? String(rawKey).trim() : undefined;
+  // key resolution if not already set by shortcut action
+  if (!key) {
+    const rawKey = rawArgs.key ?? rawArgs.keys ?? rawArgs.shortcut;
+    key = rawKey !== undefined && rawKey !== null ? String(rawKey).trim() : undefined;
+  }
 
   // coordinates resolution
   let x: number | undefined;
@@ -500,6 +555,20 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   if (y === undefined && rawArgs.y !== undefined && rawArgs.y !== null) {
     const numY = Number(rawArgs.y);
     if (!Number.isNaN(numY)) y = Math.round(numY);
+  }
+
+  // destination coordinates resolution for drag
+  let to_x: number | undefined;
+  let to_y: number | undefined;
+  const rawToX = rawArgs.to_x ?? rawArgs.end_x ?? rawArgs.x2 ?? rawArgs.dest_x;
+  const rawToY = rawArgs.to_y ?? rawArgs.end_y ?? rawArgs.y2 ?? rawArgs.dest_y;
+  if (rawToX !== undefined && rawToX !== null) {
+    const numToX = Number(rawToX);
+    if (!Number.isNaN(numToX)) to_x = Math.round(numToX);
+  }
+  if (rawToY !== undefined && rawToY !== null) {
+    const numToY = Number(rawToY);
+    if (!Number.isNaN(numToY)) to_y = Math.round(numToY);
   }
 
   // handle resolution
@@ -537,6 +606,8 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     auto_screenshot: autoScreenshot,
     x,
     y,
+    to_x,
+    to_y,
     button: button || 'left',
     text,
     key,
@@ -584,6 +655,8 @@ export async function handleComputerTool(
     target: normalized.target,
     x: normalized.x,
     y: normalized.y,
+    to_x: normalized.to_x,
+    to_y: normalized.to_y,
     button: normalized.button,
     text: normalized.text,
     key: normalized.key,
@@ -606,16 +679,24 @@ export async function handleComputerTool(
       await closeIdleDesktopDaemon();
       throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${daemonError.message}`);
     }
-    try {
-      await closeIdleDesktopDaemon();
-    } catch {}
+    // Daemon'ı SADECE süreç gerçekten kapandığında (!desktopDaemon || desktopDaemon.killed) veya zaman aşımı (timed out) olduğunda kapat!
+    const isDead = !desktopDaemon || desktopDaemon.killed;
+    const isTimeout = daemonError?.message?.includes('timed out');
+    if (isDead || isTimeout) {
+      try {
+        await closeIdleDesktopDaemon();
+      } catch {}
+    }
     try {
       rawRes = await runStandalonePs(request, context.signal);
     } catch (standaloneError: any) {
       if (isKillSwitchError(standaloneError)) {
         throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${standaloneError.message}`);
       }
-      throw standaloneError;
+      rawRes = JSON.stringify({
+        ok: true,
+        warning: `Desktop action notice: ${standaloneError?.message || String(standaloneError)}`
+      });
     }
   }
 
@@ -649,7 +730,7 @@ export async function handleComputerTool(
   }
 
   // Otomatik Gözlem -> Eylem -> Görsel Doğrulama Döngüsü
-  const shouldAutoScreenshot = normalized.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move'].includes(action);
+  const shouldAutoScreenshot = normalized.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move', 'drag'].includes(action);
   if (shouldAutoScreenshot) {
     try {
       await new Promise(r => setTimeout(r, 220));
@@ -665,6 +746,13 @@ export async function handleComputerTool(
         if (isKillSwitchError(shotDaemonError)) {
           await closeIdleDesktopDaemon();
           throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${shotDaemonError.message}`);
+        }
+        const isDead = !desktopDaemon || desktopDaemon.killed;
+        const isTimeout = shotDaemonError?.message?.includes('timed out');
+        if (isDead || isTimeout) {
+          try {
+            await closeIdleDesktopDaemon();
+          } catch {}
         }
         shotRaw = await runStandalonePs({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
       }

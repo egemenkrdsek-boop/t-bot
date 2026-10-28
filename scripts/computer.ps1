@@ -12,7 +12,7 @@ $binDir = Join-Path $env:APPDATA "TBot\bin"
 if (-not (Test-Path -LiteralPath $binDir)) {
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
-$dllPath = Join-Path $binDir "tbot-desktop-native-v12.dll"
+$dllPath = Join-Path $binDir "tbot-desktop-native-v15.dll"
 if (Test-Path -LiteralPath $dllPath) {
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 } else {
@@ -34,6 +34,13 @@ public static class DesktopNative {
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hWndParent, EnumProc lpEnumFunc, IntPtr lParam);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+  [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+  public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+  [DllImport("oleacc.dll")]
+  public static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint dwId, ref Guid riid, [MarshalAs(UnmanagedType.IUnknown)] out object ppvObject);
+
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
@@ -64,9 +71,106 @@ public static class DesktopNative {
     return false;
   }
 
+  public static string GetWindowsJson() {
+    string json = "[]";
+    IntPtr hSta = OpenWindowStation("WinSta0", false, 0x037F);
+    if (hSta != IntPtr.Zero) SetProcessWindowStation(hSta);
+    IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
+
+    System.Threading.Thread t = new System.Threading.Thread(() => {
+      try {
+        if (hDesk != IntPtr.Zero) SetThreadDesktop(hDesk);
+        List<string> wins = new List<string>();
+        EnumWindows((h, p) => {
+          if (IsWindowVisible(h)) {
+            StringBuilder sb = new StringBuilder(512);
+            GetWindowText(h, sb, sb.Capacity);
+            string tStr = sb.ToString();
+            RECT r;
+            if (tStr.Length > 0 && GetWindowRect(h, out r)) {
+              int w = r.Right - r.Left;
+              int ht = r.Bottom - r.Top;
+              if (w > 20 && ht > 20 && !tStr.Contains("OsdForm") && !tStr.Contains("Giris Deneyimi")) {
+                uint pid;
+                GetWindowThreadProcessId(h, out pid);
+                string pName = "";
+                try {
+                  Process proc = Process.GetProcessById((int)pid);
+                  if (proc != null) pName = proc.ProcessName;
+                } catch {}
+                string safeT = tStr.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+                string safeP = pName.Replace("\\", "\\\\").Replace("\"", "\\\"");
+                wins.Add("{\"handle\":\"" + h.ToInt64() + "\",\"title\":\"" + safeT + "\",\"processName\":\"" + safeP + "\",\"bounds\":{\"x\":" + r.Left + ",\"y\":" + r.Top + ",\"width\":" + w + ",\"height\":" + ht + "}}");
+              }
+            }
+          }
+          return true;
+        }, IntPtr.Zero);
+        json = "[" + string.Join(",", wins.ToArray()) + "]";
+      } catch {}
+    });
+    t.SetApartmentState(System.Threading.ApartmentState.STA);
+    t.Start();
+    t.Join(800);
+    return json;
+  }
+
   private class BFSItem {
     public AutomationElement Element;
     public int Depth;
+  }
+
+  public static List<IntPtr> WakeUpAccessibilityAndGetRenderRoots(IntPtr target) {
+    List<IntPtr> renderRoots = new List<IntPtr>();
+    if (target == IntPtr.Zero || !IsWindow(target)) return renderRoots;
+
+    Guid iidIAccessible = new Guid("{618736E0-3C3D-11CF-810C-00AA00389B71}");
+    StringBuilder clsSb = new StringBuilder(256);
+
+    // Hedef pencerenin kendi sınıfını kontrol et
+    GetClassName(target, clsSb, clsSb.Capacity);
+    string targetCls = clsSb.ToString();
+    if (targetCls.Contains("Chrome_RenderWidgetHostHWND") ||
+        targetCls.Contains("Windows.UI.Core.CoreWindow") ||
+        targetCls.Contains("ApplicationFrameInputSinkWindow") ||
+        targetCls.Contains("Internet Explorer_Server")) {
+      UIntPtr res;
+      SendMessageTimeout(target, 0x003D, IntPtr.Zero, new IntPtr(-4), 2, 150, out res);
+      try {
+        object accObj;
+        AccessibleObjectFromWindow(target, 0xFFFFFFFCu, ref iidIAccessible, out accObj);
+      } catch {}
+      renderRoots.Add(target);
+    }
+
+    // Hedef pencerenin tüm alt pencerelerini (child windows) tara
+    EnumChildWindows(target, (childHwnd, p) => {
+      if (IsWindowVisible(childHwnd)) {
+        StringBuilder sb = new StringBuilder(256);
+        GetClassName(childHwnd, sb, sb.Capacity);
+        string clsName = sb.ToString();
+        if (clsName.Contains("Chrome_RenderWidgetHostHWND") ||
+            clsName.Contains("Windows.UI.Core.CoreWindow") ||
+            clsName.Contains("ApplicationFrameInputSinkWindow") ||
+            clsName.Contains("Internet Explorer_Server")) {
+          UIntPtr res;
+          SendMessageTimeout(childHwnd, 0x003D, IntPtr.Zero, new IntPtr(-4), 2, 150, out res);
+          try {
+            object accObj;
+            AccessibleObjectFromWindow(childHwnd, 0xFFFFFFFCu, ref iidIAccessible, out accObj);
+          } catch {}
+          renderRoots.Add(childHwnd);
+        }
+      }
+      return true;
+    }, IntPtr.Zero);
+
+    // Eğer render root bulunduysa Chromium/Electron DOM motorunun ağacı üretmesi için 60ms bekle
+    if (renderRoots.Count > 0) {
+      System.Threading.Thread.Sleep(60);
+    }
+
+    return renderRoots;
   }
 
   public static string GetUiElementsJson(string handleStr) {
@@ -93,7 +197,7 @@ public static class DesktopNative {
               StringBuilder sb = new StringBuilder(256);
               GetWindowText(h, sb, sb.Capacity);
               string tStr = sb.ToString();
-              if (tStr.Length > 0 && !tStr.Contains("OsdForm") && !tStr.Contains("Giriş Deneyimi")) {
+              if (tStr.Length > 0 && !tStr.Contains("OsdForm") && !tStr.Contains("Giris Deneyimi")) {
                 target = h;
                 return false;
               }
@@ -108,36 +212,92 @@ public static class DesktopNative {
         GetWindowText(target, titleSb, titleSb.Capacity);
         string winTitle = titleSb.ToString();
 
+        RECT winRect;
+        GetWindowRect(target, out winRect);
+        int winLeft = winRect.Left;
+        int winTop = winRect.Top;
+        int winRight = winRect.Right;
+        int winBottom = winRect.Bottom;
+        int winWidth = winRight - winLeft;
+        int winHeight = winBottom - winTop;
+
+        int inputX = winLeft + (int)(winWidth * 0.62);
+        int inputY = winBottom - 42;
+        int sendX = winRight - 45;
+        int sendY = winBottom - 42;
+        int searchX = winLeft + 140;
+        int searchY = winTop + 115;
+        int firstItemX = winLeft + 160;
+        int firstItemY = winTop + 195;
+
+        string windowBoundsJson = string.Format(
+          "{{\"left\":{0},\"top\":{1},\"right\":{2},\"bottom\":{3},\"width\":{4},\"height\":{5}}}",
+          winLeft, winTop, winRight, winBottom, winWidth, winHeight
+        );
+
+        string landmarksJson = string.Format(
+          "{{\"bottom_input_bar\":{{\"x\":{0},\"y\":{1},\"description\":\"Sohbet/Mesaj Giris Kutusu Tahmini Bolgesi (Alt Cubuk)\"}},\"bottom_send_button\":{{\"x\":{2},\"y\":{3},\"description\":\"Gonder Butonu Tahmini Bolgesi (Sag Alt)\"}},\"left_search_box\":{{\"x\":{4},\"y\":{5},\"description\":\"Sol Panel Arama Kutusu Tahmini Bolgesi\"}},\"left_first_item\":{{\"x\":{6},\"y\":{7},\"description\":\"Sol Liste Ilk Oge / Sohbet Bolgesi\"}}}}",
+          inputX, inputY, sendX, sendY, searchX, searchY, firstItemX, firstItemY
+        );
+
         List<string> list = new List<string>();
         Stopwatch sw = Stopwatch.StartNew();
 
         try {
-          AutomationElement rootEl = AutomationElement.FromHandle(target);
-          if (rootEl != null) {
-            Queue<BFSItem> queue = new Queue<BFSItem>();
-            queue.Enqueue(new BFSItem { Element = rootEl, Depth = 0 });
-            int visited = 0;
-            int idx = 1;
-            TreeWalker walker = TreeWalker.ControlViewWalker;
+          List<IntPtr> renderRoots = WakeUpAccessibilityAndGetRenderRoots(target);
+          Queue<BFSItem> queue = new Queue<BFSItem>();
+          HashSet<IntPtr> queuedHandles = new HashSet<IntPtr>();
 
-            while (queue.Count > 0 && visited < 220 && idx <= 60) {
-              if (sw.ElapsedMilliseconds > 800) break;
-              BFSItem curr = queue.Dequeue();
-              visited++;
-              AutomationElement el = curr.Element;
-              int depth = curr.Depth;
+          // Render root pencerelerini en başa derinlik 0 olarak ekle
+          foreach (IntPtr rHwnd in renderRoots) {
+            try {
+              AutomationElement rEl = AutomationElement.FromHandle(rHwnd);
+              if (rEl != null) {
+                queue.Enqueue(new BFSItem { Element = rEl, Depth = 0 });
+                queuedHandles.Add(rHwnd);
+              }
+            } catch {}
+          }
 
-              if (depth > 0) {
-                try {
-                  if (!el.Current.IsOffscreen) {
-                    System.Windows.Rect r = el.Current.BoundingRectangle;
-                    if (r.Width > 4 && r.Height > 4) {
-                      string rawType = el.Current.ControlType.ProgrammaticName;
-                      string cleanType = rawType.StartsWith("ControlType.") ? rawType.Substring(12) : rawType;
-                      string name = el.Current.Name ?? el.Current.AutomationId ?? "";
-                      name = name.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
-                      if (name.Length > 80) name = name.Substring(0, 77) + "...";
+          // Ana hedef pencereyi de ekle
+          if (!queuedHandles.Contains(target)) {
+            try {
+              AutomationElement rootEl = AutomationElement.FromHandle(target);
+              if (rootEl != null) {
+                queue.Enqueue(new BFSItem { Element = rootEl, Depth = 0 });
+              }
+            } catch {}
+          }
 
+          int visited = 0;
+          int idx = 1;
+          TreeWalker walker = TreeWalker.ControlViewWalker;
+
+          while (queue.Count > 0 && visited < 650 && idx <= 85) {
+            if (sw.ElapsedMilliseconds > 1100) break;
+            BFSItem curr = queue.Dequeue();
+            visited++;
+            AutomationElement el = curr.Element;
+            int depth = curr.Depth;
+
+            if (depth > 0) {
+              try {
+                if (!el.Current.IsOffscreen) {
+                  System.Windows.Rect r = el.Current.BoundingRectangle;
+                  if (r.Width > 4 && r.Height > 4) {
+                    string rawType = el.Current.ControlType.ProgrammaticName;
+                    string cleanType = rawType.StartsWith("ControlType.") ? rawType.Substring(12) : rawType;
+                    string name = el.Current.Name ?? el.Current.AutomationId ?? "";
+                    name = name.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+                    if (name.Length > 80) name = name.Substring(0, 77) + "...";
+
+                    bool isInteractive = cleanType == "Edit" || cleanType == "Document" || cleanType == "Button" ||
+                                         cleanType == "Hyperlink" || cleanType == "ListItem" || cleanType == "TabItem" ||
+                                         cleanType == "ComboBox" || cleanType == "CheckBox" || cleanType == "MenuItem" ||
+                                         cleanType == "RadioButton" || cleanType == "TreeItem" || cleanType == "SplitButton" ||
+                                         (cleanType == "Text" && (!string.IsNullOrEmpty(name) || el.Current.IsKeyboardFocusable));
+
+                    if (isInteractive) {
                       int cx = (int)(r.X + (r.Width / 2.0));
                       int cy = (int)(r.Y + (r.Height / 2.0));
 
@@ -145,31 +305,40 @@ public static class DesktopNative {
                       idx++;
                     }
                   }
-                } catch {}
-              }
+                }
+              } catch {}
+            }
 
-              if (depth < 5) {
-                try {
-                  AutomationElement child = walker.GetFirstChild(el);
-                  while (child != null) {
-                    if (sw.ElapsedMilliseconds > 800 || visited + queue.Count >= 220) break;
-                    queue.Enqueue(new BFSItem { Element = child, Depth = depth + 1 });
+            if (depth < 14) {
+              try {
+                AutomationElement child = walker.GetFirstChild(el);
+                if (child == null) {
+                  try {
+                    child = TreeWalker.RawViewWalker.GetFirstChild(el);
+                  } catch {}
+                }
+                while (child != null) {
+                  if (sw.ElapsedMilliseconds > 1100 || visited + queue.Count >= 650) break;
+                  queue.Enqueue(new BFSItem { Element = child, Depth = depth + 1 });
+                  try {
                     child = walker.GetNextSibling(child);
+                  } catch {
+                    child = null;
                   }
-                } catch {}
-              }
+                }
+              } catch {}
             }
           }
         } catch {}
 
         string safeTitle = winTitle.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
-        jsonResult = "{\"action\":\"inspect\",\"handle\":\"" + target.ToInt64() + "\",\"windowTitle\":\"" + safeTitle + "\",\"elements\":[" + string.Join(",", list.ToArray()) + "]}";
+        jsonResult = "{\"action\":\"inspect\",\"handle\":\"" + target.ToInt64() + "\",\"windowTitle\":\"" + safeTitle + "\",\"windowBounds\":" + windowBoundsJson + ",\"landmarks\":" + landmarksJson + ",\"elements\":[" + string.Join(",", list.ToArray()) + "]}";
       } catch {}
     });
 
     t.SetApartmentState(System.Threading.ApartmentState.STA);
     t.Start();
-    t.Join(900);
+    t.Join(1300);
     return jsonResult;
   }
 
@@ -211,38 +380,13 @@ try {
 $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
 
 function Get-DesktopWindows() {
-  $windows = [System.Collections.Generic.List[object]]::new()
-  $callback = [DesktopNative+EnumProc]{ param($h, $p)
-    if ([DesktopNative]::IsWindowVisible($h)) {
-      $title = [Text.StringBuilder]::new(1024)
-      [void][DesktopNative]::GetWindowText($h, $title, $title.Capacity)
-      $rect = [DesktopNative+RECT]::new()
-      if ($title.Length -gt 0 -and [DesktopNative]::GetWindowRect($h, [ref]$rect)) {
-        $pId = 0
-        [void][DesktopNative]::GetWindowThreadProcessId($h, [ref]$pId)
-        $procName = ""
-        try {
-          $proc = [System.Diagnostics.Process]::GetProcessById($pId)
-          if ($proc) { $procName = $proc.ProcessName }
-        } catch {}
-
-        $windows.Add(@{
-          handle = $h.ToInt64().ToString();
-          title = $title.ToString();
-          processName = $procName;
-          bounds = @{
-            x = $rect.Left;
-            y = $rect.Top;
-            width = $rect.Right - $rect.Left;
-            height = $rect.Bottom - $rect.Top
-          }
-        })
-      }
-    }
-    return $true
+  try {
+    $raw = [DesktopNative]::GetWindowsJson()
+    $parsed = $raw | ConvertFrom-Json
+    return @($parsed)
+  } catch {
+    return @()
   }
-  [void][DesktopNative]::EnumWindows($callback, [IntPtr]::Zero)
-  return @($windows.ToArray())
 }
 
 function Find-WindowByText([string]$text) {
@@ -296,14 +440,90 @@ function Resolve-WindowHandle($request) {
     return $fg
   }
 
+  # Foreground bulunamadıysa en üstteki görünür açık pencereyi seç
+  $allWins = Get-DesktopWindows
+  if ($allWins -and $allWins.Count -gt 0) {
+    return [IntPtr]::new([long]$allWins[0].handle)
+  }
+
   return [IntPtr]::Zero
 }
 
-function Resolve-TargetElement([string]$target, [IntPtr]$handle) {
+function Resolve-TargetElement {
+  param(
+    [string]$target,
+    [IntPtr]$handle = [IntPtr]::Zero
+  )
   if ([string]::IsNullOrWhiteSpace($target)) { return $null }
   $cleanTarget = $target.Trim().TrimStart('[').TrimEnd(']')
+  $lower = $cleanTarget.ToLowerInvariant()
 
-  # 1. Son bulunan UI öğeleri listesinde ara ($script:LastUiElements)
+  $targetHwnd = if ($handle -ne [IntPtr]::Zero) { $handle } else { [DesktopNative]::GetForegroundWindow() }
+  $winRect = [DesktopNative+RECT]::new()
+  $hasRect = ($targetHwnd -ne [IntPtr]::Zero -and [DesktopNative]::GetWindowRect($targetHwnd, [ref]$winRect) -and ($winRect.Right -gt $winRect.Left))
+  $wLeft = if ($hasRect) { $winRect.Left } else { 0 }
+  $wTop = if ($hasRect) { $winRect.Top } else { 0 }
+  $wRight = if ($hasRect) { $winRect.Right } else { 1920 }
+  $wBottom = if ($hasRect) { $winRect.Bottom } else { 1080 }
+  $wWidth = $wRight - $wLeft
+  $wHeight = $wBottom - $wTop
+
+  # 1. Eğer hedef açıkça bir landmark ismi ise
+  if ($lower -eq 'bottom_input_bar' -or $lower -eq 'landmark_bottom_input_bar') {
+    if ($script:LastUiElements) {
+      foreach ($el in $script:LastUiElements) {
+        if ($el.type -eq 'Edit' -or $el.type -eq 'Document') { return $el }
+      }
+    }
+    return @{
+      id = "landmark_bottom_input_bar";
+      type = "Landmark";
+      name = "Sohbet/Mesaj Giris Kutusu Tahmini Bolgesi (Alt Cubuk)";
+      x = [int]($wLeft + ($wWidth * 0.62));
+      y = [int]($wBottom - 42);
+      rect = @{ left = [int]($wLeft + ($wWidth * 0.3)); top = [int]($wBottom - 60); width = [int]($wWidth * 0.6); height = 40 }
+    }
+  }
+
+  if ($lower -eq 'bottom_send_button' -or $lower -eq 'landmark_bottom_send_button') {
+    if ($script:LastUiElements) {
+      foreach ($el in $script:LastUiElements) {
+        if ($el.name -match 'gönder|gonder|send' -or ($el.type -eq 'Button' -and $el.x -gt ($wRight - 100) -and $el.y -gt ($wBottom - 80))) { return $el }
+      }
+    }
+    return @{
+      id = "landmark_bottom_send_button";
+      type = "Landmark";
+      name = "Gonder Butonu Tahmini Bolgesi (Sag Alt)";
+      x = [int]($wRight - 45);
+      y = [int]($wBottom - 42);
+      rect = @{ left = [int]($wRight - 65); top = [int]($wBottom - 60); width = 40; height = 40 }
+    }
+  }
+
+  if ($lower -eq 'left_search_box' -or $lower -eq 'landmark_left_search_box') {
+    return @{
+      id = "landmark_left_search_box";
+      type = "Landmark";
+      name = "Sol Panel Arama Kutusu Tahmini Bolgesi";
+      x = [int]($wLeft + 140);
+      y = [int]($wTop + 115);
+      rect = @{ left = [int]($wLeft + 20); top = [int]($wTop + 95); width = 240; height = 40 }
+    }
+  }
+
+  if ($lower -eq 'left_first_item' -or $lower -eq 'landmark_left_first_item') {
+    return @{
+      id = "landmark_left_first_item";
+      type = "Landmark";
+      name = "Sol Liste Ilk Oge / Sohbet Bolgesi";
+      x = [int]($wLeft + 160);
+      y = [int]($wTop + 195);
+      rect = @{ left = [int]($wLeft + 20); top = [int]($wTop + 165); width = 280; height = 60 }
+    }
+  }
+
+  # 2. Son bulunan UI öğeleri listesinde ara ($script:LastUiElements)
   if ($script:LastUiElements -and $script:LastUiElements.Count -gt 0) {
     foreach ($el in $script:LastUiElements) {
       if ($el.id -eq $cleanTarget -or $el.id -eq $target) { return $el }
@@ -315,8 +535,8 @@ function Resolve-TargetElement([string]$target, [IntPtr]$handle) {
     }
   }
 
-  # 2. Bulunamadıysa hızlı GetUiElementsJson çağırıp güncelle
-  $hStr = if ($handle -ne [IntPtr]::Zero) { $handle.ToInt64().ToString() } else { "" }
+  # 3. Bulunamadıysa hızlı GetUiElementsJson çağırıp güncelle
+  $hStr = if ($targetHwnd -ne [IntPtr]::Zero) { $targetHwnd.ToInt64().ToString() } else { "" }
   try {
     $rawJson = [DesktopNative]::GetUiElementsJson($hStr)
     $resObj = $rawJson | ConvertFrom-Json
@@ -335,10 +555,65 @@ function Resolve-TargetElement([string]$target, [IntPtr]$handle) {
     }
   } catch {}
 
+  # 4. Model "mesaj" / "input" dedi ama UIA'da bulunamadıysa landmark fallback
+  if ($lower -match 'mesaj|message|chat_input|input_bar|yaz') {
+    if ($script:LastUiElements) {
+      foreach ($el in $script:LastUiElements) {
+        if ($el.type -eq 'Edit' -or $el.type -eq 'Document') { return $el }
+      }
+    }
+    return @{
+      id = "landmark_bottom_input_bar";
+      type = "Landmark";
+      name = "Sohbet/Mesaj Giris Kutusu Tahmini Bolgesi (Alt Cubuk)";
+      x = [int]($wLeft + ($wWidth * 0.62));
+      y = [int]($wBottom - 42);
+      rect = @{ left = [int]($wLeft + ($wWidth * 0.3)); top = [int]($wBottom - 60); width = [int]($wWidth * 0.6); height = 40 }
+    }
+  }
+
+  if ($lower -match 'gönder|gonder|send') {
+    if ($script:LastUiElements) {
+      foreach ($el in $script:LastUiElements) {
+        if ($el.name -match 'gönder|gonder|send' -or ($el.type -eq 'Button' -and $el.x -gt ($wRight - 100) -and $el.y -gt ($wBottom - 80))) { return $el }
+      }
+    }
+    return @{
+      id = "landmark_bottom_send_button";
+      type = "Landmark";
+      name = "Gonder Butonu Tahmini Bolgesi (Sag Alt)";
+      x = [int]($wRight - 45);
+      y = [int]($wBottom - 42);
+      rect = @{ left = [int]($wRight - 65); top = [int]($wBottom - 60); width = 40; height = 40 }
+    }
+  }
+
+  if ($lower -match 'arama|ara|search') {
+    return @{
+      id = "landmark_left_search_box";
+      type = "Landmark";
+      name = "Sol Panel Arama Kutusu Tahmini Bolgesi";
+      x = [int]($wLeft + 140);
+      y = [int]($wTop + 115);
+      rect = @{ left = [int]($wLeft + 20); top = [int]($wTop + 95); width = 240; height = 40 }
+    }
+  }
+
+  if ($lower -match 'sohbet|first_chat|first_item') {
+    return @{
+      id = "landmark_left_first_item";
+      type = "Landmark";
+      name = "Sol Liste Ilk Oge / Sohbet Bolgesi";
+      x = [int]($wLeft + 160);
+      y = [int]($wTop + 195);
+      rect = @{ left = [int]($wLeft + 20); top = [int]($wTop + 165); width = 280; height = 60 }
+    }
+  }
+
   return $null
 }
 
-function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
+function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements, $activeHandle) {
   $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
   try {
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -346,25 +621,43 @@ function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
 
     $neonGreen = [System.Drawing.Color]::FromArgb(148, 216, 45)
     $darkBg = [System.Drawing.Color]::FromArgb(220, 11, 19, 14)
-    $gridColor = [System.Drawing.Color]::FromArgb(55, 148, 216, 45)
+    $gridColor = [System.Drawing.Color]::FromArgb(45, 148, 216, 45)
+    $stampBg = [System.Drawing.Color]::FromArgb(210, 15, 23, 42)
+    $stampColor = [System.Drawing.Color]::FromArgb(102, 217, 232) # Parlak camgöbeği (#66D9E8)
 
     $gridPen = [System.Drawing.Pen]::new($gridColor, 1)
     $textBrush = [System.Drawing.SolidBrush]::new($neonGreen)
     $bgBrush = [System.Drawing.SolidBrush]::new($darkBg)
+    $stampBrush = [System.Drawing.SolidBrush]::new($stampColor)
+    $stampBgBrush = [System.Drawing.SolidBrush]::new($stampBg)
     $badgeBorderPen = [System.Drawing.Pen]::new($neonGreen, 1)
+    $stampBorderPen = [System.Drawing.Pen]::new($stampColor, 1)
     $badgeOutlinePen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(80, 148, 216, 45), 1)
+
     $rulerFont = [System.Drawing.Font]::new("Consolas", 8, [System.Drawing.FontStyle]::Bold)
+    $stampFont = [System.Drawing.Font]::new("Consolas", 7, [System.Drawing.FontStyle]::Bold)
     $badgeFont = [System.Drawing.Font]::new("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
 
     try {
+      # 1. 4-Kenar Cetveli ve 100px Kılavuz Çizgileri
       for ($x = 100; $x -lt $screen.Width; $x += 100) {
         $graphics.DrawLine($gridPen, $x, 0, $x, $screen.Height)
         $numStr = "$x"
         $sz = $graphics.MeasureString($numStr, $rulerFont)
         $bx = [int]($x - ($sz.Width / 2.0))
-        $graphics.FillRectangle($bgBrush, $bx, 2, [int]$sz.Width + 4, 15)
-        $graphics.DrawRectangle($badgeBorderPen, $bx, 2, [int]$sz.Width + 4, 15)
+        $bw = [int]$sz.Width + 4
+        $bh = 15
+
+        # Üst kenar cetveli
+        $graphics.FillRectangle($bgBrush, $bx, 2, $bw, $bh)
+        $graphics.DrawRectangle($badgeBorderPen, $bx, 2, $bw, $bh)
         $graphics.DrawString($numStr, $rulerFont, $textBrush, $bx + 2, 2)
+
+        # Alt kenar cetveli (Height - 20)
+        $bottomY = [Math]::Max(0, $screen.Height - 18)
+        $graphics.FillRectangle($bgBrush, $bx, $bottomY, $bw, $bh)
+        $graphics.DrawRectangle($badgeBorderPen, $bx, $bottomY, $bw, $bh)
+        $graphics.DrawString($numStr, $rulerFont, $textBrush, $bx + 2, $bottomY)
       }
 
       for ($y = 100; $y -lt $screen.Height; $y += 100) {
@@ -372,11 +665,69 @@ function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
         $numStr = "$y"
         $sz = $graphics.MeasureString($numStr, $rulerFont)
         $by = [int]($y - ($sz.Height / 2.0))
-        $graphics.FillRectangle($bgBrush, 2, $by, [int]$sz.Width + 4, 15)
-        $graphics.DrawRectangle($badgeBorderPen, 2, $by, [int]$sz.Width + 4, 15)
+        $bw = [int]$sz.Width + 4
+        $bh = 15
+
+        # Sol kenar cetveli
+        $graphics.FillRectangle($bgBrush, 2, $by, $bw, $bh)
+        $graphics.DrawRectangle($badgeBorderPen, 2, $by, $bw, $bh)
         $graphics.DrawString($numStr, $rulerFont, $textBrush, 4, $by)
+
+        # Sağ kenar cetveli (Width - 42)
+        $rightX = [Math]::Max(0, $screen.Width - 42)
+        $graphics.FillRectangle($bgBrush, $rightX, $by, $bw, $bh)
+        $graphics.DrawRectangle($badgeBorderPen, $rightX, $by, $bw, $bh)
+        $graphics.DrawString($numStr, $rulerFont, $textBrush, $rightX + 2, $by)
       }
 
+      # 2. Ekran İçi (X,Y) Kesişim Damgaları (Her 200px'de bir)
+      for ($gx = 200; $gx -lt ($screen.Width - 60); $gx += 200) {
+        for ($gy = 200; $gy -lt ($screen.Height - 50); $gy += 200) {
+          $stampText = "($gx,$gy)"
+          $stSz = $graphics.MeasureString($stampText, $stampFont)
+          $stW = [int]$stSz.Width + 4
+          $stH = 13
+          $stX = $gx + 3
+          $stY = $gy + 3
+
+          $graphics.FillRectangle($stampBgBrush, $stX, $stY, $stW, $stH)
+          $graphics.DrawRectangle($stampBorderPen, $stX, $stY, $stW, $stH)
+          $graphics.DrawString($stampText, $stampFont, $stampBrush, $stX + 2, $stY)
+        }
+      }
+
+      # 3. Aktif Hedef Pencere Çerçevesi (2px #66D9E8 / Parlak Camgöbeği)
+      if ($activeHandle -and $activeHandle -ne [IntPtr]::Zero -and [DesktopNative]::IsWindow($activeHandle)) {
+        $winRect = [DesktopNative+RECT]::new()
+        if ([DesktopNative]::GetWindowRect($activeHandle, [ref]$winRect)) {
+          $wx = [Math]::Max(0, $winRect.Left - $screen.X)
+          $wy = [Math]::Max(0, $winRect.Top - $screen.Y)
+          $ww = $winRect.Right - $winRect.Left
+          $wh = $winRect.Bottom - $winRect.Top
+
+          if ($ww -gt 30 -and $wh -gt 30) {
+            $cyanPen = [System.Drawing.Pen]::new($stampColor, 2)
+            try {
+              $graphics.DrawRectangle($cyanPen, $wx, $wy, $ww, $wh)
+
+              $altLabel = "[Aktif Pencere Alt Siniri: Y=$($winRect.Bottom)]"
+              $lblSz = $graphics.MeasureString($altLabel, $badgeFont)
+              $lblW = [int]$lblSz.Width + 6
+              $lblH = 17
+              $lblX = $wx + 6
+              $lblY = [Math]::Max(0, ($wy + $wh) - 22)
+
+              $graphics.FillRectangle($stampBgBrush, $lblX, $lblY, $lblW, $lblH)
+              $graphics.DrawRectangle($cyanPen, $lblX, $lblY, $lblW, $lblH)
+              $graphics.DrawString($altLabel, $badgeFont, $stampBrush, $lblX + 3, $lblY + 1)
+            } finally {
+              $cyanPen.Dispose()
+            }
+          }
+        }
+      }
+
+      # 4. Etkileşimli UI Öğeleri Rozetleri
       if ($uiElements) {
         foreach ($el in $uiElements) {
           try {
@@ -403,9 +754,13 @@ function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
       $gridPen.Dispose()
       $textBrush.Dispose()
       $bgBrush.Dispose()
+      $stampBrush.Dispose()
+      $stampBgBrush.Dispose()
       $badgeBorderPen.Dispose()
+      $stampBorderPen.Dispose()
       $badgeOutlinePen.Dispose()
       $rulerFont.Dispose()
+      $stampFont.Dispose()
       $badgeFont.Dispose()
     }
   } finally {
@@ -551,17 +906,22 @@ function Execute-DesktopRequest($request) {
       action = 'inspect';
       handle = [string]$resObj.handle;
       windowTitle = [string]$resObj.windowTitle;
+      windowBounds = $resObj.windowBounds;
+      landmarks = $resObj.landmarks;
       elements = $elements;
     }
   }
 
   if ($action -eq 'screenshot') {
     $file = [string]$request.screenshotPath
-    if (-not [IO.Path]::IsPathRooted($file) -or [IO.Path]::GetExtension($file) -ne '.png') {
-      throw 'Invalid screenshot path.'
+    if ([string]::IsNullOrWhiteSpace($file) -or [IO.Path]::GetExtension($file) -ne '.png' -or -not [IO.Path]::IsPathRooted($file)) {
+      $file = [IO.Path]::Combine([IO.Path]::GetTempPath(), "tbot-screen-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).png")
     }
     $bitmap = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
     $uiElements = @()
+    $activeHwnd = Resolve-WindowHandle $request
+    $windowBounds = $null
+    $landmarks = $null
     try {
       $graphics = [Drawing.Graphics]::FromImage($bitmap)
       try {
@@ -576,17 +936,19 @@ function Execute-DesktopRequest($request) {
         $graphics.Dispose()
       }
 
-      $handleInput = if ($request.handle) { [string]$request.handle } else { "" }
+      $handleInput = if ($activeHwnd -ne [IntPtr]::Zero) { $activeHwnd.ToInt64().ToString() } elseif ($request.handle) { [string]$request.handle } else { "" }
       try {
         $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
         $uiObj = $rawJson | ConvertFrom-Json
         $uiElements = @($uiObj.elements)
+        $windowBounds = $uiObj.windowBounds
+        $landmarks = $uiObj.landmarks
         $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
         foreach ($item in $uiElements) { $script:LastUiElements.Add($item) }
       } catch {}
 
       try {
-        Draw-ScreenshotOverlays $bitmap $screen $uiElements
+        Draw-ScreenshotOverlays $bitmap $screen $uiElements $activeHwnd
       } catch {}
 
       $bitmap.Save($file, [Drawing.Imaging.ImageFormat]::Png)
@@ -597,6 +959,8 @@ function Execute-DesktopRequest($request) {
       path = $file;
       screenshotPath = $file;
       bounds = @{ x=$screen.X; y=$screen.Y; width=$screen.Width; height=$screen.Height };
+      windowBounds = $windowBounds;
+      landmarks = $landmarks;
       elements = @($uiElements);
     }
   }
@@ -604,12 +968,17 @@ function Execute-DesktopRequest($request) {
   if ($action -eq 'open' -or $action -eq 'launch' -or $action -eq 'start') {
     $targetApp = if ($request.target) { [string]$request.target } elseif ($request.text) { [string]$request.text } elseif ($request.command) { [string]$request.command } else { [string]$request.app }
     if ([string]::IsNullOrWhiteSpace($targetApp)) {
-      throw 'A target application or URL is required for open.'
+      $fg = [DesktopNative]::GetForegroundWindow()
+      return @{
+        attempted = $false;
+        action = 'open';
+        warning = 'A target application or URL was not specified for open action.';
+        foreground = $fg.ToInt64().ToString();
+      }
     }
     try {
       Start-Process $targetApp
     } catch {
-      # Fallback to powershell Start-Process via cmd
       Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$targetApp`"" -WindowStyle Hidden
     }
     [System.Threading.Thread]::Sleep(500)
@@ -636,7 +1005,7 @@ function Execute-DesktopRequest($request) {
     $moveX = if ($null -ne $request.x) { [int]$request.x } else { $null }
     $moveY = if ($null -ne $request.y) { [int]$request.y } else { $null }
     if (($null -eq $moveX -or $null -eq $moveY) -and $request.target) {
-      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      $matched = Resolve-TargetElement -target ([string]$request.target) -handle $handle
       if ($matched) {
         $moveX = [int]$matched.x
         $moveY = [int]$matched.y
@@ -650,8 +1019,54 @@ function Execute-DesktopRequest($request) {
     }
     $x = [int]$moveX
     $y = [int]$moveY
+
+    # Smart Window Clamping
+    $clampedNotice = ""
+    if ($handle -ne [IntPtr]::Zero) {
+      $winRect = [DesktopNative+RECT]::new()
+      if ([DesktopNative]::GetWindowRect($handle, [ref]$winRect)) {
+        $winH = $winRect.Bottom - $winRect.Top
+        if ($winH -gt 60) {
+          $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
+          if (-not $isTaskbarTarget -and ($y -ge ($winRect.Bottom - 8) -and $y -le ($winRect.Bottom + 140))) {
+            $origY = $y
+            $y = $winRect.Bottom - 42
+            $clampedNotice = "[AKILLI HIZALAMA: Y koordinati pencere alt sinirina ($y) hizalandi (orijinal: $origY)]"
+          }
+        }
+      }
+    }
+
     [void][DesktopNative]::SetCursorPos($x, $y)
-    return @{ attempted = $true; action = 'move'; x = $x; y = $y }
+    return @{ attempted = $true; action = 'move'; x = $x; y = $y; notice = $clampedNotice }
+  }
+
+  if ($action -eq 'drag') {
+    $startX = if ($null -ne $request.x) { [int]$request.x } else { $null }
+    $startY = if ($null -ne $request.y) { [int]$request.y } else { $null }
+    if ($null -eq $startX -or $null -eq $startY) {
+      $pt = [DesktopNative+POINT]::new()
+      [void][DesktopNative]::GetCursorPos([ref]$pt)
+      $startX = $pt.X
+      $startY = $pt.Y
+    }
+    $endX = if ($null -ne $request.to_x) { [int]$request.to_x } else { $startX + 100 }
+    $endY = if ($null -ne $request.to_y) { [int]$request.to_y } else { $startY }
+
+    [void][DesktopNative]::SetCursorPos($startX, $startY)
+    [System.Threading.Thread]::Sleep(30)
+    [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
+    [System.Threading.Thread]::Sleep(40)
+
+    for ($step = 1; $step -le 5; $step++) {
+      $curX = [int]($startX + ($endX - $startX) * ($step / 5.0))
+      $curY = [int]($startY + ($endY - $startY) * ($step / 5.0))
+      [void][DesktopNative]::SetCursorPos($curX, $curY)
+      [System.Threading.Thread]::Sleep(20)
+    }
+
+    [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
+    return @{ attempted = $true; action = 'drag'; from = @{ x = $startX; y = $startY }; to = @{ x = $endX; y = $endY } }
   }
 
   # Gerekirse pencereyi öne getir
@@ -665,7 +1080,7 @@ function Execute-DesktopRequest($request) {
 
     # Target çözümlemesi
     if ($request.target) {
-      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      $matched = Resolve-TargetElement -target ([string]$request.target) -handle $handle
       if ($matched) {
         $targetX = [int]$matched.x
         $targetY = [int]$matched.y
@@ -690,6 +1105,23 @@ function Execute-DesktopRequest($request) {
     $x = [int]$targetX
     $y = [int]$targetY
 
+    # Smart Window Clamping
+    $clampedNotice = ""
+    if ($handle -ne [IntPtr]::Zero) {
+      $winRect = [DesktopNative+RECT]::new()
+      if ([DesktopNative]::GetWindowRect($handle, [ref]$winRect)) {
+        $winH = $winRect.Bottom - $winRect.Top
+        if ($winH -gt 60) {
+          $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
+          if (-not $isTaskbarTarget -and ($y -ge ($winRect.Bottom - 8) -and $y -le ($winRect.Bottom + 140))) {
+            $origY = $y
+            $y = $winRect.Bottom - 42
+            $clampedNotice = "[AKILLI HIZALAMA: Y koordinati pencere alt sinirina ($y) hizalandi (orijinal: $origY)]"
+          }
+        }
+      }
+    }
+
     [void][DesktopNative]::SetCursorPos($x, $y)
 
     if ($action -eq 'click') {
@@ -710,12 +1142,12 @@ function Execute-DesktopRequest($request) {
         [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
         [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
       }
-      return @{ attempted = $true; action = 'click'; x = $x; y = $y; button = $btn }
+      return @{ attempted = $true; action = 'click'; x = $x; y = $y; button = $btn; notice = $clampedNotice }
     } else {
       # Scroll
       $delta = if ($null -ne $request.delta) { [int]$request.delta } else { -120 }
       [DesktopNative]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero) # MOUSEEVENTF_WHEEL
-      return @{ attempted = $true; action = 'scroll'; x = $x; y = $y; delta = $delta }
+      return @{ attempted = $true; action = 'scroll'; x = $x; y = $y; delta = $delta; notice = $clampedNotice }
     }
   } elseif ($action -eq 'type') {
     $typeX = if ($null -ne $request.x) { [int]$request.x } else { $null }
@@ -723,7 +1155,7 @@ function Execute-DesktopRequest($request) {
 
     # Koordinat veya target varsa önce tıkla
     if ($request.target) {
-      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      $matched = Resolve-TargetElement -target ([string]$request.target) -handle $handle
       if ($matched) {
         $typeX = [int]$matched.x
         $typeY = [int]$matched.y
@@ -732,6 +1164,21 @@ function Execute-DesktopRequest($request) {
     if ($null -ne $typeX -and $null -ne $typeY) {
       $tx = [int]$typeX
       $ty = [int]$typeY
+
+      # Smart Window Clamping
+      if ($handle -ne [IntPtr]::Zero) {
+        $winRect = [DesktopNative+RECT]::new()
+        if ([DesktopNative]::GetWindowRect($handle, [ref]$winRect)) {
+          $winH = $winRect.Bottom - $winRect.Top
+          if ($winH -gt 60) {
+            $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
+            if (-not $isTaskbarTarget -and ($ty -ge ($winRect.Bottom - 8) -and $ty -le ($winRect.Bottom + 140))) {
+              $ty = $winRect.Bottom - 42
+            }
+          }
+        }
+      }
+
       [void][DesktopNative]::SetCursorPos($tx, $ty)
       [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
       [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
@@ -784,7 +1231,13 @@ function Execute-DesktopRequest($request) {
     Send-KeyboardKey $keyInput
     return @{ attempted = $true; action = 'key'; key = $keyInput }
   } else {
-    throw "Unsupported action: $action"
+    $fg = [DesktopNative]::GetForegroundWindow()
+    return @{
+      attempted = $false;
+      action = $action;
+      warning = "Unsupported action '$action'. Available actions: windows, inspect, screenshot, focus, click, type, key, scroll, move, drag, open, wait.";
+      foreground = $fg.ToInt64().ToString();
+    }
   }
 }
 
@@ -804,7 +1257,18 @@ if ($Action -eq 'daemon') {
     } catch {
       $id = $null
       if ($req -and $req.id) { $id = $req.id }
-      $res = @{ id = $id; ok = $false; error = $_.Exception.Message }
+      $errText = $_.Exception.Message
+      $fallbackFg = [DesktopNative]::GetForegroundWindow()
+      $fallbackTitle = [Text.StringBuilder]::new(512)
+      try { [void][DesktopNative]::GetWindowText($fallbackFg, $fallbackTitle, $fallbackTitle.Capacity) } catch {}
+      $res = @{
+        id = $id;
+        ok = $true;
+        warning = $errText;
+        fallback = $true;
+        handle = $fallbackFg.ToInt64().ToString();
+        windowTitle = $fallbackTitle.ToString();
+      }
       [Console]::Out.WriteLine(($res | ConvertTo-Json -Depth 6 -Compress))
     }
   }
@@ -818,8 +1282,18 @@ if ($Action -eq 'daemon') {
       [Console]::Out.WriteLine(($res | ConvertTo-Json -Depth 6 -Compress))
     }
   } catch {
-    $res = @{ ok = $false; error = $_.Exception.Message }
+    $errText = $_.Exception.Message
+    $fallbackFg = [DesktopNative]::GetForegroundWindow()
+    $fallbackTitle = [Text.StringBuilder]::new(512)
+    try { [void][DesktopNative]::GetWindowText($fallbackFg, $fallbackTitle, $fallbackTitle.Capacity) } catch {}
+    $res = @{
+      ok = $true;
+      warning = $errText;
+      fallback = $true;
+      handle = $fallbackFg.ToInt64().ToString();
+      windowTitle = $fallbackTitle.ToString();
+    }
     [Console]::Out.WriteLine(($res | ConvertTo-Json -Depth 6 -Compress))
-    exit 1
+    exit 0
   }
 }
