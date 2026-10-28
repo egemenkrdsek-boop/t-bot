@@ -32,7 +32,7 @@ export function createOpenAIResponsesProvider(config) {
                         input.push({ role: message.role, content: message.content });
                 }
                 flushImages();
-                const effort = describeEffort('openai', config.model, config.effort).effective;
+                const effort = describeEffort('openai', config.model, options.effort ?? config.effort).effective;
                 const body = { model: config.model, input, store: false, stream: true, ...(effort ? { reasoning: { effort } } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) } : {}) };
                 let response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(body), signal, redirect: 'error' });
                 if (response.status === 401) {

@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
-const secretCache = new Map();
+export const secretCache = new Map();
 export class SecretStorageError extends Error {
     code;
     constructor(code) {
@@ -248,5 +248,56 @@ export async function deleteMcpSecret(service) {
 export async function hasMcpSecret(service) {
     const val = await getMcpSecret(service);
     return Boolean(val);
+}
+/**
+ * Universal in-memory cached secret retrieval.
+ * Returns in 0ms if already cached, otherwise resolves from DPAPI/disk and stores into secretCache.
+ */
+export async function getSecret(key) {
+    const normalizedKey = key.trim();
+    if (secretCache.has(normalizedKey)) {
+        return secretCache.get(normalizedKey);
+    }
+    // 1. Try standard API key
+    try {
+        const apiKey = await getApiKey(normalizedKey);
+        if (apiKey) {
+            secretCache.set(normalizedKey, apiKey);
+            return apiKey;
+        }
+    }
+    catch { }
+    // 2. Try custom secret
+    try {
+        const custom = await getCustomSecret(normalizedKey);
+        if (custom) {
+            secretCache.set(normalizedKey, custom);
+            return custom;
+        }
+    }
+    catch { }
+    // 3. Try MCP secret
+    try {
+        const mcp = await getMcpSecret(normalizedKey);
+        if (mcp) {
+            secretCache.set(normalizedKey, mcp);
+            return mcp;
+        }
+    }
+    catch { }
+    return undefined;
+}
+export async function setSecret(key, value) {
+    const normalizedKey = key.trim();
+    const prepared = prepareApiKey(value);
+    secretCache.set(normalizedKey, prepared);
+    return setApiKey(normalizedKey, value);
+}
+export async function deleteSecret(key) {
+    const normalizedKey = key.trim();
+    secretCache.delete(normalizedKey);
+    await deleteApiKey(normalizedKey).catch(() => undefined);
+    await deleteCustomSecret(normalizedKey).catch(() => undefined);
+    await deleteMcpSecret(normalizedKey).catch(() => undefined);
 }
 //# sourceMappingURL=secrets.js.map

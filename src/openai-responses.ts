@@ -1,4 +1,4 @@
-import type { Message, Provider, ProviderEvent, ToolDefinition, ToolCall } from './types.js';
+import type { Message, Provider, ProviderEvent, ProviderStreamOptions, ToolDefinition, ToolCall } from './types.js';
 import { describeEffort, type EffortLevel } from './effort.js';
 import { sse } from './providers.js';
 
@@ -8,7 +8,7 @@ interface Config { model: string; apiKey: string; effort?: EffortLevel; timeoutM
 
 /** Stateless Responses API adapter for models that require it for function calls. */
 export function createOpenAIResponsesProvider(config: Config): Provider {
-  return { id: 'openai', label: 'OpenAI', async *stream(messages, tools: ToolDefinition[], options = {}): AsyncGenerator<ProviderEvent> {
+  return { id: 'openai', label: 'OpenAI', async *stream(messages, tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]) : AbortSignal.timeout(config.timeoutMs ?? 120_000);
     try {
       const input: Item[] = []; let pendingImages: Item[] = [];
@@ -26,7 +26,7 @@ export function createOpenAIResponsesProvider(config: Config): Provider {
         else input.push({ role: message.role, content: message.content });
       }
       flushImages();
-      const effort = describeEffort('openai', config.model, config.effort).effective;
+      const effort = describeEffort('openai', config.model, options.effort ?? config.effort).effective;
       const body = { model: config.model, input, store: false, stream: true, ...(effort ? { reasoning: { effort } } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) } : {}) };
       let response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(body), signal, redirect: 'error' });
       if (response.status === 401) { yield { type: 'error', code: 'authentication', error: 'OpenAI kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden API anahtarını kontrol edin.' }; return; }

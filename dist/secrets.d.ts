@@ -1,4 +1,5 @@
 export type ProviderId = string;
+export declare const secretCache: Map<string, string>;
 export declare class SecretStorageError extends Error {
     readonly code: 'security' | 'encrypt' | 'decrypt' | 'read' | 'save';
     constructor(code: 'security' | 'encrypt' | 'decrypt' | 'read' | 'save');
@@ -22,3 +23,10 @@ export declare function getMcpSecret(service: string): Promise<string | undefine
 export declare function setMcpSecret(service: string, token: string): Promise<SecretStorageStatus>;
 export declare function deleteMcpSecret(service: string): Promise<void>;
 export declare function hasMcpSecret(service: string): Promise<boolean>;
+/**
+ * Universal in-memory cached secret retrieval.
+ * Returns in 0ms if already cached, otherwise resolves from DPAPI/disk and stores into secretCache.
+ */
+export declare function getSecret(key: string): Promise<string | undefined>;
+export declare function setSecret(key: string, value: string): Promise<SecretStorageStatus>;
+export declare function deleteSecret(key: string): Promise<void>;

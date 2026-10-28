@@ -31,10 +31,15 @@ export type ProviderEvent =
   | { type: 'error'; error: string; code?: 'authentication' };
 export type StreamEvent = ProviderEvent;
 
+export interface ProviderStreamOptions {
+  signal?: AbortSignal;
+  effort?: EffortLevel;
+}
+
 export interface Provider {
   id: string;
   label: string;
-  stream(messages: Message[], tools: ToolDefinition[], options?: { signal?: AbortSignal }): AsyncIterable<ProviderEvent>;
+  stream(messages: Message[], tools: ToolDefinition[], options?: ProviderStreamOptions): AsyncIterable<ProviderEvent>;
 }
 export interface ApprovalRequest {
   tool: string;

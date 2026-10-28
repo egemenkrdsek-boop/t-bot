@@ -1,6 +1,7 @@
 import ts from 'typescript';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { extname, join, relative } from 'node:path';
+import { extname, join, relative, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { estimateTokens } from './token-optimizer.js';
 
 export interface AstSymbolItem {
@@ -627,14 +628,42 @@ export function extractFileAstOutline(
   };
 }
 
+/**
+ * Detects overly broad or system directories (homedir, desktop root, AppData, etc.)
+ * where generating an AST repository map would scan thousands of unrelated files.
+ */
+export function isBroadOrSystemWorkspace(ws?: string): boolean {
+  if (!ws) return true;
+  const resolved = resolve(ws).toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+  const home = homedir().toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+
+  // 1. Kullanıcının ana dizini (os.homedir())
+  if (resolved === home) return true;
+
+  // 2. Masaüstü kök dizini (Desktop / Masaüstü)
+  if (resolved === `${home}/desktop` || resolved === `${home}/masaüstü`) return true;
+
+  // 3. AppData / Local / Programs kurulu Electron dizini
+  if (resolved.includes('/appdata/local/programs') || resolved.includes('/appdata/roaming')) {
+    return true;
+  }
+
+  // 4. Sürücü kök dizini (C:, D:, /)
+  if (/^[a-z]:$/i.test(resolved) || resolved === '') return true;
+
+  return false;
+}
+
 async function collectWorkspaceSourceFiles(
   rootDir: string,
-  maxFiles = 80
+  maxFiles = 80,
+  startMs = Date.now()
 ): Promise<string[]> {
   const collected: string[] = [];
   const queue: string[] = [rootDir];
 
   while (queue.length > 0 && collected.length < maxFiles) {
+    if (Date.now() - startMs > 250) break;
     const currentDir = queue.shift()!;
     let entries;
     try {
@@ -646,7 +675,7 @@ async function collectWorkspaceSourceFiles(
     entries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of entries) {
-      if (collected.length >= maxFiles) break;
+      if (collected.length >= maxFiles || Date.now() - startMs > 250) break;
       if (entry.name.startsWith('.') && entry.name !== '.env.example') {
         if (IGNORED_DIRS.has(entry.name)) continue;
       }
@@ -670,13 +699,16 @@ async function collectWorkspaceSourceFiles(
 /**
  * Builds a compact, query-ranked AST repository map within maxTokens budget.
  * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
+ * Strictly bounded by a 250ms time budget to never freeze the main thread.
  */
 export async function buildWorkspaceRepoMap(
   workspace: string,
   query?: string,
   maxTokens = 900
 ): Promise<string> {
-  const files = await collectWorkspaceSourceFiles(workspace, 80);
+  if (!workspace || isBroadOrSystemWorkspace(workspace)) return '';
+  const startMs = Date.now();
+  const files = await collectWorkspaceSourceFiles(workspace, 80, startMs);
   if (files.length === 0) return '';
 
   const keywords = (query ?? '')
@@ -687,6 +719,7 @@ export async function buildWorkspaceRepoMap(
   const rankedEntries: { relPath: string; summary: string; score: number }[] = [];
 
   for (const absPath of files) {
+    if (Date.now() - startMs > 250) break;
     let fileStat;
     try {
       fileStat = await stat(absPath);

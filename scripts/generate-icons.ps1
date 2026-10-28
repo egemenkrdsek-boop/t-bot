@@ -1,9 +1,9 @@
 # scripts/generate-icons.ps1
-# T Bot 2.0 Cyber-Zen 256x256 Icon & Windows ICO Generator
+# T Bot 2.0 Pure White (#FFFFFF) Background Multi-Size Icon & ICO Generator
 
 Add-Type -AssemblyName System.Drawing
 
-$outputDirs = @("build", "assets")
+$outputDirs = @("build", "assets", "src/desktop/renderer", "dist/desktop/renderer")
 foreach ($dir in $outputDirs) {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -18,7 +18,10 @@ $gfx = [System.Drawing.Graphics]::FromImage($bmp)
 $gfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 $gfx.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
 $gfx.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-$gfx.Clear([System.Drawing.Color]::Transparent)
+
+# 1. Fill entire 256x256 canvas with 100% PURE OPAQUE WHITE (#FFFFFF)
+$pureWhite = [System.Drawing.Color]::FromArgb(255, 255, 255, 255)
+$gfx.Clear($pureWhite)
 
 function Create-RoundedRectanglePath($x, $y, $w, $h, $radius) {
     $path = New-Object System.Drawing.Drawing2D.GraphicsPath
@@ -31,35 +34,20 @@ function Create-RoundedRectanglePath($x, $y, $w, $h, $radius) {
     return $path
 }
 
-# 1. Dark squircle background (#0D1117)
-$bgMargin = 10
+# 2. Draw subtle elegant #DCE6D9 rounded card border
+$bgMargin = 8
 $bgSize = 256 - ($bgMargin * 2)
-$bgRadius = 44
-$bgPath = Create-RoundedRectanglePath $bgMargin $bgMargin $bgSize $bgSize $bgRadius
+$bgRadius = 40
+$cardPath = Create-RoundedRectanglePath $bgMargin $bgMargin $bgSize $bgSize $bgRadius
 
-$ptStart = New-Object System.Drawing.PointF([float]$bgMargin, [float]$bgMargin)
-$ptEnd = New-Object System.Drawing.PointF([float]($bgMargin + $bgSize), [float]($bgMargin + $bgSize))
-$c1 = [System.Drawing.ColorTranslator]::FromHtml("#0D1117")
-$c2 = [System.Drawing.ColorTranslator]::FromHtml("#161B22")
-$brushBg = New-Object System.Drawing.Drawing2D.LinearGradientBrush($ptStart, $ptEnd, $c1, $c2)
-$gfx.FillPath($brushBg, $bgPath)
-$brushBg.Dispose()
-
-# 2. Outer cyber border
-$penBorder = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml("#30363D"), 2.0)
-$gfx.DrawPath($penBorder, $bgPath)
+# Draw crisp elegant border #DCE6D9 (2px)
+$borderCol = [System.Drawing.ColorTranslator]::FromHtml("#DCE6D9")
+$penBorder = New-Object System.Drawing.Pen($borderCol, 2.0)
+$gfx.DrawPath($penBorder, $cardPath)
 $penBorder.Dispose()
+$cardPath.Dispose()
 
-# 3. Inner neon cyan-mint subtle glow
-$glowMargin = $bgMargin + 2
-$glowSize = $bgSize - 4
-$glowPath = Create-RoundedRectanglePath $glowMargin $glowMargin $glowSize $glowSize ($bgRadius - 2)
-$penGlow = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(64, 102, 217, 232), 1.5)
-$gfx.DrawPath($penGlow, $glowPath)
-$penGlow.Dispose()
-$glowPath.Dispose()
-
-# 4. 14x14 Cyber-Zen Badge Matrix
+# 3. 14x14 Cyber-Zen Badge Matrix
 $mark = @(
   'GGGGGGGGGGGGG.',
   'GGGGGGGGGGGGGG',
@@ -92,11 +80,12 @@ for ($row = 0; $row -lt 14; $row++) {
         $px = $startX + ($col * ($cellSize + $cellGap))
         $py = $startY + ($row * ($cellSize + $cellGap))
         
-        # Cyber-Zen gradient: Tabit green (#94D82D) to crystal cyan (#66D9E8)
+        # Cyber-Zen gradient: Tabit vibrant green (#65B817 / #4D9A0F) to crystal cyan (#0891B2)
         $t = ($row + $col) / 26.0
-        $rG = [int](148 + (102 - 148) * $t)
-        $gG = [int](216 + (217 - 216) * $t)
-        $bG = [int](45 + (232 - 45) * $t)
+        # Start: 101, 184, 23 (#65B817) -> End: 8, 145, 178 (#0891B2)
+        $rG = [int](101 + (8 - 101) * $t)
+        $gG = [int](184 + (145 - 184) * $t)
+        $bG = [int](23 + (178 - 23) * $t)
         
         $brush = if ($char -eq 'W') {
             New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 255, 255, 255))
@@ -106,59 +95,127 @@ for ($row = 0; $row -lt 14; $row++) {
         
         $cPath = Create-RoundedRectanglePath $px $py $cellSize $cellSize 2.5
         $gfx.FillPath($brush, $cPath)
+        
+        # For 'W' cells, add a subtle 0.5px soft border for sharp distinction
+        if ($char -eq 'W') {
+            $wPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(60, 8, 145, 178), 0.75)
+            $gfx.DrawPath($wPen, $cPath)
+            $wPen.Dispose()
+        }
+        
         $cPath.Dispose()
         $brush.Dispose()
     }
 }
 
-$bgPath.Dispose()
 $gfx.Flush()
 $gfx.Dispose()
 
-# Save PNG
-$ms = New-Object System.IO.MemoryStream
-$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-$pngBytes = $ms.ToArray()
-$ms.Dispose()
+# Save 256x256 Master PNG
+$ms256 = New-Object System.IO.MemoryStream
+$bmp.Save($ms256, [System.Drawing.Imaging.ImageFormat]::Png)
+$png256Bytes = $ms256.ToArray()
+$ms256.Dispose()
+
+[System.IO.File]::WriteAllBytes("build/icon.png", $png256Bytes)
+[System.IO.File]::WriteAllBytes("assets/icon.png", $png256Bytes)
+
+# Generate multi-size PNG images for ICO: 256, 128, 64, 48, 32, 16
+$sizes = @(256, 128, 64, 48, 32, 16)
+$pngImages = @()
+
+foreach ($sz in $sizes) {
+    if ($sz -eq 256) {
+        $pngImages += ,@($sz, $png256Bytes)
+    } else {
+        $resizedBmp = New-Object System.Drawing.Bitmap($sz, $sz, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $rGfx = [System.Drawing.Graphics]::FromImage($resizedBmp)
+        $rGfx.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $rGfx.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $rGfx.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $rGfx.Clear($pureWhite)
+        
+        $destRect = New-Object System.Drawing.Rectangle(0, 0, $sz, $sz)
+        $srcRect = New-Object System.Drawing.Rectangle(0, 0, 256, 256)
+        $rGfx.DrawImage($bmp, $destRect, $srcRect, [System.Drawing.GraphicsUnit]::Pixel)
+        $rGfx.Flush()
+        $rGfx.Dispose()
+        
+        $rMs = New-Object System.IO.MemoryStream
+        $resizedBmp.Save($rMs, [System.Drawing.Imaging.ImageFormat]::Png)
+        $rBytes = $rMs.ToArray()
+        $rMs.Dispose()
+        $resizedBmp.Dispose()
+        
+        $pngImages += ,@($sz, $rBytes)
+    }
+}
 $bmp.Dispose()
 
-[System.IO.File]::WriteAllBytes("build/icon.png", $pngBytes)
-[System.IO.File]::WriteAllBytes("assets/icon.png", $pngBytes)
+# Construct Multi-layer Windows ICO format
+# ICONHEADER: 6 bytes
+# ICONDIRENTRY: 16 bytes per image
+$imageCount = $pngImages.Count
+$headerSize = 6 + (16 * $imageCount)
+$totalIcoSize = $headerSize
+foreach ($img in $pngImages) {
+    $totalIcoSize += $img[1].Length
+}
 
-# Generate Windows ICO format (256x256 PNG-embedded)
-$pngSize = $pngBytes.Length
-$icoBytes = New-Object byte[] (22 + $pngSize)
+$icoBytes = New-Object byte[] $totalIcoSize
 
-# ICONHEADER (6 bytes)
-$icoBytes[0] = 0; $icoBytes[1] = 0 # Reserved (0)
-$icoBytes[2] = 1; $icoBytes[3] = 0 # Type: 1 (ICO)
-$icoBytes[4] = 1; $icoBytes[5] = 0 # Image count: 1
+# ICONHEADER
+$icoBytes[0] = 0; $icoBytes[1] = 0 # Reserved
+$icoBytes[2] = 1; $icoBytes[3] = 0 # Type 1 (ICO)
+$icoBytes[4] = [byte]($imageCount -band 0xFF)
+$icoBytes[5] = [byte](($imageCount -shr 8) -band 0xFF)
 
-# ICONDIRENTRY (16 bytes)
-$icoBytes[6] = 0 # Width: 0 = 256px
-$icoBytes[7] = 0 # Height: 0 = 256px
-$icoBytes[8] = 0 # Colors: 0 = No palette
-$icoBytes[9] = 0 # Reserved
-$icoBytes[10] = 1; $icoBytes[11] = 0 # Planes: 1
-$icoBytes[12] = 32; $icoBytes[13] = 0 # BPP: 32
+$currentOffset = $headerSize
+for ($i = 0; $i -lt $imageCount; $i++) {
+    $sz = $pngImages[$i][0]
+    $data = $pngImages[$i][1]
+    $len = $data.Length
+    
+    $entryOffset = 6 + ($i * 16)
+    $icoBytes[$entryOffset + 0] = if ($sz -eq 256) { [byte]0 } else { [byte]$sz } # Width
+    $icoBytes[$entryOffset + 1] = if ($sz -eq 256) { [byte]0 } else { [byte]$sz } # Height
+    $icoBytes[$entryOffset + 2] = 0 # Colors
+    $icoBytes[$entryOffset + 3] = 0 # Reserved
+    $icoBytes[$entryOffset + 4] = 1; $icoBytes[$entryOffset + 5] = 0 # Planes: 1
+    $icoBytes[$entryOffset + 6] = 32; $icoBytes[$entryOffset + 7] = 0 # BPP: 32
+    
+    # Bytes in res (4 bytes little-endian)
+    $icoBytes[$entryOffset + 8] = [byte]($len -band 0xFF)
+    $icoBytes[$entryOffset + 9] = [byte](($len -shr 8) -band 0xFF)
+    $icoBytes[$entryOffset + 10] = [byte](($len -shr 16) -band 0xFF)
+    $icoBytes[$entryOffset + 11] = [byte](($len -shr 24) -band 0xFF)
+    
+    # Image offset (4 bytes little-endian)
+    $icoBytes[$entryOffset + 12] = [byte]($currentOffset -band 0xFF)
+    $icoBytes[$entryOffset + 13] = [byte](($currentOffset -shr 8) -band 0xFF)
+    $icoBytes[$entryOffset + 14] = [byte](($currentOffset -shr 16) -band 0xFF)
+    $icoBytes[$entryOffset + 15] = [byte](($currentOffset -shr 24) -band 0xFF)
+    
+    # Copy PNG bytes to offset
+    [System.Array]::Copy($data, 0, $icoBytes, $currentOffset, $len)
+    $currentOffset += $len
+}
 
-# PNG size (4 bytes little-endian)
-$icoBytes[14] = [byte]($pngSize -band 0xFF)
-$icoBytes[15] = [byte](($pngSize -shr 8) -band 0xFF)
-$icoBytes[16] = [byte](($pngSize -shr 16) -band 0xFF)
-$icoBytes[17] = [byte](($pngSize -shr 24) -band 0xFF)
+# Write multi-layer ICO to all target directories
+$targetIcoPaths = @(
+    "build/icon.ico",
+    "build/installerIcon.ico",
+    "assets/icon.ico",
+    "src/desktop/renderer/icon.ico"
+)
 
-# Offset (22 bytes header)
-$icoBytes[18] = 22
-$icoBytes[19] = 0
-$icoBytes[20] = 0
-$icoBytes[21] = 0
+if (Test-Path "dist/desktop/renderer") {
+    $targetIcoPaths += "dist/desktop/renderer/icon.ico"
+}
 
-# Copy PNG data
-[System.Array]::Copy($pngBytes, 0, $icoBytes, 22, $pngSize)
+foreach ($p in $targetIcoPaths) {
+    [System.IO.File]::WriteAllBytes($p, $icoBytes)
+    Write-Output "SAVED_ICO: $p ($($icoBytes.Length) bytes, $($imageCount) layers)"
+}
 
-[System.IO.File]::WriteAllBytes("build/icon.ico", $icoBytes)
-[System.IO.File]::WriteAllBytes("build/installerIcon.ico", $icoBytes)
-[System.IO.File]::WriteAllBytes("assets/icon.ico", $icoBytes)
-
-Write-Output "ICONS_GENERATED_SUCCESSFULLY: $($pngBytes.Length) bytes PNG, $($icoBytes.Length) bytes ICO"
+Write-Output "ICONS_GENERATION_COMPLETED_SUCCESSFULLY"

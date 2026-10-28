@@ -1,5 +1,10 @@
 import type { AgentEvent, AgentInput, ImageAttachment, Message, ToolCall } from './types.js';
 import type { Session } from './sessions.js';
+/**
+ * Fast detection for simple greetings or casual smalltalk.
+ * When true, bypasses repo-map, memory search, tool injection, and sets effort: low.
+ */
+export declare function isFastConversationalPrompt(input: string, hasImages: boolean): boolean;
 export declare function screenshotImage(call: ToolCall, result: string, workspace: string): Promise<ImageAttachment | undefined>;
 export interface AgentRunOptions {
     toolPolicy?: 'read-only' | 'all';

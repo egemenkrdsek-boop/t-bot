@@ -3,7 +3,7 @@ import { join, relative, isAbsolute, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { executeTool, getToolDefinitions, READ_ONLY_TOOLS, toolDefinitions } from './tools/index.js';
 import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
-import type { AgentEvent, AgentInput, ImageAttachment, Message, ToolCall } from './types.js';
+import type { AgentEvent, AgentInput, ImageAttachment, Message, ToolCall, ToolDefinition } from './types.js';
 import type { Session } from './sessions.js';
 import {
   pruneToolDefinitions,
@@ -43,6 +43,51 @@ Work strictly within the authorized workspace. Follow this 6-rule Algorithmic Co
 
 6. Görsel Ekran & GUI/Tarayıcı Odak Disiplini (Visual Screen & GUI/Browser Focus):
    Tarayıcı (\`browser_*\`) ve Masaüstü GUI (\`computer\`) kullanma yetkin tamdır ve kesintisizdir. Ekranı veya tarayıcıyı kullanırken: (a) Önce \`computer(action:'inspect')\` veya \`browser_inspect\` / \`screenshot\` ile ekrandaki numaralı öğeleri (\`[u1]\`, \`[e1]\`) ve koordinat ızgarasını gör, (b) Kör koordinat sallamak yerine öncelikle \`target: 'u1'\` / \`ref: 'e1'\` veya öğe metniyle nokta atışı tıkla/yaz, (c) Her adımdan sonra gelen canlı ekran görüntüsünü ve kırmızı hedef nişangahını (\`⊕\`) kontrol ederek işlemin gerçekten gerçekleştiğini doğrula ve görev tamamen bitene kadar odaklanarak devam et.`;
+
+const FAST_CONVERSATIONAL_SYSTEM_PROMPT = `Sen T Bot'sun; ultra-hızlı, zeki ve Türkçe konuşan yapay zeka asistanısın.
+Kullanıcıyla doğal, samimi, kısa ve doğrudan bir dille konuş; selamlaşmalara ve sohbetlere anında, net yanıt ver.
+Gereksiz uzun açıklamalar yapma, doğrudan konuya gir.`;
+
+const ACTION_KEYWORDS = new Set([
+  'dosya', 'klasör', 'kod', 'komut', 'çalıştır', 'aç', 'kapat', 'kur', 'yükle',
+  'sil', 'düzenle', 'yaz', 'oku', 'ara', 'bul', 'tıkla', 'ekran', 'tarayıcı',
+  'whatsapp', 'git', 'push', 'commit', 'build', 'test', 'fix', 'hata', 'sorun',
+  'analiz', 'incele', 'yap', 'oluştur', 'gönder', 'bak', 'kontrol', 'run',
+  'create', 'edit', 'search', 'open', 'click', 'browser'
+]);
+
+/**
+ * Fast detection for simple greetings or casual smalltalk.
+ * When true, bypasses repo-map, memory search, tool injection, and sets effort: low.
+ */
+export function isFastConversationalPrompt(input: string, hasImages: boolean): boolean {
+  if (hasImages) return false;
+  const trimmed = input.trim();
+  if (trimmed.length === 0 || trimmed.length >= 90) return false;
+
+  // Dosya yolu, dosya uzantısı veya URL göstergeleri
+  if (/[/\\]|\.(?:ts|js|py|json|md)\b|https?:\/\//i.test(trimmed)) {
+    return false;
+  }
+  // Kod bloğu veya backtick
+  if (trimmed.includes('`')) {
+    return false;
+  }
+
+  // Kelimeleri küçük harfe çevirip ayıkla
+  const words = trimmed
+    .toLowerCase()
+    .split(/[^a-z0-9_çğıöşü]+/i)
+    .filter(Boolean);
+
+  for (const w of words) {
+    if (ACTION_KEYWORDS.has(w)) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 const repoMapCache = new Map<string, { repoMap: string; query: string; timestamp: number }>();
 
@@ -250,16 +295,26 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
     return conversation;
   }
 
-  // Stable prefix + Memory context + Active skill guidance + Live RepoMap
-  const memoryContext = await buildMemoryContext(workspace, input.message);
-  const skillPrompt = buildSkillPrompt(options.activeSkills ? options.activeSkills : skills, workspace);
-  const repoMap = await getCachedRepoMap(workspace, input.message);
+  // Detect fast conversational inputs (greetings, smalltalk) to skip heavy preprocessing
+  const hasImages = conversation.some(m => Boolean(m.images && m.images.length > 0));
+  const isFast = isFastConversationalPrompt(input.message, hasImages);
 
-  const systemSections = [SYSTEM_PROMPT];
-  if (repoMap) systemSections.push(`[PROJE MİMARİ VE SEMBOL HARİTASI (RepoMap)]\n${repoMap}`);
-  if (memoryContext) systemSections.push(memoryContext);
-  if (skillPrompt) systemSections.push(skillPrompt);
-  const system: Message = { role: 'system', content: systemSections.join('\n\n') };
+  let system: Message;
+  if (isFast) {
+    // Ultra-lightweight system prompt (~60 tokens), no RepoMap, no memory overhead
+    system = { role: 'system', content: FAST_CONVERSATIONAL_SYSTEM_PROMPT };
+  } else {
+    // Stable prefix + Memory context + Active skill guidance + Live RepoMap
+    const memoryContext = await buildMemoryContext(workspace, input.message);
+    const skillPrompt = buildSkillPrompt(options.activeSkills ? options.activeSkills : skills, workspace);
+    const repoMap = await getCachedRepoMap(workspace, input.message);
+
+    const systemSections = [SYSTEM_PROMPT];
+    if (repoMap) systemSections.push(`[PROJE MİMARİ VE SEMBOL HARİTASI (RepoMap)]\n${repoMap}`);
+    if (memoryContext) systemSections.push(memoryContext);
+    if (skillPrompt) systemSections.push(skillPrompt);
+    system = { role: 'system', content: systemSections.join('\n\n') };
+  }
 
   let maxRounds = Math.max(1, Math.floor(options.maxRounds ?? MAX_ROUNDS));
   const maxToolCalls = Math.max(0, Math.floor(options.maxToolCalls ?? MAX_TOOL_CALLS));
@@ -279,16 +334,22 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
       const lastUserMessage = [...conversation].reverse().find(m => m.role === 'user');
       const lastUserText = lastUserMessage?.content ?? input.message;
 
-      // 1. Tool Pruning (%50-%75 schema token savings)
-      const allTools = [...getToolDefinitions(input.mcpTools), ...WORKFLOW_TOOLS].filter(tool => !readOnly || isReadOnlyTool(tool.name));
-      const pruned = pruneToolDefinitions(allTools, lastUserText, activeSkills, session.messages);
+      // 1. Tool Pruning (%50-%75 schema token savings) or Fast Conversational bypass (0 tools)
+      let activeTools: ToolDefinition[] = [];
+      let savedToolTokens = 0;
+      if (!isFast) {
+        const allTools = [...getToolDefinitions(input.mcpTools), ...WORKFLOW_TOOLS].filter(tool => !readOnly || isReadOnlyTool(tool.name));
+        const pruned = pruneToolDefinitions(allTools, lastUserText, activeSkills, session.messages);
+        activeTools = pruned.tools;
+        savedToolTokens = pruned.savedTokens;
+      }
 
       // 2. Conversation Compression with Structural Evidence & Recency Bias Focus Injection
       const messagesToCompress = session.messages
         .filter(m => m.role !== 'system')
         .map(m => (m.role === 'user' && m.content === input.message && stripped !== input.message ? { ...m, content: userContent } : m));
       const compressed = compressConversationHistory(messagesToCompress, 28_000);
-      const focusSummary = getActiveFocusSummary(workspace);
+      const focusSummary = isFast ? '' : getActiveFocusSummary(workspace);
       const messages: Message[] = [
         system,
         ...compressed.messages,
@@ -302,7 +363,11 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
       let turnUsageRecorded = false;
 
       try {
-        for await (const event of input.provider.stream(limitImages(messages), pruned.tools, { signal: input.signal })) {
+        const streamOptions = {
+          signal: input.signal,
+          ...(isFast ? { effort: 'low' as const } : {}),
+        };
+        for await (const event of input.provider.stream(limitImages(messages), activeTools, streamOptions)) {
           if (input.signal?.aborted) break;
           if (event.type === 'text') {
             content += event.text;
@@ -322,15 +387,15 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
             responseItems = event.responseItems;
           } else if (event.type === 'usage') {
             turnUsageRecorded = true;
-            const sentInputTokens = event.inputTokens ?? estimateMessagesTokens(messages, undefined, pruned.tools);
+            const sentInputTokens = event.inputTokens ?? estimateMessagesTokens(messages, undefined, activeTools);
             const outputTokens = event.outputTokens ?? estimateMessagesTokens([{ role: 'assistant', content }]);
-            const rawTokens = sentInputTokens + pruned.savedTokens + compressed.savedTokens;
+            const rawTokens = sentInputTokens + savedToolTokens + compressed.savedTokens;
             const report = globalTokenTracker.recordTurn({
               rawTokens,
               sentInputTokens,
               outputTokens,
               cachedTokens: event.cachedTokens,
-              prunedSchemaTokens: pruned.savedTokens,
+              prunedSchemaTokens: savedToolTokens,
               compressedHistoryTokens: compressed.savedTokens,
             });
             const cachedTokens = report.turnCachedTokens ?? 0;
@@ -364,15 +429,15 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
 
       // Record fallback usage if provider didn't emit usage event
       if (!turnUsageRecorded && !failed && !input.signal?.aborted) {
-        const sentInputTokens = estimateMessagesTokens(messages, undefined, pruned.tools);
+        const sentInputTokens = estimateMessagesTokens(messages, undefined, activeTools);
         const outputTokens = estimateMessagesTokens([{ role: 'assistant', content }]);
-        const rawTokens = sentInputTokens + pruned.savedTokens + compressed.savedTokens;
+        const rawTokens = sentInputTokens + savedToolTokens + compressed.savedTokens;
         const report = globalTokenTracker.recordTurn({
           rawTokens,
           sentInputTokens,
           outputTokens,
           cachedTokens: 0,
-          prunedSchemaTokens: pruned.savedTokens,
+          prunedSchemaTokens: savedToolTokens,
           compressedHistoryTokens: compressed.savedTokens,
         });
         const cachedTokens = report.turnCachedTokens ?? 0;
@@ -430,6 +495,9 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
       // 3. Anti-Hallucination Claim-Evidence Gate:
       // Model araç çağırmayı bitirip nihai yanıt ürettiğinde iddiaları denetle
       if (calls.length === 0) {
+        if (isFast) {
+          return conversation;
+        }
         const audit = auditAssistantClaims(content, globalGroundingLedger);
         if (!audit.verified && audit.correctionPrompt && !didGroundingRetry) {
           didGroundingRetry = true;

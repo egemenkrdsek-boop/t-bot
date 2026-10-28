@@ -431,7 +431,8 @@ export function createProvider(config) {
                     const enableOpenRouterCache = spec.id === 'openrouter' && /^(?:anthropic|google)\//i.test(config.model.trim());
                     body = { model: config.model, messages: openaiMessages(messages, enableOpenRouterCache), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
                 }
-                const effort = describeEffort(spec.id, config.model, config.effort ?? 'medium');
+                const requestedEffort = options.effort ?? config.effort ?? 'medium';
+                const effort = describeEffort(spec.id, config.model, requestedEffort);
                 if (effort.effective) {
                     if (spec.id === 'anthropic')
                         body.output_config = { effort: effort.effective };
@@ -440,6 +441,8 @@ export function createProvider(config) {
                     else if (spec.id === 'openrouter')
                         body.reasoning = { effort: effort.effective };
                     else if (spec.id === 'openai')
+                        body.reasoning_effort = effort.effective;
+                    else if (spec.id === 'deepseek')
                         body.reasoning_effort = effort.effective;
                 }
                 const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' });

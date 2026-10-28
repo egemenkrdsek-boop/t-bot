@@ -21,7 +21,9 @@ export function describeEffort(provider: string, model: string, level: EffortLev
     else if (/^gemini-(?:3-(?:pro-preview|1-flash-lite-image)|3\.1-flash-lite-image)(?:-|$)/.test(id)) choices = ['low', 'high'];
     else if (/^gemini-(?:3\.(?:1|5|6|7|8)|3-flash)(?:-|$)/.test(id) && !/(?:image|audio|live|tts)/.test(id)) choices = ['low', 'medium', 'high'];
   } else if (provider === 'openrouter') {
-    if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4|3-7|3\.7|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:2\.5|3|4))(?:[.\/-]|$)/.test(id)) choices = ['low', 'medium', 'high', 'xhigh', 'max'];
+    if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4|3-7|3\.7|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:2\.5|3|4)|deepseek\/(?:deepseek-r1|deepseek-reasoner))(?:[.\/-]|$)/.test(id)) choices = ['low', 'medium', 'high', 'xhigh', 'max'];
+  } else if (provider === 'deepseek') {
+    if (/^(?:deepseek-(?:r1|reasoner)|r1)/.test(id)) choices = ['low', 'medium', 'high', 'max'];
   }
   if (!choices) return { supported: false, message: 'Bu model için düşünme düzeyi kontrolü doğrulanmadı; sağlayıcının varsayılanı kullanılacak.' };
   const order = EFFORT_LEVELS.indexOf(level);

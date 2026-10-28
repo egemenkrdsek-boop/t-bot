@@ -77,7 +77,9 @@
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "T Bot",
-      "runAfterFinish": false
+      "runAfterFinish": false,
+      "installerIcon": "build/installerIcon.ico",
+      "uninstallerIcon": "build/installerIcon.ico"
     }
   },
   "dependencies": {

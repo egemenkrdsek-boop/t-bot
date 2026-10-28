@@ -255,6 +255,7 @@ button {
   height: 24px;
   image-rendering: pixelated;
   border-radius: 4px;
+  background: #FFFFFF;
   box-shadow: var(--glow-brand);
 }
 
@@ -919,6 +920,7 @@ button {
   height: 90px;
   image-rendering: pixelated;
   border-radius: 8px;
+  background: #FFFFFF;
   box-shadow: var(--glow-brand);
   animation: float 4s ease-in-out infinite;
 }
@@ -1045,9 +1047,43 @@ button {
   padding: 10px 14px;
   color: var(--text-bright);
   font-size: 13px;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
   box-shadow: var(--card-shadow);
+}
+
+.user-message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 0;
+}
+
+.error-notice-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid var(--coral-danger);
+  border-left: 3px solid var(--coral-danger);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  color: var(--coral-danger);
+  font-size: 13px;
+  box-shadow: var(--card-shadow);
+}
+
+.error-notice-card .error-icon {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.error-notice-text {
+  flex: 1;
+  word-break: break-word;
+  white-space: pre-wrap;
+  line-height: 1.5;
 }
 
 .assistant-message-body {
@@ -1934,6 +1970,10 @@ button {
 }
 [data-theme="dark"] .drag-overlay {
   background: rgba(9, 13, 20, 0.88);
+}
+[data-theme="dark"] .logo-canvas,
+[data-theme="dark"] .hero-logo-canvas {
+  background: #0D1117;
 }
 
 .drag-box {

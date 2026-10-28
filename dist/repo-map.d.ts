@@ -18,7 +18,13 @@ export interface FileAstOutline {
  */
 export declare function extractFileAstOutline(filePath: string, content: string): FileAstOutline;
 /**
+ * Detects overly broad or system directories (homedir, desktop root, AppData, etc.)
+ * where generating an AST repository map would scan thousands of unrelated files.
+ */
+export declare function isBroadOrSystemWorkspace(ws?: string): boolean;
+/**
  * Builds a compact, query-ranked AST repository map within maxTokens budget.
  * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
+ * Strictly bounded by a 250ms time budget to never freeze the main thread.
  */
 export declare function buildWorkspaceRepoMap(workspace: string, query?: string, maxTokens?: number): Promise<string>;

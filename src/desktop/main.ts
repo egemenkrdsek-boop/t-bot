@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, gl
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 // V8 and Chromium low-RAM switches (must be appended before app.whenReady())
@@ -60,6 +61,25 @@ interface ActiveTurnContext {
   alwaysAllowSession: boolean;
 }
 let activeTurnContext: ActiveTurnContext | null = null;
+
+/**
+ * Returns a reliable workspace directory.
+ * When launched via Desktop shortcut/installed exe, process.cwd() can be
+ * 'AppData/Local/Programs/T Bot'. If so, prioritizes 'Desktop/T Bot' if existing,
+ * or homedir() to avoid locking onto system installation folders.
+ */
+export function getDefaultWorkspace(): string {
+  const cwd = process.cwd();
+  const lowerCwd = cwd.toLowerCase();
+  if (lowerCwd.includes('appdata') || lowerCwd.includes('programs')) {
+    const devPath = join(homedir(), 'Desktop', 'T Bot');
+    if (existsSync(devPath)) {
+      return devPath;
+    }
+    return homedir();
+  }
+  return cwd;
+}
 
 function getAppIconPath(): string | undefined {
   const candidates = [
@@ -276,21 +296,21 @@ function registerIpcHandlers() {
   // Sessions handlers
   ipcMain.handle('sessions:list', async (_event, workspace?: string) => {
     const store = new SessionStore(configDirectory());
-    return await store.list(workspace);
+    return await store.list(workspace || getDefaultWorkspace());
   });
 
-  ipcMain.handle('sessions:load', async (_event, { sessionId, workspace }: { sessionId: string; workspace: string }) => {
+  ipcMain.handle('sessions:load', async (_event, { sessionId, workspace }: { sessionId: string; workspace?: string }) => {
     const store = new SessionStore(configDirectory());
-    return await store.get(sessionId, workspace);
+    return await store.get(sessionId, workspace || getDefaultWorkspace());
   });
 
-  ipcMain.handle('sessions:delete', async (_event, { sessionId, workspace }: { sessionId: string; workspace: string }) => {
+  ipcMain.handle('sessions:delete', async (_event, { sessionId, workspace }: { sessionId: string; workspace?: string }) => {
     const store = new SessionStore(configDirectory());
-    return await store.delete(sessionId, workspace);
+    return await store.delete(sessionId, workspace || getDefaultWorkspace());
   });
 
-  ipcMain.handle('sessions:create', async (_event, { workspace, title }: { workspace: string; title?: string }) => {
-    const resolvedWorkspace = resolve(workspace || process.cwd());
+  ipcMain.handle('sessions:create', async (_event, { workspace, title }: { workspace?: string; title?: string }) => {
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
     const session = createSession(resolvedWorkspace);
     if (title) {
       session.messages.push({ role: 'user', content: title });
@@ -301,8 +321,8 @@ function registerIpcHandlers() {
   });
 
   // Workflows handlers
-  ipcMain.handle('workflows:get-state', async (_event, workspace: string) => {
-    const resolvedWorkspace = resolve(workspace || process.cwd());
+  ipcMain.handle('workflows:get-state', async (_event, workspace?: string) => {
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
     const goal = await getGoal(resolvedWorkspace).catch(() => undefined);
     const todos = await getTodos(resolvedWorkspace).catch(() => []);
     const focusSummary = getActiveFocusSummary(resolvedWorkspace);
@@ -311,15 +331,15 @@ function registerIpcHandlers() {
 
   ipcMain.handle(
     'workflows:manage',
-    async (_event, { toolName, args, workspace }: { toolName: string; args: Record<string, unknown>; workspace: string }) => {
-      const resolvedWorkspace = resolve(workspace || process.cwd());
+    async (_event, { toolName, args, workspace }: { toolName: string; args: Record<string, unknown>; workspace?: string }) => {
+      const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
       return await executeWorkflowTool(toolName, args, resolvedWorkspace);
     }
   );
 
   // System & Skills & MCP
   ipcMain.handle('sys:skills-mcp', async (_event, workspace?: string) => {
-    const resolvedWorkspace = workspace ? resolve(workspace) : process.cwd();
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
     const customSkills = loadCustomSkills(resolvedWorkspace);
     const mcpConnections = await loadConnections().catch(() => ({}));
     return {
@@ -332,7 +352,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('sys:doctor', async (_event, workspace?: string) => {
-    const resolvedWorkspace = resolve(workspace || process.cwd());
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
     const config = await loadConfig();
     let hasApiKey = false;
     try {
@@ -413,17 +433,19 @@ function registerIpcHandlers() {
         provider?: string;
       }
     ) => {
-      // Abort any previous turn
+      // Cleanly abort any existing/stuck turn so it never remains locked
       if (activeTurnContext) {
-        activeTurnContext.abortController.abort();
-        for (const [, resolver] of activeTurnContext.pendingApprovals) {
-          resolver(false);
-        }
-        activeTurnContext.pendingApprovals.clear();
+        try {
+          activeTurnContext.abortController.abort();
+          for (const [, resolver] of activeTurnContext.pendingApprovals) {
+            resolver(false);
+          }
+          activeTurnContext.pendingApprovals.clear();
+        } catch {}
         activeTurnContext = null;
       }
 
-      const targetWorkspace = resolve(payload.workspace || process.cwd());
+      const targetWorkspace = resolve(payload.workspace || getDefaultWorkspace());
       const config = await loadConfig();
       if (payload.provider) config.provider = payload.provider;
       if (payload.model) config.model = payload.model;
@@ -533,6 +555,9 @@ function registerIpcHandlers() {
         session.messages = updatedMessages;
         await store.save(session);
 
+        const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+        const lastAssistantText = lastAssistant?.content || '';
+
         // Turn bittiğinde otomatik bellek budama & HUD güncellemesi
         await trimDesktopMemory(mainWindow || undefined, true);
         const memStats = getDesktopMemoryStats(mainWindow || undefined);
@@ -543,6 +568,7 @@ function registerIpcHandlers() {
         return {
           ok: true,
           sessionId: session.id,
+          lastAssistantText,
           messages: session.messages,
           memoryStats: memStats,
         };
@@ -555,6 +581,10 @@ function registerIpcHandlers() {
           sessionId: session.id,
         };
       } finally {
+        // ALWAYS emit turn_end to ensure the renderer UI never gets stuck in thinking state
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('agent:event', { type: 'turn_end' });
+        }
         if (activeTurnContext?.sessionId === session.id) {
           activeTurnContext = null;
         }

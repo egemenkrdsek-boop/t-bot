@@ -31,8 +31,12 @@ export function describeEffort(provider, model, level = 'medium') {
             choices = ['low', 'medium', 'high'];
     }
     else if (provider === 'openrouter') {
-        if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4|3-7|3\.7|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:2\.5|3|4))(?:[.\/-]|$)/.test(id))
+        if (/^(?:openai\/(?:gpt-5|gpt-6|o3|o4-mini)|anthropic\/claude-(?:opus-4\.[5-9]|opus-5|sonnet-4|3-7|3\.7|sonnet-5|haiku-5|fable-5|mythos-5)|google\/gemini-(?:2\.5|3|4)|deepseek\/(?:deepseek-r1|deepseek-reasoner))(?:[.\/-]|$)/.test(id))
             choices = ['low', 'medium', 'high', 'xhigh', 'max'];
+    }
+    else if (provider === 'deepseek') {
+        if (/^(?:deepseek-(?:r1|reasoner)|r1)/.test(id))
+            choices = ['low', 'medium', 'high', 'max'];
     }
     if (!choices)
         return { supported: false, message: 'Bu model için düşünme düzeyi kontrolü doğrulanmadı; sağlayıcının varsayılanı kullanılacak.' };

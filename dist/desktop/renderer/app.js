@@ -18,6 +18,7 @@
     thinkingStartTime: 0,
     thinkingTimerId: null,
     spinnerIndex: 0,
+    turnAssistantTextProduced: false,
     ultracodeEnabled: true,
     ultracodeStep: 1,
     yoloEnabled: false,
@@ -297,11 +298,15 @@
     const isLight = (document.documentElement.getAttribute('data-theme') || state.theme) !== 'dark';
     const wavePos = (frame % 80) * 0.45;
 
+    // Açık temada tam beyaz (#FFFFFF) zemin, koyu temada Deep Slate (#0D1117)
+    ctx.fillStyle = isLight ? '#FFFFFF' : '#0D1117';
+    ctx.fillRect(0, 0, size, size);
+
     for (let y = 0; y < 14; y++) {
       for (let x = 0; x < 14; x++) {
         const char = LOGO_MATRIX[y]?.[x] || '.';
         if (char === '.') {
-          ctx.fillStyle = isLight ? '#E2ECE0' : '#141C28';
+          ctx.fillStyle = isLight ? '#EDF3EB' : '#141C28';
           ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize - 0.2, pixelSize - 0.2);
           continue;
         }
@@ -338,6 +343,8 @@
       }
     }
   }
+
+  const renderPixelLogo = drawPixelLogo;
 
   // =========================================================================
   // 3b. Tema Yönetimi (Daylight Light / Dark Mode)
@@ -506,6 +513,16 @@
     dom.thinkingBar?.classList.add('hidden');
   }
 
+  function abortCurrentTurn() {
+    try {
+      tbot.abortTurn?.();
+    } catch (e) {
+      console.warn('tbot.abortTurn hatası:', e);
+    }
+    finalizeAssistantMessage();
+    stopThinking();
+  }
+
   // =========================================================================
   // 7. Markdown Ayrıştırıcı (Hızlı & Sıfır Bağımlılık Vanilla Parser)
   // =========================================================================
@@ -639,25 +656,12 @@
       imagesHtml = '<div class="message-images-grid" style="display:flex;gap:6px;margin-bottom:8px;">';
       images.forEach((img, idx) => {
         const src = `data:${img.mimeType};base64,${img.data}`;
-        imagesHtml += `
-          <div class="tool-screenshot-preview" onclick="window.tbotOpenLightbox('${src}', 'Ekli Görsel ${idx + 1}')">
-            <img src="${src}" alt="Ek" style="max-height:100px;border-radius:4px;">
-          </div>
-        `;
+        imagesHtml += `<div class="tool-screenshot-preview" onclick="window.tbotOpenLightbox('${src}', 'Ekli Görsel ${idx + 1}')"><img src="${src}" alt="Ek" style="max-height:100px;border-radius:4px;"></div>`;
       });
       imagesHtml += '</div>';
     }
 
-    wrapper.innerHTML = `
-      <div class="message-header">
-        <span class="sender-badge sender-user">▸ Sen</span>
-        <span class="message-time">${time}</span>
-      </div>
-      <div class="user-message-bubble">
-        ${imagesHtml}
-        ${escapeHtml(text)}
-      </div>
-    `;
+    wrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-user">▸ Sen</span><span class="message-time">${time}</span></div><div class="user-message-bubble">${imagesHtml}<div class="user-message-text">${escapeHtml(String(text || '').trim())}</div></div>`;
 
     dom.chatFeed?.appendChild(wrapper);
     scrollToBottom(true);
@@ -667,18 +671,14 @@
   let currentAssistantTextBuffer = '';
 
   function appendAssistantTextChunk(chunk) {
+    if (!chunk) return;
+    state.turnAssistantTextProduced = true;
     hideEmptyHero();
     if (!currentAssistantWrapper) {
       const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       currentAssistantWrapper = document.createElement('div');
       currentAssistantWrapper.className = 'message-wrapper';
-      currentAssistantWrapper.innerHTML = `
-        <div class="message-header">
-          <span class="sender-badge sender-assistant">◆ T Bot</span>
-          <span class="message-time">${time}</span>
-        </div>
-        <div class="assistant-message-body"></div>
-      `;
+      currentAssistantWrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-assistant">◆ T Bot</span><span class="message-time">${time}</span></div><div class="assistant-message-body"></div>`;
       dom.chatFeed?.appendChild(currentAssistantWrapper);
       currentAssistantTextBuffer = '';
     }
@@ -694,6 +694,16 @@
   function finalizeAssistantMessage() {
     currentAssistantWrapper = null;
     currentAssistantTextBuffer = '';
+  }
+
+  function appendErrorNotice(errText) {
+    hideEmptyHero();
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const wrapper = document.createElement('div');
+    wrapper.className = 'message-wrapper';
+    wrapper.innerHTML = `<div class="message-header"><span class="sender-badge text-danger">⚠️ Hata</span><span class="message-time">${time}</span></div><div class="error-notice-card"><span class="error-icon">✕</span><div class="error-notice-text">${escapeHtml(String(errText || ''))}</div></div>`;
+    dom.chatFeed?.appendChild(wrapper);
+    scrollToBottom(true);
   }
 
   // =========================================================================
@@ -1056,6 +1066,7 @@
 
     if (dom.userInput) dom.userInput.value = '';
     state.attachedImages = [];
+    state.turnAssistantTextProduced = false;
     renderAttachmentChips();
     autoResizeTextarea();
 
@@ -1072,17 +1083,35 @@
         provider: state.provider,
       });
 
-      if (res?.sessionId) {
-        state.currentSessionId = res.sessionId;
-      }
+      if (res && res.ok === false) {
+        appendErrorNotice(res.error || 'İşlem başarısız oldu');
+      } else {
+        if (res?.sessionId) {
+          state.currentSessionId = res.sessionId;
+        }
 
-      if (res?.memoryStats) {
-        updateTelemetry(res.memoryStats);
+        if (res?.memoryStats) {
+          updateTelemetry(res.memoryStats);
+        }
+
+        // Eğer akış (stream) sırasında hiç asistan metni ekrana basılmamışsa ama
+        // res.lastAssistantText veya res.messages içinde son asistan mesajı varsa hemen ekrana bas
+        if (!state.turnAssistantTextProduced) {
+          if (res?.lastAssistantText) {
+            appendAssistantTextChunk(res.lastAssistantText);
+          } else if (Array.isArray(res?.messages) && res.messages.length > 0) {
+            const lastAssistant = [...res.messages].reverse().find(m => m && m.role === 'assistant' && m.content);
+            if (lastAssistant && lastAssistant.content) {
+              appendAssistantTextChunk(lastAssistant.content);
+            }
+          }
+        }
       }
     } catch (err) {
-      stopThinking();
-      appendAssistantTextChunk(`\n**Hata:** ${err instanceof Error ? err.message : String(err)}`);
+      appendErrorNotice(err instanceof Error ? err.message : String(err));
+    } finally {
       finalizeAssistantMessage();
+      stopThinking();
     }
   }
 
@@ -1634,8 +1663,7 @@
         if (!dom.commandPalette?.classList.contains('hidden')) {
           closeCommandPalette();
         } else if (state.isThinking) {
-          tbot.abortTurn?.();
-          stopThinking();
+          abortCurrentTurn();
         }
       } else if (!dom.commandPalette?.classList.contains('hidden')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -1668,10 +1696,7 @@
     dom.btnSlashHint?.addEventListener('click', () => openCommandPalette());
 
     // 10. Düşünmeyi Durdur Butonu
-    dom.btnAbortTurn?.addEventListener('click', () => {
-      tbot.abortTurn?.();
-      stopThinking();
-    });
+    dom.btnAbortTurn?.addEventListener('click', abortCurrentTurn);
 
     // 11. Aşağı Kaydır Butonu
     dom.btnScrollBottom?.addEventListener('click', () => scrollToBottom(true));
@@ -1744,6 +1769,9 @@
         closeConfigModal();
         closeGoalModal();
         dom.doctorModal?.classList.add('hidden');
+        if (state.isThinking) {
+          abortCurrentTurn();
+        }
       }
     });
   }
@@ -1751,62 +1779,69 @@
   // =========================================================================
   // 20. IPC Gelen Olayları (Event Handlers from preload.cjs)
   // =========================================================================
-  function setupIpcListeners() {
-    // Agent olayları (text, tool_start, tool_end, status, usage, error)
-    const eventHandler = (event) => {
-      switch (event.type) {
-        case 'text':
-          appendAssistantTextChunk(event.text);
-          break;
+  function handleAgentEvent(event) {
+    if (!event) return;
+    switch (event.type) {
+      case 'text':
+        appendAssistantTextChunk(event.text);
+        break;
 
-        case 'tool_start':
-          handleToolStart(event.call, event.toolTitle);
-          break;
+      case 'tool_start':
+        handleToolStart(event.call, event.toolTitle);
+        break;
 
-        case 'tool_end':
-          handleToolEnd(event.call, event.result, event.toolTitle);
-          break;
+      case 'tool_end':
+        handleToolEnd(event.call, event.result, event.toolTitle);
+        break;
 
-        case 'status': {
-          const msg = event.message || '';
-          updateThinkingLabel(msg);
+      case 'status': {
+        const msg = event.message || '';
+        updateThinkingLabel(msg);
 
-          // Ultracode [Aşama X/4]
-          const ultraMatch = msg.match(/Ultracode\s*\[Aşama\s*(\d+)\s*\/\s*4\]/i);
-          if (ultraMatch) {
-            setUltracodeStep(parseInt(ultraMatch[1], 10));
-          }
-
-          // Otonom Hedef [Adım X/Y]
-          const goalMatch = msg.match(/Otonom Hedef\s*\[Adım\s*(\d+)\s*\/\s*(\d+)\]/i);
-          if (goalMatch) {
-            state.currentStepCount = parseInt(goalMatch[1], 10);
-          }
-          break;
+        // Ultracode [Aşama X/4]
+        const ultraMatch = msg.match(/Ultracode\s*\[Aşama\s*(\d+)\s*\/\s*4\]/i);
+        if (ultraMatch) {
+          setUltracodeStep(parseInt(ultraMatch[1], 10));
         }
 
-        case 'usage':
-          if (typeof event.savingsPercent === 'number') {
-            state.telemetry.savingsPercent = Math.round(event.savingsPercent);
-          }
-          if (typeof event.savedTokens === 'number') {
-            state.telemetry.savedTokens = event.savedTokens;
-          }
-          updateHudBar();
-          break;
-
-        case 'error':
-          stopThinking();
-          appendAssistantTextChunk(`\n**Hata:** ${event.error}`);
-          finalizeAssistantMessage();
-          break;
+        // Otonom Hedef [Adım X/Y]
+        const goalMatch = msg.match(/Otonom Hedef\s*\[Adım\s*(\d+)\s*\/\s*(\d+)\]/i);
+        if (goalMatch) {
+          state.currentStepCount = parseInt(goalMatch[1], 10);
+        }
+        break;
       }
-    };
 
+      case 'usage':
+        if (typeof event.savingsPercent === 'number') {
+          state.telemetry.savingsPercent = Math.round(event.savingsPercent);
+        }
+        if (typeof event.savedTokens === 'number') {
+          state.telemetry.savedTokens = event.savedTokens;
+        }
+        updateHudBar();
+        break;
+
+      case 'error':
+        finalizeAssistantMessage();
+        stopThinking();
+        appendErrorNotice(event.error || 'Bilinmeyen hata oluştu');
+        break;
+
+      case 'turn_end':
+      case 'done':
+        finalizeAssistantMessage();
+        stopThinking();
+        break;
+    }
+  }
+
+  function setupIpcListeners() {
+    // Agent olayları (text, tool_start, tool_end, status, usage, error, turn_end, done)
     if (typeof tbot.onAgentEvent === 'function') {
-      tbot.onAgentEvent(eventHandler);
+      tbot.onAgentEvent(handleAgentEvent);
     } else if (typeof tbot.onEvent === 'function') {
-      tbot.onEvent(eventHandler);
+      tbot.onEvent(handleAgentEvent);
     }
 
     // Onay İsteği

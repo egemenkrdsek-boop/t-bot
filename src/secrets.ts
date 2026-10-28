@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { configDirectory } from './config.js';
 
 export type ProviderId = string;
-const secretCache = new Map<ProviderId | string, string>();
+export const secretCache = new Map<string, string>();
 
 export class SecretStorageError extends Error {
   constructor(public readonly code: 'security' | 'encrypt' | 'decrypt' | 'read' | 'save') {
@@ -213,3 +213,58 @@ export async function hasMcpSecret(service: string): Promise<boolean> {
   const val = await getMcpSecret(service);
   return Boolean(val);
 }
+
+/**
+ * Universal in-memory cached secret retrieval.
+ * Returns in 0ms if already cached, otherwise resolves from DPAPI/disk and stores into secretCache.
+ */
+export async function getSecret(key: string): Promise<string | undefined> {
+  const normalizedKey = key.trim();
+  if (secretCache.has(normalizedKey)) {
+    return secretCache.get(normalizedKey);
+  }
+  // 1. Try standard API key
+  try {
+    const apiKey = await getApiKey(normalizedKey);
+    if (apiKey) {
+      secretCache.set(normalizedKey, apiKey);
+      return apiKey;
+    }
+  } catch {}
+
+  // 2. Try custom secret
+  try {
+    const custom = await getCustomSecret(normalizedKey);
+    if (custom) {
+      secretCache.set(normalizedKey, custom);
+      return custom;
+    }
+  } catch {}
+
+  // 3. Try MCP secret
+  try {
+    const mcp = await getMcpSecret(normalizedKey);
+    if (mcp) {
+      secretCache.set(normalizedKey, mcp);
+      return mcp;
+    }
+  } catch {}
+
+  return undefined;
+}
+
+export async function setSecret(key: string, value: string): Promise<SecretStorageStatus> {
+  const normalizedKey = key.trim();
+  const prepared = prepareApiKey(value);
+  secretCache.set(normalizedKey, prepared);
+  return setApiKey(normalizedKey, value);
+}
+
+export async function deleteSecret(key: string): Promise<void> {
+  const normalizedKey = key.trim();
+  secretCache.delete(normalizedKey);
+  await deleteApiKey(normalizedKey).catch(() => undefined);
+  await deleteCustomSecret(normalizedKey).catch(() => undefined);
+  await deleteMcpSecret(normalizedKey).catch(() => undefined);
+}
+
