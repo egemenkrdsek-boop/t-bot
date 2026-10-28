@@ -82,6 +82,18 @@ function resolveCommandInterpreter(env) {
         throw new Error('Windows SystemRoot must be an absolute path.');
     return join(root, 'System32', 'cmd.exe');
 }
+/**
+ * Native `timeout.exe` rejects redirected stdin ("Input redirection is not
+ * supported"), and the agent shell is always non-interactive. Translate its
+ * `/t N [/nobreak]` wait to the standard Windows batch sleep; other commands
+ * and the rest of the line are untouched.
+ */
+function windowsTimeoutCompat(command) {
+    return command.replace(/\btimeout(?:\.exe)?\s+\/t\s+(\d+)(?:\s+\/nobreak)?/giu, (_match, rawSeconds) => {
+        const seconds = Math.min(86_400, Math.max(1, Number(rawSeconds) || 1));
+        return `ping -n ${seconds + 1} 127.0.0.1 >nul`;
+    });
+}
 function spawnCommand(command, options) {
     // Approval prompts answer "may this run?". The optional sandbox adapter adds
     // an OS boundary on platforms where one is actually available. TBOT_SANDBOX=
@@ -117,7 +129,7 @@ function spawnCommand(command, options) {
         // Run through an absolute cmd.exe with /d /s /c and
         // NoDefaultCurrentDirectoryInExePath=1 so git.cmd/npm.cmd/*.exe planted in
         // the workspace cwd are never resolved.
-        return spawn(resolveCommandInterpreter(env), ['/d', '/s', '/c', command], {
+        return spawn(resolveCommandInterpreter(env), ['/d', '/s', '/c', windowsTimeoutCompat(command)], {
             cwd: options.cwd,
             shell: false,
             windowsHide: options.windowsHide ?? true,
@@ -469,10 +481,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
     // Synchronous execution mode
     const timeout = typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms) ? Math.min(120000, Math.max(1000, args.timeout_ms)) : 30000;
     return new Promise((resolve, reject) => {
-        // Detached on Windows gives the hidden child its own console. Native
-        // `timeout.exe` (and other console-aware built-ins) refuse redirected stdin,
-        // so without this they fail even when System32 is first on PATH.
-        const child = spawnCommand(args.command, { cwd: workspace, windowsHide: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawnCommand(args.command, { cwd: workspace, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         let truncated = false;
         let settled = false;
