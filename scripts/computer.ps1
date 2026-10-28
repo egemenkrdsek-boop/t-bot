@@ -1024,13 +1024,7 @@ function Execute-DesktopRequest($request) {
     try {
       $graphics = [Drawing.Graphics]::FromImage($bitmap)
       try {
-        try {
-          $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
-        } catch {
-          $bg = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(15, 20, 25))
-          $graphics.FillRectangle($bg, 0, 0, $screen.Width, $screen.Height)
-          $bg.Dispose()
-        }
+        $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
       } finally {
         $graphics.Dispose()
       }
@@ -1075,11 +1069,7 @@ function Execute-DesktopRequest($request) {
         foreground = $fg.ToInt64().ToString();
       }
     }
-    try {
-      Start-Process $targetApp
-    } catch {
-      Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$targetApp`"" -WindowStyle Hidden
-    }
+    Start-Process -FilePath $targetApp -ErrorAction Stop
     [System.Threading.Thread]::Sleep(500)
     $newFg = [DesktopNative]::GetForegroundWindow()
     return @{
@@ -1355,7 +1345,7 @@ if ($Action -eq 'daemon') {
       try { [void][DesktopNative]::GetWindowText($fallbackFg, $fallbackTitle, $fallbackTitle.Capacity) } catch {}
       $res = @{
         id = $id;
-        ok = $true;
+        ok = $false;
         warning = $errText;
         fallback = $true;
         handle = $fallbackFg.ToInt64().ToString();
@@ -1379,7 +1369,7 @@ if ($Action -eq 'daemon') {
     $fallbackTitle = [Text.StringBuilder]::new(512)
     try { [void][DesktopNative]::GetWindowText($fallbackFg, $fallbackTitle, $fallbackTitle.Capacity) } catch {}
     $res = @{
-      ok = $true;
+      ok = $false;
       warning = $errText;
       fallback = $true;
       handle = $fallbackFg.ToInt64().ToString();

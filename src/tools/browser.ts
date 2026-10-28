@@ -228,7 +228,7 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_evaluate',
-    description: 'Safely execute a JavaScript expression in the tab context and return its JSON or string result.',
+    description: 'Execute JavaScript with the page’s permissions and return its JSON or string result. Requires approval.',
     parameters: params({ tab: tabProperty, script: { type: 'string', description: 'JavaScript code or expression to evaluate.' } }, ['script']),
   },
   {
@@ -725,14 +725,14 @@ function formatWithObservation(
 }
 
 function setupPageHandlers(page: any): void {
-  // Automatic Dialog Handler: dismiss/accept alerts, confirms, prompts gracefully without freezing
+  // Avoid freezing on dialogs without implicitly approving page confirmations.
   page.on('dialog', async (dialog: any) => {
     try {
       const type = dialog.type();
       const message = dialog.message();
       lastDialogHistory.push({ type, message, timestamp: Date.now() });
       if (lastDialogHistory.length > 30) lastDialogHistory.shift();
-      await dialog.accept().catch(() => {});
+      await dialog.dismiss().catch(() => {});
     } catch {
       // ignore dialog handling errors
     }
@@ -1426,24 +1426,8 @@ async function runBrowserTool(
     if (name === 'browser_evaluate') {
       await checkUserAborted(page);
       const script = str(args.script, 'script');
-      let evalResult: unknown;
-      try {
-        evalResult = await page.evaluate(script);
-      } catch (directErr) {
-        try {
-          evalResult = await page.evaluate((code: string) => {
-            try {
-              const fn = new Function(`return (${code})`);
-              return fn();
-            } catch {
-              const fn = new Function(code);
-              return fn();
-            }
-          }, script);
-        } catch {
-          throw directErr;
-        }
-      }
+      // Evaluation may have side effects before throwing; never replay it.
+      const evalResult: unknown = await page.evaluate(script);
       await checkUserAborted(page);
       const serialized = typeof evalResult === 'object' && evalResult !== null ? JSON.stringify(evalResult) : String(evalResult);
       return cap(serialized, 6000);

@@ -4,6 +4,7 @@ export interface AstValidationResult {
     error?: string;
     warnings?: string[];
 }
+export declare function withPendingExportScope<T>(action: () => T): T;
 export declare function getPendingCrossFileExports(): Map<string, Set<string>>;
 export declare function clearPendingCrossFileExports(): void;
 /**

@@ -30,21 +30,18 @@ function safeUrl(value: string): URL {
 }
 function endpoint(base: string, path: string): string { const url = safeUrl(base); url.pathname = `${url.pathname.replace(/\/$/, '')}/${path}`; return url.toString(); }
 function objectArgs(raw: string): Record<string, unknown> {
-  try {
-    const value: unknown = JSON.parse(raw || '{}');
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
-    }
-    return value as Record<string, unknown>;
-  } catch {
-    return repairJsonArgs(raw);
+  const value: unknown = JSON.parse(raw || '{}');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
   }
+  return value as Record<string, unknown>;
 }
 
 /**
  * Deterministic JSON Repair Engine for LLM tool call arguments.
  * Repairs markdown code blocks, unescaped newlines/tabs inside string literals,
  * trailing commas before closing braces/brackets, and unclosed quotes/brackets/braces.
+ * Compatibility utility only: executable streamed calls must use strict JSON parsing.
  */
 export function repairJsonArgs(raw: string): Record<string, unknown> {
   if (!raw || !raw.trim()) return {};
@@ -409,21 +406,21 @@ export function createProvider(config: ProviderConfig): Provider {
           if (chunk.type === 'content_block_delta') { if (chunk.delta?.type === 'text_delta') yield { type: 'text', text: chunk.delta.text }; if (chunk.delta?.type === 'input_json_delta') { const call = pending.get(chunk.index); if (call) call.args += chunk.delta.partial_json; } }
           if (chunk.type === 'message_stop') finished = true;
           if (chunk.type === 'message_delta') {
-            if (chunk.delta?.stop_reason === 'tool_use') toolFinish = true;
-            else if (chunk.delta?.stop_reason === 'max_tokens' && pending.size === 0) {
-              finished = true;
-              toolFinish = true;
-            }
+            if (chunk.delta?.stop_reason) toolFinish = chunk.delta.stop_reason === 'tool_use';
           }
           if (chunk.type === 'message_start') {
-            inputTokens = chunk.message?.usage?.input_tokens;
+            const usage = chunk.message?.usage;
+            inputTokens = typeof usage?.input_tokens === 'number'
+              ? usage.input_tokens + (typeof usage.cache_read_input_tokens === 'number' ? usage.cache_read_input_tokens : 0) +
+                (typeof usage.cache_creation_input_tokens === 'number' ? usage.cache_creation_input_tokens : 0)
+              : undefined;
             const cacheRead = chunk.message?.usage?.cache_read_input_tokens;
-            if (typeof cacheRead === 'number') cachedTokens = (cachedTokens ?? 0) + cacheRead;
+            if (typeof cacheRead === 'number') cachedTokens = cacheRead;
           }
           if (chunk.type === 'message_delta') {
             outputTokens = chunk.usage?.output_tokens;
             const cacheRead = chunk.usage?.cache_read_input_tokens;
-            if (typeof cacheRead === 'number') cachedTokens = (cachedTokens ?? 0) + cacheRead;
+            if (typeof cacheRead === 'number') cachedTokens = cacheRead;
           }
         } else if (spec.id === 'gemini') {
           for (const part of chunk.candidates?.[0]?.content?.parts ?? []) { if (typeof part.text === 'string') yield { type: 'text', text: part.text }; if (part.functionCall) { const args = part.functionCall.args ?? {}; if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.'); if (typeof part.functionCall.name !== 'string' || !part.functionCall.name) throw new Error('Eksik araç çağrısı alındı.'); complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) }); } }
@@ -434,7 +431,7 @@ export function createProvider(config: ProviderConfig): Provider {
           }
         } else {
           if (chunk.__done) finished = true;
-          if (chunk.choices?.[0]?.finish_reason === 'tool_calls') toolFinish = true;
+          if (chunk.choices?.[0]?.finish_reason) toolFinish = ['tool_calls', 'stop'].includes(chunk.choices[0].finish_reason);
           const delta = chunk.choices?.[0]?.delta;
           if (typeof delta?.content === 'string') yield { type: 'text', text: delta.content };
           for (const part of delta?.tool_calls ?? []) { const current = pending.get(part.index) ?? { id: '', name: '', args: '' }; current.id += part.id ?? ''; current.name += part.function?.name ?? ''; current.args += part.function?.arguments ?? ''; pending.set(part.index, current); }
@@ -446,31 +443,17 @@ export function createProvider(config: ProviderConfig): Provider {
           }
         }
       }
-      // Parse any pending streamed tool calls into complete
+      // A complete argument object is not proof that the provider finished its turn.
+      // Never repair or release executable calls after EOF or an unsafe finish reason.
+      if (!finished) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
+      if ((pending.size || complete.length) && !toolFinish) {
+        throw new Error('Tamamlanmamış araç çağrısı; sağlayıcı güvenli bitiş nedeni bildirmedi.');
+      }
       for (const call of pending.values()) {
-        if (!call.name) {
-          if (!finished && !complete.length) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
-          throw new Error('Eksik araç çağrısı alındı.');
-        }
-        const callId = call.id || `call_${crypto.randomUUID()}`;
-        try {
-          const parsedArgs = objectArgs(call.args);
-          complete.push({ id: callId, name: call.name, arguments: parsedArgs });
-        } catch (e) {
-          if (!finished && !complete.length) {
-            throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
-          }
-          throw e;
-        }
+        if (!call.name) throw new Error('Eksik araç çağrısı alındı.');
+        complete.push({ id: call.id || `call_${crypto.randomUUID()}`, name: call.name, arguments: objectArgs(call.args) });
       }
 
-      // If stream was interrupted without completing any tool calls or finishing normally
-      if (!finished && !complete.length) {
-        throw new Error('Tamamlanmamış sağlayıcı akışı.');
-      }
-
-      // Many providers (OpenRouter, Ollama, vLLM, DeepSeek) return finish_reason: "stop" (toolFinish = false).
-      // If we have valid complete tool calls, accept and yield them even if toolFinish is false.
       if (complete.length) yield { type: 'tool_calls', calls: complete };
       if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) } as ProviderEvent;
     } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'İstek iptal edildi.' : signal.aborted ? 'Sağlayıcı İsteği Zaman Aşımına Uğradı.' : error instanceof Error && /^(Sağlayıcı|Tamamlanmamış|Eksik|Araç|Bilinmeyen|Bir model|Özel bir|Uç nokta|Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Sağlayıcı isteği başarısız oldu veya geçersiz veri döndürdü.' }; }

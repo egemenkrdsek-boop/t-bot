@@ -5,7 +5,10 @@ export declare const messageTokenCache: WeakMap<Message, {
     tokens: number;
 }>;
 export declare const toolTokenCache: WeakMap<ToolDefinition, number>;
-export declare const compressedToolOutputCache: WeakMap<Message, string>;
+export declare const compressedToolOutputCache: WeakMap<Message, {
+    content: string;
+    summary: string;
+}>;
 /**
  * Fast, dependency-free BPE token estimator with 600-entry LRU memoization and charCodeAt fast-paths.
  * Mimics modern LLM tokenizers (cl100k_base / o200k / Llama / Claude).

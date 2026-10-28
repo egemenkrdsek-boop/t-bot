@@ -370,6 +370,7 @@ export const APPROVAL_REQUIRED_TOOLS = [
   'file_write',
   'file_patch',
   'process_stop',
+  'process_write',
   'git_add',
   'git_commit',
   'git_branch',
@@ -442,7 +443,9 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     }
 
     const isGuiTool = actualCall.name === 'computer' || actualCall.name.startsWith('browser_');
-    const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL === 'true';
+    // GUI access can submit forms, send messages and operate terminals. Default
+    // to the same approval boundary as shell; trusted/YOLO callers may approve.
+    const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL !== 'false';
     const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) || (isGuiTool && requireGuiApproval);
 
     if (isApprovalRequired) {
@@ -495,7 +498,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
         }
       }
     } else if (toolName === 'web_search' || toolName === 'url_fetch') {
-      output = await executeWebTool(toolName, actualArgs, context.signal);
+      output = `[Untrusted web content]\n${await executeWebTool(toolName, actualArgs, context.signal)}`;
     } else if (toolName === 'todo_manage' || toolName === 'goal_manage') {
       output = await executeWorkflowTool(toolName, actualArgs, context.workspace);
     } else if (toolName.startsWith('process_')) {

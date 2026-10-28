@@ -187,7 +187,7 @@ export const browserToolDefinitions = [
     },
     {
         name: 'browser_evaluate',
-        description: 'Safely execute a JavaScript expression in the tab context and return its JSON or string result.',
+        description: 'Execute JavaScript with the page’s permissions and return its JSON or string result. Requires approval.',
         parameters: params({ tab: tabProperty, script: { type: 'string', description: 'JavaScript code or expression to evaluate.' } }, ['script']),
     },
     {
@@ -619,7 +619,7 @@ function formatWithObservation(obs, actionResult) {
     return `Screenshot saved: ${obs.screenshotPath}\nSayfa: ${obs.title} (${obs.url})\nGüncel Etkileşimli Öğeler:\n${obs.elementSummary}\n\n${actionResult}`;
 }
 function setupPageHandlers(page) {
-    // Automatic Dialog Handler: dismiss/accept alerts, confirms, prompts gracefully without freezing
+    // Avoid freezing on dialogs without implicitly approving page confirmations.
     page.on('dialog', async (dialog) => {
         try {
             const type = dialog.type();
@@ -627,7 +627,7 @@ function setupPageHandlers(page) {
             lastDialogHistory.push({ type, message, timestamp: Date.now() });
             if (lastDialogHistory.length > 30)
                 lastDialogHistory.shift();
-            await dialog.accept().catch(() => { });
+            await dialog.dismiss().catch(() => { });
         }
         catch {
             // ignore dialog handling errors
@@ -1272,27 +1272,8 @@ async function runBrowserTool(name, args, options) {
         if (name === 'browser_evaluate') {
             await checkUserAborted(page);
             const script = str(args.script, 'script');
-            let evalResult;
-            try {
-                evalResult = await page.evaluate(script);
-            }
-            catch (directErr) {
-                try {
-                    evalResult = await page.evaluate((code) => {
-                        try {
-                            const fn = new Function(`return (${code})`);
-                            return fn();
-                        }
-                        catch {
-                            const fn = new Function(code);
-                            return fn();
-                        }
-                    }, script);
-                }
-                catch {
-                    throw directErr;
-                }
-            }
+            // Evaluation may have side effects before throwing; never replay it.
+            const evalResult = await page.evaluate(script);
             await checkUserAborted(page);
             const serialized = typeof evalResult === 'object' && evalResult !== null ? JSON.stringify(evalResult) : String(evalResult);
             return cap(serialized, 6000);

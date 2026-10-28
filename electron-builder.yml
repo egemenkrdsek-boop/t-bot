@@ -9,6 +9,10 @@ files:
   - assets/**/*
   - build/icon.*
   - package.json
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
+  - THIRD_PARTY_DEPENDENCIES.md
+  - docs/**/*
 asar: true
 asarUnpack:
   - scripts/**/*

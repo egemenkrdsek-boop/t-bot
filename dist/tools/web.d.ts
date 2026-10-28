@@ -1,13 +1,5 @@
 import type { ToolDefinition } from '../types.js';
-/**
- * SSRF Protection: Checks if a hostname resolves to a local or private network address.
- * Blocks localhost, 127.0.0.1, 169.254.169.254, 10.x, 192.168.x, 172.16-31.x, IPv6 loopback/link-local.
- */
-export declare function isPrivateOrLocalHost(hostname: string): boolean;
-/**
- * Validates and ensures an HTTP/HTTPS URL does not target private or loopback networks.
- */
-export declare function validatePublicUrl(rawUrl: string): URL;
+export { isPrivateOrLocalHost, validatePublicUrl } from './public-network.js';
 export interface SearchResultItem {
     title: string;
     url: string;

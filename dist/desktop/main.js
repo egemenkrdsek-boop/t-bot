@@ -1,11 +1,11 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, globalShortcut } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 // V8 and Chromium low-RAM switches (must be appended before app.whenReady())
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=128 --expose-gc');
+app.commandLine.appendSwitch('js-flags', '--expose-gc');
 app.commandLine.appendSwitch('disable-features', 'Translate,AutofillServerCommunication,CalculateNativeWinOcclusion,SpareRendererForSitePerProcess,MediaRouter,AudioServiceOutOfProcess');
 app.commandLine.appendSwitch('disable-spell-checking');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
@@ -14,14 +14,19 @@ import { runAgent } from '../agent.js';
 import { loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, configDirectory, } from '../config.js';
 import { setApiKey, getApiKey } from '../secrets.js';
 import { SessionStore, createSession } from '../sessions.js';
-import { getGoal, getTodos, getActiveFocusSummary, executeWorkflowTool } from '../workflows.js';
+import { getGoal, getTodos, getActiveFocusSummary, executeWorkflowTool, runGoal } from '../workflows.js';
 import { BUILTIN_SKILLS, loadCustomSkills } from '../skills.js';
-import { loadConnections } from '../mcp-config.js';
+import { loadConnections, getMcpToken } from '../mcp-config.js';
+import { connectMcp } from '../mcp.js';
 import { MCP_PRESETS } from '../mcp-presets.js';
 import { PROVIDER_CATALOG, createProvider } from '../providers.js';
 import { discoverModels, fallbackModels } from '../models.js';
 import { TOOL_TITLE_MAP, formatToolTitle } from '../theme.js';
 import { trimDesktopMemory, getDesktopMemoryStats } from './memory-trimmer.js';
+import { registerDesktopQuitCleanup } from './quit-cleanup.js';
+import { closeBrowser } from '../tools/browser.js';
+import { closeIdleDesktopDaemon } from '../tools/computer.js';
+import { stopAllBackgroundProcesses } from '../tools/shell.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // Single instance lock
@@ -35,20 +40,33 @@ let tray = null;
 let memoryInterval = null;
 const isHeadlessVerify = process.argv.includes('--headless-verify');
 let activeTurnContext = null;
-/**
- * Returns a reliable workspace directory.
- * When launched via Desktop shortcut/installed exe, process.cwd() can be
- * 'AppData/Local/Programs/T Bot'. If so, prioritizes 'Desktop/T Bot' if existing,
- * or homedir() to avoid locking onto system installation folders.
- */
+let turnInProgress = false;
+let turnAbortController = null;
+let desktopQuitting = false;
+const activeMcpConnections = new Set();
+async function closeDesktopMcp(connection) {
+    if (activeMcpConnections.delete(connection))
+        await connection.close();
+}
+registerDesktopQuitCleanup(app, () => {
+    desktopQuitting = true;
+    turnAbortController?.abort();
+    for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
+        resolver(false);
+    activeTurnContext?.pendingApprovals.clear();
+    stopAllBackgroundProcesses();
+}, async () => {
+    await Promise.allSettled([
+        Promise.resolve().then(closeBrowser),
+        Promise.resolve().then(closeIdleDesktopDaemon),
+        ...Array.from(activeMcpConnections, closeDesktopMcp),
+    ]);
+});
+/** Installed launches start in the user's home, never an installation directory. */
 export function getDefaultWorkspace() {
     const cwd = process.cwd();
     const lowerCwd = cwd.toLowerCase();
-    if (lowerCwd.includes('appdata') || lowerCwd.includes('programs')) {
-        const devPath = join(homedir(), 'Desktop', 'T Bot');
-        if (existsSync(devPath)) {
-            return devPath;
-        }
+    if (app.isPackaged || lowerCwd.includes('appdata') || lowerCwd.includes('programs')) {
         return homedir();
     }
     return cwd;
@@ -88,10 +106,15 @@ function createMainWindow() {
             preload: join(__dirname, 'preload.cjs'),
             contextIsolation: true,
             nodeIntegration: false,
+            sandbox: true,
             spellcheck: false,
             backgroundThrottling: true,
         },
     });
+    // The bridge belongs exclusively to the bundled local document.
+    mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    mainWindow.webContents.on('will-navigate', event => event.preventDefault());
+    mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     const rendererPath = join(__dirname, 'renderer', 'index.html');
     if (existsSync(rendererPath)) {
         mainWindow.loadFile(rendererPath);
@@ -121,6 +144,9 @@ function createMainWindow() {
     `)}`);
     }
     mainWindow.on('closed', () => {
+        turnAbortController?.abort();
+        for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
+            resolver(false);
         mainWindow = null;
     });
     return mainWindow;
@@ -186,8 +212,17 @@ function toggleWindowVisibility() {
     }
 }
 function registerIpcHandlers() {
+    // Reject subframes and documents other than our own renderer for every handler.
+    const handle = (channel, listener) => {
+        ipcMain.handle(channel, (event, ...args) => {
+            if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+                throw new Error('Güvenilmeyen arayüz isteği.');
+            }
+            return listener(event, ...args);
+        });
+    };
     // Window control: minimize, maximize, close, isMaximized
-    ipcMain.handle('window:control', (_event, action) => {
+    handle('window:control', (_event, action) => {
         if (!mainWindow || mainWindow.isDestroyed())
             return false;
         switch (action) {
@@ -202,6 +237,9 @@ function registerIpcHandlers() {
                     mainWindow.maximize();
                 }
                 return mainWindow.isMaximized();
+            case 'toggle-pin':
+                mainWindow.setAlwaysOnTop(!mainWindow.isAlwaysOnTop());
+                return mainWindow.isAlwaysOnTop();
             case 'close':
                 mainWindow.close();
                 return true;
@@ -212,20 +250,31 @@ function registerIpcHandlers() {
         }
     });
     // Config handlers
-    ipcMain.handle('config:get', async () => {
+    handle('config:get', async () => {
         return await loadConfig();
     });
-    ipcMain.handle('config:save', async (_event, partialConfig) => {
+    handle('config:save', async (_event, partialConfig) => {
         const current = await loadConfig();
-        const merged = { ...current, ...(partialConfig || {}) };
-        await saveConfig(merged);
-        return merged;
+        // Preserve the loaded object's revision token used by optimistic config writes.
+        if (typeof partialConfig?.provider === 'string' && partialConfig.provider !== current.provider) {
+            current.provider = partialConfig.provider;
+            delete current.baseUrl;
+        }
+        if (typeof partialConfig?.model === 'string')
+            current.model = partialConfig.model;
+        if (partialConfig?.efforts && typeof partialConfig.efforts === 'object') {
+            current.efforts = { ...current.efforts, ...partialConfig.efforts };
+        }
+        await saveConfig(current);
+        return current;
     });
-    ipcMain.handle('config:set-api-key', async (_event, { provider, apiKey }) => {
+    handle('config:set-api-key', async (_event, { provider, apiKey }) => {
         return await setApiKey(provider, apiKey);
     });
-    ipcMain.handle('config:model-catalog', async () => {
+    handle('config:model-catalog', async (_event, providerId) => {
         const config = await loadConfig();
+        if (providerId && PROVIDER_CATALOG.some(provider => provider.id === providerId))
+            config.provider = providerId;
         const apiKey = await getApiKey(config.provider);
         let liveModels = fallbackModels(config.provider);
         try {
@@ -242,7 +291,7 @@ function registerIpcHandlers() {
         };
     });
     // Workspace handlers
-    ipcMain.handle('workspace:select-dialog', async () => {
+    handle('workspace:select-dialog', async () => {
         if (!mainWindow || mainWindow.isDestroyed())
             return null;
         const result = await dialog.showOpenDialog(mainWindow, {
@@ -253,49 +302,46 @@ function registerIpcHandlers() {
             return null;
         return result.filePaths[0];
     });
-    ipcMain.handle('workspace:open-path', async (_event, targetPath) => {
+    handle('workspace:open-path', async (_event, targetPath) => {
         if (!targetPath)
             return false;
-        await shell.openPath(targetPath);
-        return true;
+        return (await shell.openPath(targetPath)) === '';
     });
+    handle('workspace:default', () => getDefaultWorkspace());
     // Sessions handlers
-    ipcMain.handle('sessions:list', async (_event, workspace) => {
+    handle('sessions:list', async (_event, workspace) => {
         const store = new SessionStore(configDirectory());
         return await store.list(workspace || getDefaultWorkspace());
     });
-    ipcMain.handle('sessions:load', async (_event, { sessionId, workspace }) => {
+    handle('sessions:load', async (_event, { sessionId, workspace }) => {
         const store = new SessionStore(configDirectory());
         return await store.get(sessionId, workspace || getDefaultWorkspace());
     });
-    ipcMain.handle('sessions:delete', async (_event, { sessionId, workspace }) => {
+    handle('sessions:delete', async (_event, { sessionId, workspace }) => {
         const store = new SessionStore(configDirectory());
         return await store.delete(sessionId, workspace || getDefaultWorkspace());
     });
-    ipcMain.handle('sessions:create', async (_event, { workspace, title }) => {
+    handle('sessions:create', async (_event, { workspace, title }) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const session = createSession(resolvedWorkspace);
-        if (title) {
-            session.messages.push({ role: 'user', content: title });
-        }
         const store = new SessionStore(configDirectory());
         await store.save(session);
         return session;
     });
     // Workflows handlers
-    ipcMain.handle('workflows:get-state', async (_event, workspace) => {
+    handle('workflows:get-state', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const goal = await getGoal(resolvedWorkspace).catch(() => undefined);
         const todos = await getTodos(resolvedWorkspace).catch(() => []);
         const focusSummary = getActiveFocusSummary(resolvedWorkspace);
         return { goal, todos, focusSummary };
     });
-    ipcMain.handle('workflows:manage', async (_event, { toolName, args, workspace }) => {
+    handle('workflows:manage', async (_event, { toolName, args, workspace }) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         return await executeWorkflowTool(toolName, args, resolvedWorkspace);
     });
     // System & Skills & MCP
-    ipcMain.handle('sys:skills-mcp', async (_event, workspace) => {
+    handle('sys:skills-mcp', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const customSkills = loadCustomSkills(resolvedWorkspace);
         const mcpConnections = await loadConnections().catch(() => ({}));
@@ -307,7 +353,7 @@ function registerIpcHandlers() {
             mcpConnections,
         };
     });
-    ipcMain.handle('sys:doctor', async (_event, workspace) => {
+    handle('sys:doctor', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const config = await loadConfig();
         let hasApiKey = false;
@@ -333,10 +379,10 @@ function registerIpcHandlers() {
             uptimeSeconds: Math.round(process.uptime()),
         };
     });
-    ipcMain.handle('sys:mem-stats', () => {
+    handle('sys:mem-stats', () => {
         return getDesktopMemoryStats(mainWindow || undefined);
     });
-    ipcMain.handle('sys:trim-memory', async () => {
+    handle('sys:trim-memory', async () => {
         const result = await trimDesktopMemory(mainWindow || undefined, true);
         const stats = getDesktopMemoryStats(mainWindow || undefined);
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -345,22 +391,22 @@ function registerIpcHandlers() {
         return { result, stats };
     });
     // Agent turn execution & approvals
-    ipcMain.handle('agent:approval-response', (_event, { requestId, approved, alwaysAllowSession }) => {
+    handle('agent:approval-response', (_event, { requestId, approved, alwaysAllowSession }) => {
         if (!activeTurnContext) {
             return { handled: false, error: 'Aktif bir çalışan tur bulunmuyor.' };
         }
-        if (alwaysAllowSession) {
-            activeTurnContext.alwaysAllowSession = true;
-        }
         const resolver = activeTurnContext.pendingApprovals.get(requestId);
         if (resolver) {
+            if (approved && alwaysAllowSession)
+                activeTurnContext.alwaysAllowSession = true;
             activeTurnContext.pendingApprovals.delete(requestId);
             resolver(Boolean(approved));
             return { handled: true };
         }
         return { handled: false, error: 'Onay isteği bulunamadı veya süresi doldu.' };
     });
-    ipcMain.handle('agent:abort-turn', () => {
+    handle('agent:abort-turn', () => {
+        turnAbortController?.abort();
         if (activeTurnContext) {
             activeTurnContext.abortController.abort();
             for (const [, resolver] of activeTurnContext.pendingApprovals) {
@@ -369,154 +415,198 @@ function registerIpcHandlers() {
             activeTurnContext.pendingApprovals.clear();
             return { aborted: true };
         }
-        return { aborted: false };
+        return { aborted: turnInProgress };
     });
-    ipcMain.handle('agent:start-turn', async (_event, payload) => {
-        // Cleanly abort any existing/stuck turn so it never remains locked
-        if (activeTurnContext) {
-            try {
-                activeTurnContext.abortController.abort();
-                for (const [, resolver] of activeTurnContext.pendingApprovals) {
-                    resolver(false);
-                }
-                activeTurnContext.pendingApprovals.clear();
-            }
-            catch { }
-            activeTurnContext = null;
+    handle('agent:start-turn', async (_event, payload) => {
+        if (desktopQuitting)
+            return { ok: false, error: 'Uygulama kapanıyor.' };
+        if (turnInProgress)
+            return { ok: false, error: 'Önce çalışan turu durdurun veya tamamlanmasını bekleyin.' };
+        if (!payload || typeof payload.message !== 'string' || payload.message.length > 500_000) {
+            return { ok: false, error: 'Geçersiz veya çok uzun mesaj.' };
         }
-        const targetWorkspace = resolve(payload.workspace || getDefaultWorkspace());
-        const config = await loadConfig();
-        if (payload.provider)
-            config.provider = payload.provider;
-        if (payload.model)
-            config.model = payload.model;
-        let resolved;
-        try {
-            resolved = await resolveProviderConfig(config, targetWorkspace);
+        if (payload.images && (!Array.isArray(payload.images) || payload.images.length > 3 || payload.images.some(image => image?.mimeType !== 'image/png' || typeof image.data !== 'string' || image.data.length > 2_000_000 || !/^[A-Za-z0-9+/=]+$/.test(image.data)))) {
+            return { ok: false, error: 'Geçersiz görsel eki. En fazla 3 görsel, her biri en fazla 2 MB base64 veri içerebilir.' };
         }
-        catch (err) {
-            return { ok: false, error: `Sağlayıcı yapılandırma hatası: ${err.message}` };
-        }
-        let provider;
-        try {
-            provider = createProvider(resolved);
-        }
-        catch (err) {
-            return { ok: false, error: `Sağlayıcı başlatma hatası: ${err.message}` };
-        }
-        const store = new SessionStore(configDirectory());
-        let session;
-        if (payload.sessionId) {
-            const existing = await store.get(payload.sessionId, targetWorkspace).catch(() => null);
-            session = existing || createSession(targetWorkspace);
-        }
-        else {
-            session = createSession(targetWorkspace);
-        }
+        turnInProgress = true;
         const abortController = new AbortController();
-        const pendingApprovals = new Map();
-        activeTurnContext = {
-            abortController,
-            workspace: targetWorkspace,
-            sessionId: session.id,
-            session,
-            pendingApprovals,
-            alwaysAllowSession: false,
-        };
-        const approve = async (request) => {
-            if (payload.yolo || activeTurnContext?.alwaysAllowSession) {
-                return true;
+        turnAbortController = abortController;
+        try {
+            const targetWorkspace = resolve(payload.workspace || getDefaultWorkspace());
+            if (!statSync(targetWorkspace).isDirectory())
+                return { ok: false, error: 'Çalışma alanı bir klasör olmalıdır.' };
+            const config = await loadConfig();
+            if (payload.provider && payload.provider !== config.provider) {
+                config.provider = payload.provider;
+                delete config.baseUrl;
             }
-            const perm = getWorkspacePermission(config, targetWorkspace);
-            if (perm === 'allow') {
-                return true;
+            if (payload.model)
+                config.model = payload.model;
+            let resolved;
+            try {
+                resolved = await resolveProviderConfig(config, targetWorkspace);
             }
-            const requestId = randomUUID();
-            const toolTitle = TOOL_TITLE_MAP[request.tool] || formatToolTitle(request.tool);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('agent:approval-request', {
-                    requestId,
-                    tool: request.tool,
-                    toolTitle,
-                    description: request.description,
-                    arguments: request.arguments,
+            catch (err) {
+                return { ok: false, error: `Sağlayıcı yapılandırma hatası: ${err.message}` };
+            }
+            let provider;
+            try {
+                provider = createProvider(resolved);
+            }
+            catch (err) {
+                return { ok: false, error: `Sağlayıcı başlatma hatası: ${err.message}` };
+            }
+            const store = new SessionStore(configDirectory());
+            let session;
+            if (payload.sessionId) {
+                const existing = await store.get(payload.sessionId, targetWorkspace).catch(() => null);
+                session = existing || createSession(targetWorkspace);
+            }
+            else {
+                session = createSession(targetWorkspace);
+            }
+            if (abortController.signal.aborted)
+                return { ok: false, aborted: true, sessionId: session.id };
+            const pendingApprovals = new Map();
+            activeTurnContext = {
+                abortController,
+                workspace: targetWorkspace,
+                sessionId: session.id,
+                session,
+                pendingApprovals,
+                alwaysAllowSession: false,
+            };
+            const approve = async (request) => {
+                if (abortController.signal.aborted)
+                    return false;
+                if (payload.yolo || activeTurnContext?.alwaysAllowSession) {
+                    return true;
+                }
+                const perm = getWorkspacePermission(config, targetWorkspace);
+                if (perm === 'allow') {
+                    return true;
+                }
+                const requestId = randomUUID();
+                const toolTitle = TOOL_TITLE_MAP[request.tool] || formatToolTitle(request.tool);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('agent:approval-request', {
+                        requestId,
+                        tool: request.tool,
+                        toolTitle,
+                        description: request.description,
+                        arguments: request.arguments,
+                    });
+                }
+                return new Promise((resolveApproval) => {
+                    const timer = setTimeout(() => {
+                        pendingApprovals.delete(requestId);
+                        resolveApproval(false);
+                    }, 120_000);
+                    pendingApprovals.set(requestId, (res) => {
+                        clearTimeout(timer);
+                        resolveApproval(res);
+                    });
                 });
-            }
-            return new Promise((resolveApproval) => {
-                const timer = setTimeout(() => {
-                    pendingApprovals.delete(requestId);
-                    resolveApproval(false);
-                }, 120_000);
-                pendingApprovals.set(requestId, (res) => {
-                    clearTimeout(timer);
-                    resolveApproval(res);
-                });
-            });
-        };
-        const onEvent = (event) => {
-            if (!mainWindow || mainWindow.isDestroyed())
-                return;
-            let enrichedEvent = event;
-            if (event.type === 'tool_start' || event.type === 'tool_end') {
-                const toolName = event.call.name;
-                const toolTitle = TOOL_TITLE_MAP[toolName] || formatToolTitle(toolName);
-                enrichedEvent = {
-                    ...event,
-                    toolTitle,
+            };
+            const onEvent = (event) => {
+                if (!mainWindow || mainWindow.isDestroyed())
+                    return;
+                let enrichedEvent = event;
+                if (event.type === 'tool_start' || event.type === 'tool_end') {
+                    const toolName = event.call.name;
+                    const toolTitle = TOOL_TITLE_MAP[toolName] || formatToolTitle(toolName);
+                    enrichedEvent = {
+                        ...event,
+                        toolTitle,
+                    };
+                }
+                mainWindow.webContents.send('agent:event', enrichedEvent);
+            };
+            const mcpTools = [];
+            try {
+                const connections = await loadConnections();
+                for (const [service, connectionConfig] of Object.entries(connections)) {
+                    abortController.signal.throwIfAborted();
+                    if (!connectionConfig?.enabled)
+                        continue;
+                    const token = await getMcpToken(service);
+                    if (!token && !connectionConfig.url?.startsWith('stdio:')) {
+                        onEvent({ type: 'status', message: `${service} MCP için token veya stdio URL yapılandırması gerekli; bu turda atlandı.` });
+                        continue;
+                    }
+                    try {
+                        onEvent({ type: 'status', message: `${service} MCP bağlantısı kuruluyor…` });
+                        const connection = await connectMcp(service, token, { ...connectionConfig, workspace: targetWorkspace, signal: abortController.signal });
+                        mcpTools.push(connection);
+                        activeMcpConnections.add(connection);
+                        abortController.signal.throwIfAborted();
+                        onEvent({ type: 'status', message: `${service} MCP bağlı: ${connection.definitions.length} araç.` });
+                    }
+                    catch {
+                        abortController.signal.throwIfAborted();
+                        onEvent({ type: 'status', message: `${service} MCP bağlantısı kurulamadı; CLI üzerinden yapılandırmayı kontrol edin.` });
+                    }
+                }
+                const history = [...session.messages];
+                const input = {
+                    message: payload.message,
+                    images: payload.images,
+                    history,
+                    provider,
+                    workspace: targetWorkspace,
+                    onEvent,
+                    approve,
+                    signal: abortController.signal,
+                    mcpTools,
+                };
+                const runner = (step) => runAgent(step, { workspace: targetWorkspace, session, onEvent });
+                const updatedMessages = payload.mode === 'goal' ? await runGoal(input, runner) : await runner(input);
+                session.messages = updatedMessages;
+                await store.save(session);
+                const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
+                const lastAssistantText = lastAssistant?.content || '';
+                // Measure actual memory. Working-set trimming is an explicit user action.
+                const memStats = getDesktopMemoryStats(mainWindow || undefined);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('sys:memory-update', memStats);
+                }
+                return {
+                    ok: true,
+                    sessionId: session.id,
+                    lastAssistantText,
+                    messages: session.messages,
+                    memoryStats: memStats,
                 };
             }
-            mainWindow.webContents.send('agent:event', enrichedEvent);
-        };
-        try {
-            const history = [...session.messages];
-            const updatedMessages = await runAgent({
-                message: payload.message,
-                history,
-                provider,
-                workspace: targetWorkspace,
-                onEvent,
-                approve,
-                signal: abortController.signal,
-            }, {
-                workspace: targetWorkspace,
-                session,
-                onEvent,
-            });
-            session.messages = updatedMessages;
-            await store.save(session);
-            const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
-            const lastAssistantText = lastAssistant?.content || '';
-            // Turn bittiğinde otomatik bellek budama & HUD güncellemesi
-            await trimDesktopMemory(mainWindow || undefined, true);
-            const memStats = getDesktopMemoryStats(mainWindow || undefined);
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('sys:memory-update', memStats);
+            catch (err) {
+                const isAborted = abortController.signal.aborted;
+                return {
+                    ok: false,
+                    aborted: isAborted,
+                    error: err?.message || String(err),
+                    sessionId: session.id,
+                };
             }
-            return {
-                ok: true,
-                sessionId: session.id,
-                lastAssistantText,
-                messages: session.messages,
-                memoryStats: memStats,
-            };
+            finally {
+                await Promise.allSettled(mcpTools.map(closeDesktopMcp));
+                for (const resolver of pendingApprovals.values())
+                    resolver(false);
+                pendingApprovals.clear();
+                // ALWAYS emit turn_end to ensure the renderer UI never gets stuck in thinking state
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('agent:event', { type: 'turn_end' });
+                }
+                if (activeTurnContext?.sessionId === session.id) {
+                    activeTurnContext = null;
+                }
+            }
         }
-        catch (err) {
-            const isAborted = abortController.signal.aborted;
-            return {
-                ok: false,
-                aborted: isAborted,
-                error: err?.message || String(err),
-                sessionId: session.id,
-            };
+        catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
         finally {
-            // ALWAYS emit turn_end to ensure the renderer UI never gets stuck in thinking state
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('agent:event', { type: 'turn_end' });
-            }
-            if (activeTurnContext?.sessionId === session.id) {
-                activeTurnContext = null;
-            }
+            turnInProgress = false;
+            turnAbortController = null;
         }
     });
 }
@@ -555,7 +645,7 @@ app.whenReady().then(async () => {
                     pid: process.pid,
                     electronVersion: process.versions.electron,
                     nodeVersion: process.versions.node,
-                    v8Flags: '--max-old-space-size=128 --expose-gc',
+                    v8Flags: '--expose-gc',
                 },
                 memory: {
                     before: memStatsBefore,

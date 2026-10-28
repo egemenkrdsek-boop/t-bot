@@ -49,7 +49,9 @@ function validSession(value: unknown): value is Session {
   if (!value || typeof value !== 'object') return false;
   const session = value as Session;
   return typeof session.id === 'string' && ID.test(session.id) && typeof session.workspace === 'string' &&
-    typeof session.createdAt === 'string' && typeof session.updatedAt === 'string' && Array.isArray(session.messages);
+    typeof session.createdAt === 'string' && typeof session.updatedAt === 'string' && Array.isArray(session.messages) &&
+    session.messages.every(message => message && typeof message === 'object' &&
+      ['system', 'user', 'assistant', 'tool'].includes(message.role) && typeof message.content === 'string');
 }
 export function createSession(workspace: string): Session {
   const now = new Date().toISOString();

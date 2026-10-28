@@ -1,5 +1,6 @@
 import { EFFORT_LEVELS } from './effort.js';
-export const HELP = `T Bot 2.0 — Siber-Minimalist Akıllı AI Ajanı ve Komut Merkezi
+import { APP_VERSION } from './version.js';
+export const HELP = `T Bot ${APP_VERSION} — AI Ajanı ve Komut Merkezi
 
 Kullanım:
   tbot                         Etkileşimli TUI Oturumu

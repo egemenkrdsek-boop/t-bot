@@ -33,6 +33,7 @@ export function createOpenAIResponsesProvider(config: Config): Provider {
 
       // /v1/responses 404 veya 400 dönerse standart /v1/chat/completions SSE akışına otomatik fallback yap
       if (response.status === 404 || response.status === 400) {
+        await response.body?.cancel();
         const chatMessages: Item[] = [];
         let pendingImages: Item[] = [];
         const flushImages = () => {
@@ -126,18 +127,17 @@ export function createOpenAIResponsesProvider(config: Config): Provider {
 
         const toolCallsMap = new Map<number, { id: string; name: string; args: string }>();
         let chatUsage: Item | undefined;
+        let chatFinished = false;
+        let safeToolFinish = false;
 
         for await (const payload of sse(chatRes.body)) {
-          if (!payload || payload === '[DONE]') continue;
-          let parsed: any;
-          try {
-            parsed = JSON.parse(payload);
-          } catch {
-            continue;
-          }
+          if (payload === '[DONE]') { chatFinished = true; continue; }
+          const parsed = JSON.parse(payload);
+          if (parsed.error || parsed.type === 'error') throw new Error('Provider reported a stream error.');
           if (parsed.usage) chatUsage = parsed.usage;
           const choice = parsed.choices?.[0];
           if (!choice) continue;
+          if (choice.finish_reason) safeToolFinish = ['stop', 'tool_calls'].includes(choice.finish_reason);
           const delta = choice.delta;
           if (delta?.content && typeof delta.content === 'string') {
             yield { type: 'text', text: delta.content };
@@ -154,21 +154,17 @@ export function createOpenAIResponsesProvider(config: Config): Provider {
           }
         }
 
+        if (!chatFinished || (toolCallsMap.size && !safeToolFinish)) throw new Error('Incomplete provider stream; tool calls discarded.');
         const resolvedCalls: ToolCall[] = [];
         for (const tc of toolCallsMap.values()) {
-          if (tc.name) {
-            let parsedArgs: Record<string, unknown> = {};
-            try {
-              parsedArgs = JSON.parse(tc.args || '{}');
-            } catch {
-              parsedArgs = {};
-            }
-            resolvedCalls.push({
-              id: tc.id || `call_${Math.random().toString(36).slice(2)}`,
-              name: tc.name,
-              arguments: parsedArgs,
-            });
-          }
+          if (!tc.name) throw new Error('Incomplete tool call received.');
+          const parsedArgs: unknown = JSON.parse(tc.args || '{}');
+          if (!parsedArgs || typeof parsedArgs !== 'object' || Array.isArray(parsedArgs)) throw new Error('Tool arguments must be a JSON object.');
+          resolvedCalls.push({
+            id: tc.id || `call_${crypto.randomUUID()}`,
+            name: tc.name,
+            arguments: parsedArgs as Record<string, unknown>,
+          });
         }
 
         if (resolvedCalls.length) {

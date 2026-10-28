@@ -241,10 +241,10 @@ Gerekli dosya düzenlemelerini ve düzeltmelerini tamamla. Ne yaptığını ve s
 
   const fallbackReview = (): Message[] => {
     const text = needsRepair
-      ? `\n\nBağımsız salt-okunur denetim (bulgular otonom öz-onarım aşamasında giderildi):\n${reviewSummaryText}`
+      ? `\n\nBağımsız salt-okunur denetim (öz-onarım girişiminden sonra bulguların giderildiği ayrıca doğrulanmalıdır):\n${reviewSummaryText}`
       : review
         ? `\n\nBağımsız salt-okunur denetim ([ONAYLANDI]):\n${reviewSummaryText}`
-        : `\n\nUygulama tamamlandı (bağımsız denetim atlandı).`;
+        : `\n\nBağımsız denetim raporu alınamadı; uygulamanın tamamlandığı bu aşamada doğrulanmadı.`;
     input.onEvent({ type: 'text', text });
     conversation.push({ role: 'assistant', content: text });
     return conversation;

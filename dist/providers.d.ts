@@ -83,6 +83,7 @@ export declare const PROVIDER_CATALOG: readonly [{
  * Deterministic JSON Repair Engine for LLM tool call arguments.
  * Repairs markdown code blocks, unescaped newlines/tabs inside string literals,
  * trailing commas before closing braces/brackets, and unclosed quotes/brackets/braces.
+ * Compatibility utility only: executable streamed calls must use strict JSON parsing.
  */
 export declare function repairJsonArgs(raw: string): Record<string, unknown>;
 export declare function sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string>;

@@ -1,7 +1,7 @@
 {
   "name": "t-bot-cli",
-  "version": "2.0.0",
-  "description": "T Bot 2.0 — Tri-Core Local AI Coding Agent, Autonomous Desktop Agent & Zero-Backend Telegram Bot Gateway with 50%-75% Token Savings and Deterministic Anti-Hallucination",
+  "version": "2.0.1",
+  "description": "Local AI coding agent with CLI, Windows desktop tools and Telegram gateway",
   "type": "module",
   "main": "dist/desktop/main.js",
   "bin": {
@@ -24,63 +24,22 @@
     "docs",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "THIRD_PARTY_DEPENDENCIES.md"
   ],
   "engines": {
-    "node": ">=20.3"
+    "node": ">=22.12.0"
   },
   "scripts": {
-    "copy:desktop": "node -e \"const fs=require('fs'); fs.mkdirSync('dist/desktop/renderer',{recursive:true}); if(fs.existsSync('src/desktop/preload.cjs')) fs.copyFileSync('src/desktop/preload.cjs','dist/desktop/preload.cjs'); if(fs.existsSync('src/desktop/renderer')) fs.cpSync('src/desktop/renderer','dist/desktop/renderer',{recursive:true});\"",
+    "copy:desktop": "node scripts/copy-desktop.mjs",
     "build": "tsc && npm run copy:desktop",
     "desktop": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:win": "npm run build && electron-builder --config electron-builder.yml --win --x64 --publish never",
     "start": "node --expose-gc dist/index.js",
     "dev": "tsx --expose-gc src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepare": "node -e \"try { require('node:child_process').execSync('npm run build', { stdio: 'ignore' }); } catch {}\""
-  },
-  "build": {
-    "appId": "com.tabit.tbot.desktop",
-    "productName": "T Bot",
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "files": [
-      "dist/**/*",
-      "scripts/**/*",
-      "assets/**/*",
-      "build/icon.*",
-      "package.json"
-    ],
-    "asar": true,
-    "asarUnpack": [
-      "scripts/**/*",
-      "**/*.ps1",
-      "**/*.dll"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.ico",
-      "artifactName": "T-Bot-Setup-${version}.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": "always",
-      "createStartMenuShortcut": true,
-      "shortcutName": "T Bot",
-      "runAfterFinish": false,
-      "installerIcon": "build/installerIcon.ico",
-      "uninstallerIcon": "build/installerIcon.ico"
-    }
+    "prepare": "node scripts/prepare.mjs",
+    "test": "node --import tsx --test tests/*.test.ts tests/*.test.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

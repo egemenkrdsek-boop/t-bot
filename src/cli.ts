@@ -1,4 +1,5 @@
 import { EFFORT_LEVELS, type EffortLevel } from './effort.js';
+import { APP_VERSION } from './version.js';
 
 export interface CliOptions {
   command: 'chat' | 'help' | 'version' | 'config' | 'providers' | 'doctor' | 'sessions';
@@ -14,7 +15,7 @@ export interface CliOptions {
   args: string[];
 }
 
-export const HELP = `T Bot 2.0 — Siber-Minimalist Akıllı AI Ajanı ve Komut Merkezi
+export const HELP = `T Bot ${APP_VERSION} — AI Ajanı ve Komut Merkezi
 
 Kullanım:
   tbot                         Etkileşimli TUI Oturumu

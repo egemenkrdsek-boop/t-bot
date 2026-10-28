@@ -1,6 +1,7 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('tbot', {
+  getFilePath: (file) => webUtils.getPathForFile(file),
   startTurn: (payload) => ipcRenderer.invoke('agent:start-turn', payload),
   abortTurn: () => ipcRenderer.invoke('agent:abort-turn'),
   respondApproval: (requestId, approved, alwaysAllowSession) =>
@@ -23,8 +24,9 @@ contextBridge.exposeInMainWorld('tbot', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (partialConfig) => ipcRenderer.invoke('config:save', partialConfig),
   setApiKey: (provider, apiKey) => ipcRenderer.invoke('config:set-api-key', { provider, apiKey }),
-  getModelCatalog: () => ipcRenderer.invoke('config:model-catalog'),
+  getModelCatalog: (provider) => ipcRenderer.invoke('config:model-catalog', provider),
   selectWorkspace: () => ipcRenderer.invoke('workspace:select-dialog'),
+  getDefaultWorkspace: () => ipcRenderer.invoke('workspace:default'),
   openExternalPath: (targetPath) => ipcRenderer.invoke('workspace:open-path', targetPath),
   listSessions: (workspace) => ipcRenderer.invoke('sessions:list', workspace),
   loadSession: (sessionId, workspace) => ipcRenderer.invoke('sessions:load', { sessionId, workspace }),

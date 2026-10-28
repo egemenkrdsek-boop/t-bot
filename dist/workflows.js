@@ -125,6 +125,7 @@ Yönergeler:
 3. ÖNEMLİ: Eğer hedef tamamen gerçekleştirildi, doğrulandı ve bittiyse yanıtının sonuna mutlaka [GOAL_COMPLETE] veya [HEDEF_TAMAMLANDI] yaz!`;
         input.onEvent({ type: 'status', message: `Otonom Hedef [Adım ${step}/${maxSteps}] · ${currentGoal.objective}` });
         let stepFailed = false;
+        const stepStartLength = conversation.length;
         const stepResult = await runner({
             ...input,
             history: conversation,
@@ -136,9 +137,10 @@ Yönergeler:
             },
         });
         conversation = stepResult;
-        const lastAssistant = [...stepResult].reverse().find(m => m.role === 'assistant' && m.content.trim());
+        const lastAssistant = stepResult.slice(stepStartLength).reverse().find(m => m.role === 'assistant' && m.content.trim());
         const assistantContent = lastAssistant?.content || '';
-        const isCompleted = /\[(GOAL_COMPLETE|HEDEF_TAMAMLANDI)\]/i.test(assistantContent);
+        const isCompleted = !stepFailed && !input.signal?.aborted && /\[(GOAL_COMPLETE|HEDEF_TAMAMLANDI)\]\s*$/i.test(assistantContent);
+        let completionSaved = false;
         await withGoalLock(input.workspace, async () => {
             const lockGoal = await getGoal(input.workspace);
             if (lockGoal?.id === currentGoal.id && lockGoal.status === 'active') {
@@ -158,20 +160,22 @@ Yönergeler:
                     updatedAt: new Date().toISOString(),
                     revision: randomUUID(),
                     lastRun: input.signal?.aborted ? 'interrupted' : stepFailed ? 'error' : 'finished',
-                    notes: nextNotes,
+                    notes: nextNotes.slice(-100),
                     ...(assistantContent ? { lastResult: assistantContent.slice(0, 8_000) } : {}),
                 };
                 await saveGoal(input.workspace, updatedGoal);
+                completionSaved = updatedGoal.status === 'completed';
                 currentGoal = updatedGoal;
             }
         });
         // Her adım sonunda hızlı JS/V8 RAM temizliği (PowerShell bloklaması olmadan)
         await reclaimMemory(options.session ?? input.session, false).catch(() => undefined);
         if (isCompleted) {
-            input.onEvent({
-                type: 'status',
-                message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])',
-            });
+            if (completionSaved)
+                input.onEvent({
+                    type: 'status',
+                    message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])',
+                });
             break;
         }
         if (stepFailed || input.signal?.aborted) {
@@ -182,7 +186,7 @@ Yönergeler:
 }
 /** Planlama yalnızca sağlayıcı düzeyinde bir çağrıdır: Araçlar sunulmaz ve yürütülmez. */
 export async function planTask(input) {
-    const user = { role: 'user', content: input.message };
+    const user = { role: 'user', content: input.message, ...(input.images?.length ? { images: input.images } : {}) };
     const prompt = {
         role: 'system',
         content: 'Kullanıcı isteği için somut, sıralı ve uygulanabilir bir plan oluştur. İlgili kontrolleri, varsayımları ve belirsizlikleri dahil et. Dosyaları incelediğini veya eylem gerçekleştirdiğini iddia etme. Bu yalnızca bir planlama adımıdır; yürütme kullanıcının ayrı bir onayını gerektirir.',

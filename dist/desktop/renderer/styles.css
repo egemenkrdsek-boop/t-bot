@@ -2017,3 +2017,68 @@ button {
   0%, 100% { box-shadow: 0 0 12px rgba(217, 119, 6, 0.2); }
   50% { box-shadow: 0 0 22px rgba(217, 119, 6, 0.4); }
 }
+
+/* Quiet, compact desktop surfaces. No idle compositor work or blurred layers. */
+:root {
+  --bg-deep: #f5f5f5;
+  --bg-main: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-card-hover: #f3f3f3;
+  --bg-code: #f5f5f5;
+  --brand: #376947;
+  --brand-green: #376947;
+  --text-dim: #555b57;
+  --text-muted: #656b67;
+  --border-subtle: #e5e7e5;
+  --card-shadow: none;
+  --glow-brand: none;
+  --glow-cyan: none;
+  --sidebar-width: 240px;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-deep: #181818;
+  --bg-main: #212121;
+  --bg-panel: #181818;
+  --bg-card: #252525;
+  --bg-input: #292929;
+  --bg-code: #171717;
+  --bg-card-hover: #303030;
+  --text-dim: #b6bbb7;
+  --text-muted: #a3aaa5;
+  --border-subtle: #373b38;
+  --card-shadow: none;
+  --glow-brand: none;
+  --glow-cyan: none;
+}
+.workspace-grid { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--sidebar-width); }
+.workspace-grid.left-collapsed { grid-template-columns: minmax(0, 1fr) var(--sidebar-width); }
+.workspace-grid.right-collapsed { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+.workspace-grid.left-collapsed.right-collapsed { grid-template-columns: minmax(0, 1fr); }
+.main-terminal { min-width: 0; }
+.brand-badge, .ultracode-stepper-container, .telemetry-savings, .telemetry-sep { display: none; }
+.top-bar { justify-content: flex-start; }
+.top-quick-actions { flex: 1; flex-wrap: wrap; }
+.hero-logo-canvas { width: 48px; height: 48px; animation: none; }
+.hero-title { font-weight: 600; letter-spacing: -.6px; }
+.hero-card:hover { transform: none; box-shadow: none; }
+.chat-feed { padding: 24px max(24px, calc((100% - 800px) / 2)); }
+.message-wrapper { min-width: 0; overflow-wrap: anywhere; }
+.tool-card pre { max-height: 320px; overflow: auto; }
+.modal-backdrop, .lightbox-backdrop, .drag-overlay { backdrop-filter: none; }
+.thinking-cyber-wave { animation: none; background: var(--brand-green); height: 2px; }
+.todo-item.in_progress .todo-checkbox, .tool-badge.running, .approval-card, .drag-icon { animation: none; }
+button:disabled { opacity: .45; cursor: default; }
+:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.modal-box { max-height: 90vh; overflow: auto; }
+@media (max-width: 1100px) {
+  :root { --sidebar-width: 190px; }
+  .workspace-grid { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--sidebar-width); }
+  .telemetry-badge, .brand-badge, .titlebar-action-btn .action-label { display: none; }
+  .top-quick-actions { gap: 2px; }
+  .quick-btn, .quick-toggle-btn { font-size: 11px; padding: 4px 6px; }
+  .hud-shortcut, .hud-savings, .hud-grounding { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

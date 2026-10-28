@@ -141,9 +141,8 @@ export declare class GroundingLedger {
      */
     verifyClaims(assistantResponse: string): ClaimAuditResult;
 }
-/**
- * Global singleton grounding ledger.
- */
+export declare function withGroundingLedger<T>(workspace: string, publish: boolean, action: () => T): T;
+/** Legacy tools resolve this facade to their own invocation's ledger. */
 export declare const globalGroundingLedger: GroundingLedger;
 /**
  * Get or create a session-based GroundingLedger for a given workspace.

@@ -1,8 +1,7 @@
 /**
  * T Bot 2.0 — Cyber-Zen Desktop UI Controller
  * Sıfır-Framework Vanilla JavaScript (ES2022)
- * %100 Donanım Hızlandırmalı, Sıfır Bellek Kaçağı
- * preload.cjs & main.ts ile %100 Tam Uyumlu
+ * Local renderer backed by the isolated preload bridge.
  */
 
 (function () {
@@ -12,15 +11,14 @@
   // 1. Durum Yönetimi (Application State)
   // =========================================================================
   const state = {
-    workspace: 'C:\\Users\\Egemen\\Desktop\\T Bot',
+    workspace: '',
     currentSessionId: null,
     isThinking: false,
+    turnPending: false,
     thinkingStartTime: 0,
     thinkingTimerId: null,
     spinnerIndex: 0,
     turnAssistantTextProduced: false,
-    ultracodeEnabled: true,
-    ultracodeStep: 1,
     yoloEnabled: false,
     currentStepCount: 0,
     attachedImages: [], // { mimeType: 'image/png', data: base64, name: string }
@@ -29,11 +27,11 @@
     provider: 'gemini',
     effort: 'medium',
     telemetry: {
-      ramMB: 48,
-      savingsPercent: 68,
+      ramMB: 0,
+      savingsPercent: 0,
       savedTokens: 0,
-      systemUsedPercent: 32,
-      groundedStatus: 'Grounded ✓',
+      systemUsedPercent: 0,
+      groundedStatus: '—',
     },
     goal: null,
     todos: [],
@@ -90,58 +88,16 @@
     mcp_call: 'MCP Çağrısı',
   };
 
-  const PROVIDER_MODELS = {
-    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash'],
-    anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-opus-5-5'],
-    openai: ['gpt-4o', 'o3-mini', 'o1', 'gpt-4o-mini', 'gpt-4.1', 'gpt-5.1'],
-    openrouter: ['google/gemini-2.5-pro', 'anthropic/claude-3-7-sonnet-latest', 'openai/gpt-4o', 'deepseek/deepseek-r1'],
-    groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
-    deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-    ollama: ['llama3.3:latest', 'qwen2.5-coder:latest', 'deepseek-r1:latest'],
-    lmstudio: ['local-model'],
-  };
 
   const BRAILLE_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
   // Güvenli T Bot IPC Köprüsü (preload.cjs sarmalayıcısı)
-  const tbot = window.tbot || {
-    startTurn: async (p) => { console.log('Mock startTurn:', p); return { ok: true }; },
-    abortTurn: async () => ({ aborted: true }),
-    respondApproval: async () => ({ handled: true }),
-    onAgentEvent: () => () => {},
-    onApprovalRequest: () => () => {},
-    onMemoryUpdate: () => () => {},
-    getConfig: async () => ({ provider: state.provider, model: state.model, effort: state.effort, yolo: state.yoloEnabled }),
-    saveConfig: async (cfg) => { Object.assign(state, cfg); return cfg; },
-    setApiKey: async (p, k) => { localStorage.setItem(`tbot_api_${p}`, k); return true; },
-    getModelCatalog: async () => ({
-      providers: ['gemini', 'anthropic', 'openai', 'openrouter', 'groq', 'deepseek', 'ollama'],
-      currentProvider: state.provider,
-      currentModel: state.model,
-      models: (PROVIDER_MODELS[state.provider] || []).map(id => ({ id, label: id })),
-    }),
-    selectWorkspace: async () => state.workspace,
-    openExternalPath: async () => true,
-    listSessions: async () => [],
-    loadSession: async () => ({ id: 'default', messages: [] }),
-    deleteSession: async () => true,
-    createSession: async (_ws, title) => ({ id: `session_${Date.now()}`, messages: title ? [{ role: 'user', content: title }] : [] }),
-    getWorkflowState: async () => ({ goal: null, todos: [], focusSummary: '' }),
-    manageWorkflow: async (tool, args) => { console.log('Mock manageWorkflow:', tool, args); return ''; },
-    getSkillsAndMcp: async () => ({ skills: [], mcpConnections: {} }),
-    runDoctor: async () => ({
-      nodeVersion: 'v22.0.0',
-      electronVersion: '33.0.0',
-      workspace: state.workspace,
-      provider: state.provider,
-      model: state.model,
-      hasApiKey: true,
-      memoryStats: { totalAppMB: 48, systemUsedPercent: 32 },
-    }),
-    getMemoryStats: () => ({ totalAppMB: 48, systemUsedPercent: 32 }),
-    trimMemory: async () => ({ result: { freedBytes: 14 * 1024 * 1024 }, stats: { totalAppMB: 36, systemUsedPercent: 30 } }),
-    windowControl: (act) => console.log('Mock windowControl:', act),
-  };
+  const tbot = window.tbot;
+  if (!tbot) {
+    document.body.textContent = 'T Bot masaüstü bağlantısı yüklenemedi. Uygulamayı yeniden başlatın.';
+    return;
+  }
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
   // =========================================================================
   // 2. DOM Seçicileri (Elements Cache)
@@ -165,8 +121,6 @@
     btnClose: document.getElementById('btn-close'),
 
     // Üst Bar & Stepper
-    ultracodeStepper: document.getElementById('ultracode-stepper'),
-    btnQuickUltra: document.getElementById('btn-quick-ultra'),
     btnQuickYolo: document.getElementById('btn-quick-yolo'),
     yoloIcon: document.getElementById('yolo-icon'),
     yoloLabel: document.getElementById('yolo-label'),
@@ -375,44 +329,14 @@
 
   let logoAnimFrame = 0;
   function startLogoAnimation() {
-    function loop() {
-      logoAnimFrame++;
-      drawPixelLogo(dom.logoCanvas, logoAnimFrame);
-      drawPixelLogo(dom.heroLogoCanvas, logoAnimFrame);
-      requestAnimationFrame(loop);
-    }
-    requestAnimationFrame(loop);
+    // Static logos avoid waking a renderer 60 times each second while idle.
+    drawPixelLogo(dom.logoCanvas);
+    drawPixelLogo(dom.heroLogoCanvas);
   }
 
   // =========================================================================
   // 4. Ultracode Stepper & Hızlı Modlar
   // =========================================================================
-  function setUltracodeStep(activeStep) {
-    state.ultracodeStep = Math.max(1, Math.min(4, activeStep));
-    const stepElements = dom.ultracodeStepper?.querySelectorAll('.step') || [];
-    stepElements.forEach((el) => {
-      const stepNum = parseInt(el.getAttribute('data-step') || '1', 10);
-      const indicator = el.querySelector('.step-indicator');
-      el.classList.remove('step-active', 'step-completed');
-
-      if (stepNum < state.ultracodeStep) {
-        el.classList.add('step-completed');
-        if (indicator) indicator.textContent = '✓';
-      } else if (stepNum === state.ultracodeStep) {
-        el.classList.add('step-active');
-        if (indicator) indicator.textContent = '◉';
-      } else {
-        if (indicator) indicator.textContent = '○';
-      }
-    });
-  }
-
-  function toggleUltracodeMode() {
-    state.ultracodeEnabled = !state.ultracodeEnabled;
-    dom.btnQuickUltra?.classList.toggle('active', state.ultracodeEnabled);
-    updateHudBar();
-  }
-
   function toggleYoloMode() {
     state.yoloEnabled = !state.yoloEnabled;
     if (state.yoloEnabled) {
@@ -424,7 +348,7 @@
       if (dom.yoloIcon) dom.yoloIcon.textContent = '🛡️';
       if (dom.yoloLabel) dom.yoloLabel.textContent = 'Onaylı';
     }
-    tbot.saveConfig?.({ yolo: state.yoloEnabled });
+    dom.btnQuickYolo?.setAttribute('aria-pressed', String(state.yoloEnabled));
   }
 
   // =========================================================================
@@ -439,7 +363,7 @@
 
   function updateHudBar() {
     if (dom.hudModelVal) dom.hudModelVal.textContent = state.model;
-    const effortLabel = state.ultracodeEnabled ? `${toTurkishTitleCase(state.effort)}+Ultra` : toTurkishTitleCase(state.effort);
+    const effortLabel = toTurkishTitleCase(state.effort);
     if (dom.hudEffortVal) dom.hudEffortVal.textContent = effortLabel;
 
     if (dom.hudSavingsVal) dom.hudSavingsVal.textContent = `%${state.telemetry.savingsPercent}`;
@@ -467,7 +391,7 @@
 
   function updateTelemetry(data) {
     if (!data) return;
-    const ram = data.totalAppMB || data.mainMB || data.ramMB;
+    const ram = data.totalWorkingSetMB ?? data.totalAppMB ?? data.mainMB ?? data.ramMB;
     if (typeof ram === 'number') state.telemetry.ramMB = ram;
     if (typeof data.savingsPercent === 'number') state.telemetry.savingsPercent = Math.round(data.savingsPercent);
     if (typeof data.savedTokens === 'number') state.telemetry.savedTokens = data.savedTokens;
@@ -493,11 +417,11 @@
     if (state.thinkingTimerId) clearInterval(state.thinkingTimerId);
     state.thinkingTimerId = setInterval(() => {
       state.spinnerIndex = (state.spinnerIndex + 1) % BRAILLE_SPINNER.length;
-      if (dom.thinkingSpinner) dom.thinkingSpinner.textContent = BRAILLE_SPINNER[state.spinnerIndex];
+      if (dom.thinkingSpinner) dom.thinkingSpinner.textContent = reducedMotion.matches ? '●' : BRAILLE_SPINNER[state.spinnerIndex];
 
       const elapsedSec = ((Date.now() - state.thinkingStartTime) / 1000).toFixed(1);
       if (dom.thinkingTimer) dom.thinkingTimer.textContent = `${elapsedSec}sn`;
-    }, 85);
+    }, 1000);
   }
 
   function updateThinkingLabel(label) {
@@ -515,7 +439,7 @@
 
   function abortCurrentTurn() {
     try {
-      tbot.abortTurn?.();
+      tbot.abortTurn?.().catch(error => appendErrorNotice(String(error)));
     } catch (e) {
       console.warn('tbot.abortTurn hatası:', e);
     }
@@ -528,7 +452,7 @@
   // =========================================================================
   function escapeHtml(str) {
     if (!str) return '';
-    return str
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -543,7 +467,7 @@
 
   function parseMarkdown(mdText) {
     if (!mdText) return '';
-    let text = mdText.replace(/\r\n/g, '\n');
+    let text = String(mdText).replace(/\r\n/g, '\n');
 
     // 1. Kod Blokları (```lang ... ```)
     const codeBlocks = [];
@@ -555,7 +479,7 @@
         <div class="code-block-wrapper">
           <div class="code-block-header">
             <span>${escapeHtml(cleanLang)}</span>
-            <button class="btn-copy-code" onclick="window.tbotCopyCode(this)">Kopyala</button>
+            <button class="btn-copy-code" data-copy-code>Kopyala</button>
           </div>
           <pre><code>${escapedCode}</code></pre>
         </div>
@@ -563,9 +487,11 @@
       return `__CODE_BLOCK_${idx}__`;
     });
 
+    text = escapeHtml(text);
+
     // 2. Satır İçi Kod (`kod`)
     text = text.replace(/`([^`\n]+)`/g, (match, inline) => {
-      return `<code>${escapeHtml(inline)}</code>`;
+      return `<code>${inline}</code>`;
     });
 
     // 3. Başlıklar
@@ -578,7 +504,7 @@
     text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
 
     // 5. Alıntılar (Blockquote)
-    text = text.replace(/^> (.*$)/gim, '<blockquote>$1</blockquote>');
+    text = text.replace(/^&gt; (.*$)/gim, '<blockquote>$1</blockquote>');
 
     // 6. Maddeler (- veya * listeleri)
     text = text.replace(/^\s*[-*]\s+(.*$)/gim, '<li>$1</li>');
@@ -654,9 +580,9 @@
     let imagesHtml = '';
     if (images && images.length > 0) {
       imagesHtml = '<div class="message-images-grid" style="display:flex;gap:6px;margin-bottom:8px;">';
-      images.forEach((img, idx) => {
+      images.filter(img => img?.mimeType === 'image/png' && typeof img.data === 'string' && /^[A-Za-z0-9+/=]+$/.test(img.data)).slice(0, 3).forEach((img, idx) => {
         const src = `data:${img.mimeType};base64,${img.data}`;
-        imagesHtml += `<div class="tool-screenshot-preview" onclick="window.tbotOpenLightbox('${src}', 'Ekli Görsel ${idx + 1}')"><img src="${src}" alt="Ek" style="max-height:100px;border-radius:4px;"></div>`;
+        imagesHtml += `<div class="tool-screenshot-preview" data-preview-image role="button" tabindex="0"><img src="${src}" alt="Ek" style="max-height:100px;border-radius:4px;"></div>`;
       });
       imagesHtml += '</div>';
     }
@@ -669,6 +595,14 @@
 
   let currentAssistantWrapper = null;
   let currentAssistantTextBuffer = '';
+  let assistantRenderTimer = null;
+  function renderAssistantBuffer() {
+    if (assistantRenderTimer) clearTimeout(assistantRenderTimer);
+    assistantRenderTimer = null;
+    const body = currentAssistantWrapper?.querySelector('.assistant-message-body');
+    if (body) body.innerHTML = parseMarkdown(currentAssistantTextBuffer);
+    scrollToBottom();
+  }
 
   function appendAssistantTextChunk(chunk) {
     if (!chunk) return;
@@ -684,14 +618,11 @@
     }
 
     currentAssistantTextBuffer += chunk;
-    const bodyEl = currentAssistantWrapper.querySelector('.assistant-message-body');
-    if (bodyEl) {
-      bodyEl.innerHTML = parseMarkdown(currentAssistantTextBuffer);
-    }
-    scrollToBottom();
+    if (!assistantRenderTimer) assistantRenderTimer = setTimeout(renderAssistantBuffer, 50);
   }
 
   function finalizeAssistantMessage() {
+    renderAssistantBuffer();
     currentAssistantWrapper = null;
     currentAssistantTextBuffer = '';
   }
@@ -768,7 +699,7 @@
     card.dataset.startTime = String(Date.now());
 
     card.innerHTML = `
-      <div class="tool-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle>
         <div class="tool-header-left">
           <span class="tool-icon">◈</span>
           <span class="tool-title">${escapeHtml(toolTitle)}</span>
@@ -794,7 +725,7 @@
 
   function handleToolEnd(call, result, toolTitleOverride = null) {
     const callId = call.id;
-    const card = activeToolCards.get(callId) || dom.chatFeed?.querySelector(`.tool-card[data-id="${callId}"]`);
+    const card = activeToolCards.get(callId);
     const toolTitle = toolTitleOverride || TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name);
 
     let durationText = '';
@@ -825,7 +756,7 @@
 
           // Eğer file_patch diff içeriyorsa renkli diff bas
           if (call.name === 'file_patch' || call.name === 'file_write' || strResult.includes('@@')) {
-            resultArea.innerHTML = `<div class="tool-section-title">Değişiklik Özeti (AST Verified):</div>${formatDiff(strResult)}`;
+            resultArea.innerHTML = `<div class="tool-section-title">Değişiklik Özeti:</div>${formatDiff(strResult)}`;
           } else {
             resultArea.innerHTML = `<div class="tool-section-title">Sonuç:</div><pre>${escapeHtml(strResult)}</pre>`;
           }
@@ -847,6 +778,7 @@
       }
     }
 
+    activeToolCards.delete(callId);
     startThinking('Yanıt Hazırlanıyor…');
     scrollToBottom();
   }
@@ -855,7 +787,7 @@
   // 10. Canlı Araç Onay Kartı (Approval Request)
   // =========================================================================
   function renderApprovalRequest(req) {
-    stopThinking();
+    dom.thinkingBar?.classList.add('hidden');
     finalizeAssistantMessage();
     hideEmptyHero();
 
@@ -876,20 +808,17 @@
       <div class="approval-actions">
         <button id="btn-approval-allow" class="btn-approve">✓ İzin Ver (Enter)</button>
         <button id="btn-approval-deny" class="btn-reject">✗ Reddet (Esc)</button>
-        <button id="btn-approval-yolo" class="btn-yolo-session">⚡ Bu Oturumda Hep İzin Ver (YOLO)</button>
+        <button id="btn-approval-yolo" class="btn-yolo-session">⚡ Bu Turda Hep İzin Ver</button>
       </div>
     `;
 
     dom.chatFeed?.appendChild(card);
     scrollToBottom(true);
+    document.getElementById('btn-approval-allow')?.focus();
 
     document.getElementById('btn-approval-allow')?.addEventListener('click', () => respondApproval(true, false));
     document.getElementById('btn-approval-deny')?.addEventListener('click', () => respondApproval(false, false));
     document.getElementById('btn-approval-yolo')?.addEventListener('click', () => {
-      state.yoloEnabled = true;
-      dom.btnQuickYolo?.classList.add('yolo-active');
-      if (dom.yoloIcon) dom.yoloIcon.textContent = '⚡';
-      if (dom.yoloLabel) dom.yoloLabel.textContent = 'YOLO';
       respondApproval(true, true);
     });
   }
@@ -913,7 +842,7 @@
     state.currentApproval = null;
     tbot.respondApproval?.(reqId, approved, alwaysAllow);
 
-    if (approved) {
+    if (state.turnPending) {
       startThinking('Araç Çalıştırılıyor…');
     }
   }
@@ -923,6 +852,7 @@
   // =========================================================================
   window.tbotOpenLightbox = function (imgSrc, title = 'Görsel Önizlemesi') {
     if (!dom.lightboxModal || !dom.lightboxImg) return;
+    if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(imgSrc)) return;
     dom.lightboxImg.src = imgSrc;
     if (dom.lightboxTitle) dom.lightboxTitle.textContent = title;
     dom.lightboxModal.classList.remove('hidden');
@@ -960,7 +890,7 @@
       chip.innerHTML = `
         <img class="attachment-thumb" src="data:${img.mimeType};base64,${img.data}" alt="thumbnail">
         <span>${escapeHtml(img.name || `Görsel ${index + 1}`)}</span>
-        <span class="chip-btn-remove" onclick="window.tbotRemoveAttachment(${index})">✕</span>
+        <button class="chip-btn-remove" data-remove-attachment="${index}" aria-label="Görseli kaldır">✕</button>
       `;
       dom.attachmentChips.appendChild(chip);
     });
@@ -971,22 +901,38 @@
     renderAttachmentChips();
   };
 
-  function addImageAttachment(file) {
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result;
-      if (typeof result === 'string') {
-        const base64 = result.split(',')[1];
-        state.attachedImages.push({
-          mimeType: 'image/png',
-          data: base64,
-          name: file.name || 'image.png',
-        });
-        renderAttachmentChips();
-      }
-    };
-    reader.readAsDataURL(file);
+  let pendingImageReads = 0;
+  async function addImageAttachment(file) {
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+      appendErrorNotice('PNG, JPEG, WebP veya GIF görseli seçin.');
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024 || state.attachedImages.length + pendingImageReads >= 3) {
+      appendErrorNotice('En fazla 3 görsel ekleyin; her dosya 4 MB veya daha küçük olmalıdır.');
+      return;
+    }
+    pendingImageReads++;
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      if (image.naturalWidth * image.naturalHeight > 16_000_000) throw new Error('Görsel en fazla 16 megapiksel olabilir.');
+      const ratio = Math.min(1, 1200 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      const data = canvas.toDataURL('image/png').split(',')[1];
+      if (data.length > 2_000_000) throw new Error('PNG verisi 2 MB sınırını aşıyor; daha küçük bir görsel seçin.');
+      state.attachedImages.push({ mimeType: 'image/png', data, name: file.name || 'image.png' });
+      renderAttachmentChips();
+    } catch (error) {
+      appendErrorNotice(error instanceof Error ? error.message : 'Görsel okunamadı. Başka bir dosya seçin.');
+    } finally {
+      URL.revokeObjectURL(url);
+      pendingImageReads--;
+    }
   }
 
   function setupDragAndDrop() {
@@ -1022,7 +968,8 @@
           addImageAttachment(file);
         } else {
           // Dosya ise yolunu veya içeriğini ekle
-          const filePath = file.path || file.name;
+          const filePath = tbot.getFilePath(file);
+          if (!filePath) { appendErrorNotice('Dosyanın yerel yolu okunamadı. Dosya yolunu mesaja yazın.'); return; }
           if (dom.userInput) {
             dom.userInput.value += (dom.userInput.value ? ' ' : '') + filePath;
             dom.userInput.focus();
@@ -1049,8 +996,8 @@
   // =========================================================================
   // 13. Kullanıcı Mesajı Gönderme (Turn Execution)
   // =========================================================================
-  async function submitUserMessage() {
-    if (state.isThinking) return;
+  async function submitUserMessage(options = {}) {
+    if (state.turnPending || state.currentApproval || pendingImageReads) return;
     const rawText = dom.userInput?.value || '';
     const text = rawText.trim();
     const images = [...state.attachedImages];
@@ -1067,15 +1014,20 @@
     if (dom.userInput) dom.userInput.value = '';
     state.attachedImages = [];
     state.turnAssistantTextProduced = false;
+    state.currentStepCount = 0;
     renderAttachmentChips();
     autoResizeTextarea();
 
+    state.turnPending = true;
+    setTurnControls();
     appendUserMessage(text, images);
     startThinking('T Bot Çözümlüyor…');
 
     try {
       const res = await tbot.startTurn?.({
         message: text,
+        images,
+        mode: options.goal ? 'goal' : undefined,
         workspace: state.workspace,
         sessionId: state.currentSessionId || undefined,
         yolo: state.yoloEnabled,
@@ -1110,9 +1062,17 @@
     } catch (err) {
       appendErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
+      state.turnPending = false;
+      setTurnControls();
       finalizeAssistantMessage();
       stopThinking();
+      loadSessionsList();
+      refreshWorkflow();
     }
+  }
+
+  function setTurnControls() {
+    [dom.btnSend, dom.btnWorkspace, dom.btnNewSession, dom.modalBtnStartGoal].forEach(button => { if (button) button.disabled = state.turnPending; });
   }
 
   function autoResizeTextarea() {
@@ -1178,8 +1138,7 @@
         break;
 
       case '/ultracode':
-        toggleUltracodeMode();
-        appendAssistantTextChunk(`⚡ Ultracode Modu: **${state.ultracodeEnabled ? 'Açık' : 'Kapalı'}**`);
+        appendAssistantTextChunk('Bu masaüstü sürümü ayrı bir Ultracode yürütme modu sunmuyor. İnceleme ve düzeltme isteğinizi mesaj olarak yazın.');
         finalizeAssistantMessage();
         break;
 
@@ -1210,7 +1169,6 @@
         appendAssistantTextChunk(`
 ### T Bot 2.0 Siber-Zen Komut Kılavuzu
 - \`/model\`, \`/provider\` — Model, Sağlayıcı ve API Anahtarlarını Yapılandır
-- \`/ultracode\` — 4 Aşamalı Yüksek Doğruluklu Kodlama Modunu Aç/Kapat
 - \`/yolo\` — Araç Çalıştırma Otomatik Onayını Aç/Kapat
 - \`/goal\` — Otonom Hedef Başlat (.tbot/goal.json)
 - \`/ram\`, \`/gc\` — Belleği Boşalt ve Çöp Toplayıcıyı Çalıştır
@@ -1233,32 +1191,30 @@
   async function triggerTrimMemory() {
     if (dom.btnTrimRam) {
       dom.btnTrimRam.innerHTML = '<span class="action-icon">⌛</span> Boşaltılıyor…';
-      dom.btnTrimRam.style.pointerEvents = 'none';
+      dom.btnTrimRam.disabled = true;
     }
 
     try {
       const res = await tbot.trimMemory?.();
       const stats = res?.stats || await tbot.getMemoryStats?.();
-      const freedMB = res?.result?.freedBytes ? Math.round(res.result.freedBytes / (1024 * 1024)) : 14;
-
-      if (stats?.totalAppMB) {
-        state.telemetry.ramMB = stats.totalAppMB;
-      } else {
-        state.telemetry.ramMB = Math.max(28, state.telemetry.ramMB - freedMB);
-      }
-      updateHudBar();
-
-      appendAssistantTextChunk(`🧹 Bellek Temizlendi! **${freedMB > 0 ? freedMB : 14} MB** RAM serbest bırakıldı.`);
+      const freedMB = res?.result?.freedMB ?? 0;
+      updateTelemetry(stats);
+      appendAssistantTextChunk(`Bellek ölçümü güncellendi. **${freedMB} MB** çalışma kümesi serbest bırakıldı.`);
       finalizeAssistantMessage();
+    } catch (error) {
+      appendErrorNotice(String(error));
     } finally {
       if (dom.btnTrimRam) {
         dom.btnTrimRam.innerHTML = '<span class="action-icon">🧹</span> RAM Boşalt';
-        dom.btnTrimRam.style.pointerEvents = '';
+        dom.btnTrimRam.disabled = false;
       }
     }
   }
 
   function clearChatTerminal() {
+    if (state.turnPending) return;
+    finalizeAssistantMessage();
+    activeToolCards.clear();
     if (dom.chatFeed) {
       const messages = Array.from(dom.chatFeed.querySelectorAll('.message-wrapper, .tool-card, .approval-card'));
       messages.forEach(m => m.remove());
@@ -1293,8 +1249,12 @@
             <span class="session-title">${escapeHtml(title)}</span>
             <span class="session-meta">${date} · ${count} mesaj</span>
           </div>
-          <button class="session-btn-delete" title="Oturumu Sil" onclick="window.tbotDeleteSession(event, '${s.id}')">🗑️</button>
+          <button class="session-btn-delete" title="Oturumu Sil" data-delete-session>🗑️</button>
         `;
+        item.querySelector('[data-delete-session]')?.addEventListener('click', e => window.tbotDeleteSession(e, s.id));
+        item.tabIndex = 0;
+        item.setAttribute('role', 'button');
+        item.addEventListener('keydown', e => { if (e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); switchSession(s.id); } });
         item.onclick = (e) => {
           if (e.target.closest('.session-btn-delete')) return;
           switchSession(s.id);
@@ -1315,6 +1275,7 @@
   };
 
   async function switchSession(id) {
+    if (state.turnPending) return;
     state.currentSessionId = id;
     clearChatTerminal();
     loadSessionsList();
@@ -1372,8 +1333,8 @@
       // Yetenekler ve MCP
       const sm = await tbot.getSkillsAndMcp?.(state.workspace);
       if (sm && dom.mcpServerCountTag) {
-        const connCount = Object.keys(sm.mcpConnections || {}).length;
-        dom.mcpServerCountTag.innerHTML = `<span class="tag-dot"></span> MCP (${connCount > 0 ? `${connCount} Aktif` : 'Hazır'})`;
+        const connCount = Object.values(sm.mcpConnections || {}).filter(connection => connection?.enabled).length;
+        dom.mcpServerCountTag.innerHTML = `<span class="tag-dot"></span> MCP (${connCount > 0 ? `${connCount} Etkin yapılandırma` : 'Etkin yapılandırma yok'})`;
       }
     } catch {
       // ignore
@@ -1403,6 +1364,9 @@
 
       const item = document.createElement('div');
       item.className = `todo-item ${statusClass}`;
+      item.tabIndex = 0;
+      item.setAttribute('role', 'button');
+      item.setAttribute('aria-label', `${t.text}: ${t.status}`);
       item.innerHTML = `
         <span class="todo-checkbox">${checkIcon}</span>
         <span class="todo-text">${escapeHtml(t.text)}</span>
@@ -1441,12 +1405,17 @@
   // =========================================================================
   async function openConfigModal() {
     dom.configModal?.classList.remove('hidden');
+    if (dom.inputCustomModel) dom.inputCustomModel.value = '';
     if (dom.selectProvider) dom.selectProvider.value = state.provider;
     if (dom.selectEffort) dom.selectEffort.value = state.effort;
 
     try {
       const cat = await tbot.getModelCatalog?.();
       if (cat?.models) {
+        if (dom.selectProvider && cat.providers) {
+          dom.selectProvider.replaceChildren(...cat.providers.map(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; return option; }));
+          dom.selectProvider.value = state.provider;
+        }
         populateModelsSelect(cat.models);
       } else {
         updateModelDropdown(state.provider);
@@ -1458,6 +1427,7 @@
 
   function closeConfigModal() {
     dom.configModal?.classList.add('hidden');
+    if (dom.inputApiKey) { dom.inputApiKey.value = ''; dom.inputApiKey.type = 'password'; }
   }
 
   function populateModelsSelect(models) {
@@ -1466,15 +1436,26 @@
     models.forEach((m) => {
       const opt = document.createElement('option');
       opt.value = typeof m === 'string' ? m : m.id;
-      opt.textContent = typeof m === 'string' ? m : m.label;
+      opt.textContent = typeof m === 'string' ? m : (m.label || m.id);
       if (opt.value === state.model) opt.selected = true;
       dom.selectModel.appendChild(opt);
     });
+    if (dom.selectProvider?.value === state.provider && !models.some(model => (typeof model === 'string' ? model : model.id) === state.model)) {
+      const option = document.createElement('option'); option.value = state.model; option.textContent = state.model; option.selected = true; dom.selectModel.appendChild(option);
+    }
   }
 
+  let catalogRequest = 0;
   async function updateModelDropdown(provider) {
-    const fallbackList = (PROVIDER_MODELS[provider] || []).map(id => ({ id, label: id }));
-    populateModelsSelect(fallbackList);
+    const request = ++catalogRequest;
+    dom.selectModel?.replaceChildren();
+    if (dom.inputCustomModel) dom.inputCustomModel.value = '';
+    try {
+      const catalog = await tbot.getModelCatalog(provider);
+      if (request === catalogRequest) populateModelsSelect(catalog.models || []);
+    } catch (error) {
+      if (request === catalogRequest) appendErrorNotice(`Model listesi yüklenemedi: ${String(error)}`);
+    }
   }
 
   async function saveAllConfig() {
@@ -1482,16 +1463,15 @@
     const model = dom.inputCustomModel?.value?.trim() || dom.selectModel?.value || state.model;
     const effort = dom.selectEffort?.value || state.effort;
 
+    try { await tbot.saveConfig?.({
+      provider: prov,
+      model,
+      efforts: { [`${prov}:${model}`]: effort },
+    }); } catch (error) { appendErrorNotice(String(error)); return; }
+
     state.provider = prov;
     state.model = model;
     state.effort = effort;
-
-    await tbot.saveConfig?.({
-      provider: state.provider,
-      model: state.model,
-      efforts: { [state.model]: state.effort },
-    });
-
     updateHudBar();
     closeConfigModal();
   }
@@ -1504,11 +1484,11 @@
     try {
       const doc = await tbot.runDoctor?.(state.workspace);
       const tests = [
-        { name: `Node.js (${doc?.nodeVersion || process.version})`, status: 'pass', desc: 'Node.js LTS motoru çalışıyor' },
+        { name: `Node.js (${doc?.nodeVersion || '—'})`, status: 'pass', desc: 'Node.js LTS motoru çalışıyor' },
         { name: `Electron (${doc?.electronVersion || '33.x'}) & Chrome`, status: 'pass', desc: `Chrome ${doc?.chromeVersion || 'v130'} donanım hızlandırmalı renderer` },
-        { name: `V8 JavaScript Motoru (${doc?.v8Version || 'v13.x'})`, status: 'pass', desc: 'V8 Düşük RAM Modu (--max-old-space-size=128)' },
-        { name: `Sağlayıcı: ${doc?.provider || state.provider}`, status: doc?.hasApiKey ? 'pass' : 'warn', desc: doc?.hasApiKey ? 'API Anahtarı doğrulandı' : 'API Anahtarı girilmemiş veya çevrimdışı modda' },
-        { name: `Bellek Koruma (Memory Guard)`, status: 'pass', desc: `Toplam Bellek: ${doc?.memoryStats?.totalAppMB || state.telemetry.ramMB} MB · Sistem Baskısı: Normal` },
+        { name: `V8 JavaScript Motoru (${doc?.v8Version || '—'})`, status: 'pass', desc: 'JavaScript motoru sürümü' },
+        { name: `Sağlayıcı: ${doc?.provider || state.provider}`, status: doc?.hasApiKey ? 'pass' : 'warn', desc: doc?.hasApiKey ? 'Yerel API anahtarı mevcut; bağlantı testi yapılmadı' : 'API Anahtarı girilmemiş veya çevrimdışı modda' },
+        { name: `Bellek Koruma (Memory Guard)`, status: 'pass', desc: `Toplam Bellek: ${doc?.memoryStats?.totalWorkingSetMB ?? state.telemetry.ramMB} MB · Electron süreçlerinin ölçülen çalışma kümesi` },
       ];
 
       let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
@@ -1545,6 +1525,7 @@
   async function startModalGoal() {
     const text = dom.inputModalGoal?.value?.trim();
     if (!text) return;
+    if (state.turnPending) return;
     closeGoalModal();
     appendAssistantTextChunk(`🎯 Yeni Hedef Başlatılıyor: **${text}**`);
     finalizeAssistantMessage();
@@ -1552,21 +1533,79 @@
     await tbot.manageWorkflow?.('goal_manage', { action: 'set', goal: text }, state.workspace);
     refreshWorkflow();
 
-    // Ajan turunu tetikle
-    startThinking('Otonom Hedef Döngüsü Başlatılıyor…');
-    tbot.startTurn?.({
-      message: `/goal ${text}`,
-      workspace: state.workspace,
-      yolo: state.yoloEnabled,
-      model: state.model,
-      provider: state.provider,
-    });
+    if (dom.userInput) dom.userInput.value = text;
+    await submitUserMessage({ goal: true });
   }
 
   // =========================================================================
   // 19. Olay Dinleyicileri (Event Listeners Setup)
   // =========================================================================
+  function toggleSidebar(side) {
+    const panel = side === 'left' ? dom.sidebarLeft : dom.sidebarRight;
+    panel?.classList.toggle('collapsed');
+    const collapsed = panel?.classList.contains('collapsed');
+    document.querySelector('.workspace-grid')?.classList.toggle(`${side}-collapsed`, collapsed);
+    document.querySelectorAll(`[data-toggle-sidebar="${side}"]`).forEach(button => button.setAttribute('aria-expanded', String(!collapsed)));
+  }
+
   function setupEventListeners() {
+    window.addEventListener('unhandledrejection', event => { event.preventDefault(); appendErrorNotice(String(event.reason)); });
+    document.querySelectorAll('[data-toggle-sidebar]').forEach(button => button.addEventListener('click', () => toggleSidebar(button.dataset.toggleSidebar)));
+    document.addEventListener('click', event => {
+      const target = event.target.closest('button, [data-preview-image], [data-tool-toggle]');
+      if (!target) return;
+      if (target.hasAttribute('data-copy-code')) window.tbotCopyCode(target);
+      if (target.hasAttribute('data-remove-attachment')) window.tbotRemoveAttachment(Number(target.dataset.removeAttachment));
+      if (target.hasAttribute('data-preview-image')) window.tbotOpenLightbox(target.querySelector('img')?.src);
+      if (target.hasAttribute('data-tool-toggle')) {
+        const expanded = target.parentElement.classList.toggle('expanded');
+        target.setAttribute('aria-expanded', String(expanded));
+      }
+    });
+    document.addEventListener('keydown', event => {
+      if (event.target.matches('[data-tool-toggle], [data-preview-image], .hero-card, .todo-item') && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        event.target.click();
+      }
+    });
+    document.querySelectorAll('.hero-card').forEach(card => { card.tabIndex = 0; card.setAttribute('role', 'button'); });
+    const dialogs = [dom.configModal, dom.doctorModal, dom.goalModal, dom.lightboxModal].filter(Boolean);
+    const dialogFocus = new WeakMap();
+    for (const dialog of dialogs) {
+      dialog.setAttribute('role', 'dialog');
+      dialog.setAttribute('aria-modal', 'true');
+      dialog.setAttribute('aria-label', dialog.querySelector('.modal-title, .lightbox-title')?.textContent || 'İletişim kutusu');
+      new MutationObserver(() => {
+        if (!dialog.classList.contains('hidden')) {
+          if (!dialogFocus.has(dialog)) dialogFocus.set(dialog, document.activeElement);
+          if (!dialog.contains(document.activeElement)) dialog.querySelector('input, textarea, select, button')?.focus();
+        } else {
+          dialogFocus.get(dialog)?.focus();
+          dialogFocus.delete(dialog);
+        }
+      }).observe(dialog, { attributes: true, attributeFilter: ['class'] });
+    }
+    document.addEventListener('keydown', event => {
+      const dialog = dialogs.find(item => !item.classList.contains('hidden'));
+      if (!dialog || event.key !== 'Tab') return;
+      const items = Array.from(dialog.querySelectorAll('button, input, select, textarea, [tabindex="0"]')).filter(item => !item.disabled && item.getClientRects().length);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    });
+    dom.paletteSearch?.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); executeSelectedPaletteItem(); dom.userInput?.focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const items = Array.from(dom.paletteItems.querySelectorAll('.palette-item:not(.hidden)'));
+        const index = items.findIndex(item => item.classList.contains('selected'));
+        items.forEach(item => item.classList.remove('selected'));
+        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.classList.add('selected');
+      }
+    });
+    document.querySelectorAll('button[title]').forEach(button => { if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.title); });
+
     // 1. Pencere Kontrolleri
     dom.btnMin?.addEventListener('click', () => tbot.windowControl?.('minimize'));
     dom.btnMax?.addEventListener('click', () => tbot.windowControl?.('maximize'));
@@ -1577,6 +1616,8 @@
     dom.btnWorkspace?.addEventListener('click', async () => {
       const selected = await tbot.selectWorkspace?.();
       if (selected) {
+        state.currentSessionId = null;
+        clearChatTerminal();
         state.workspace = selected;
         if (dom.workspacePath) dom.workspacePath.textContent = selected;
         refreshWorkflow();
@@ -1589,7 +1630,6 @@
     dom.btnTrimRam?.addEventListener('click', triggerTrimMemory);
 
     // 4. Ultracode & YOLO & Hızlı Bar
-    dom.btnQuickUltra?.addEventListener('click', toggleUltracodeMode);
     dom.btnQuickYolo?.addEventListener('click', toggleYoloMode);
     dom.btnQuickConfig?.addEventListener('click', openConfigModal);
     dom.btnQuickDoctor?.addEventListener('click', runDoctorDiagnostics);
@@ -1597,15 +1637,16 @@
 
     // 5. Yan Panel Aç/Kapa
     dom.btnCollapseLeft?.addEventListener('click', () => {
-      dom.sidebarLeft?.classList.toggle('collapsed');
+      toggleSidebar('left');
     });
     dom.btnCollapseRight?.addEventListener('click', () => {
-      dom.sidebarRight?.classList.toggle('collapsed');
+      toggleSidebar('right');
     });
 
     // 6. Yeni Oturum
     dom.btnNewSession?.addEventListener('click', async () => {
-      const session = await tbot.createSession?.(state.workspace, 'Yeni Oturum');
+      if (state.turnPending) return;
+      const session = await tbot.createSession?.(state.workspace);
       state.currentSessionId = session?.id || `session_${Date.now()}`;
       clearChatTerminal();
       loadSessionsList();
@@ -1652,7 +1693,7 @@
     });
 
     dom.userInput?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         if (!dom.commandPalette?.classList.contains('hidden')) {
           executeSelectedPaletteItem();
@@ -1688,7 +1729,8 @@
       files.forEach((file) => {
         if (file.type.startsWith('image/')) addImageAttachment(file);
         else {
-          if (dom.userInput) dom.userInput.value += (dom.userInput.value ? ' ' : '') + file.name;
+          const filePath = tbot.getFilePath(file);
+          if (filePath && dom.userInput) dom.userInput.value += (dom.userInput.value ? ' ' : '') + filePath;
         }
       });
     });
@@ -1700,7 +1742,10 @@
 
     // 11. Aşağı Kaydır Butonu
     dom.btnScrollBottom?.addEventListener('click', () => scrollToBottom(true));
-    dom.chatFeed?.addEventListener('scroll', () => scrollToBottom(false));
+    dom.chatFeed?.addEventListener('scroll', () => {
+      const atBottom = dom.chatFeed.scrollHeight - dom.chatFeed.scrollTop <= dom.chatFeed.clientHeight + 100;
+      dom.btnScrollBottom?.classList.toggle('hidden', atBottom);
+    }, { passive: true });
 
     // 12. Görev Pusulası (Todos & Goal)
     dom.btnAddTodo?.addEventListener('click', () => addTodoItem(dom.inputNewTodo?.value || ''));
@@ -1746,8 +1791,13 @@
     dom.btnSaveKey?.addEventListener('click', async () => {
       const key = dom.inputApiKey?.value?.trim() || '';
       const prov = dom.selectProvider?.value || state.provider;
-      await tbot.setApiKey?.(prov, key);
-      alert('API anahtarı başarıyla kaydedildi.');
+      if (!key) return;
+      try {
+        await tbot.setApiKey?.(prov, key);
+        dom.inputApiKey.value = '';
+        dom.inputApiKey.type = 'password';
+        dom.inputApiKey.placeholder = 'Anahtar kaydedildi';
+      } catch (error) { appendErrorNotice(String(error)); }
     });
 
     dom.modalBtnCloseDoctor?.addEventListener('click', () => dom.doctorModal?.classList.add('hidden'));
@@ -1764,6 +1814,7 @@
         e.preventDefault();
         openCommandPalette();
       } else if (e.key === 'Escape') {
+        if (state.currentApproval) { respondApproval(false); return; }
         closeCommandPalette();
         closeLightbox();
         closeConfigModal();
@@ -1798,12 +1849,6 @@
         const msg = event.message || '';
         updateThinkingLabel(msg);
 
-        // Ultracode [Aşama X/4]
-        const ultraMatch = msg.match(/Ultracode\s*\[Aşama\s*(\d+)\s*\/\s*4\]/i);
-        if (ultraMatch) {
-          setUltracodeStep(parseInt(ultraMatch[1], 10));
-        }
-
         // Otonom Hedef [Adım X/Y]
         const goalMatch = msg.match(/Otonom Hedef\s*\[Adım\s*(\d+)\s*\/\s*(\d+)\]/i);
         if (goalMatch) {
@@ -1830,6 +1875,9 @@
 
       case 'turn_end':
       case 'done':
+        state.currentApproval = null;
+        document.getElementById('live-approval-card')?.remove();
+        activeToolCards.clear();
         finalizeAssistantMessage();
         stopThinking();
         break;
@@ -1875,14 +1923,16 @@
       if (cfg) {
         if (cfg.provider) state.provider = cfg.provider;
         if (cfg.model) state.model = cfg.model;
-        if (cfg.efforts?.[state.model]) state.effort = cfg.efforts[state.model];
+        if (cfg.efforts?.[`${state.provider}:${state.model}`]) state.effort = cfg.efforts[`${state.provider}:${state.model}`];
       }
     } catch {
       // ignore
     }
 
-    // Çalışma dizinini tespit et
+    // Resolve the workspace in main, so packaged launches never use a developer path.
     try {
+      state.workspace = await tbot.getDefaultWorkspace();
+      if (dom.workspacePath) dom.workspacePath.textContent = state.workspace;
       const memStats = await tbot.getMemoryStats?.();
       if (memStats) updateTelemetry(memStats);
     } catch {
@@ -1890,7 +1940,6 @@
     }
 
     updateHudBar();
-    setUltracodeStep(1);
     loadSessionsList();
     refreshWorkflow();
   }

@@ -113,7 +113,7 @@ export async function reclaimMemory(session, force = false) {
     const beforeStats = getMemoryStats();
     const beforeMB = beforeStats.heapUsedMB;
     let compactedCount = 0;
-    if (beforeStats.pressure === 'moderate' || beforeStats.pressure === 'high' || force) {
+    if (beforeStats.pressure !== 'low' || force) {
         // 0. Prune completed background processes
         try {
             pruneCompletedProcesses();
@@ -125,19 +125,31 @@ export async function reclaimMemory(session, force = false) {
         if (session && Array.isArray(session.messages)) {
             const messages = session.messages;
             const total = messages.length;
+            const preservedImages = new Set();
+            for (let i = total - 1; i >= 0 && preservedImages.size < 3; i--) {
+                if (messages[i].images?.length)
+                    preservedImages.add(i);
+            }
+            for (let i = total - 1; i >= 0; i--) {
+                if (messages[i].role === 'user') {
+                    if (messages[i].images?.length)
+                        preservedImages.add(i);
+                    break;
+                }
+            }
             for (let i = 0; i < total; i++) {
                 const msg = messages[i];
                 let modified = false;
                 // Truncate older tool outputs (>1500 chars) excluding the last 4 messages
                 if (i < total - 4) {
                     if ((msg.role === 'tool' || msg.toolCallId) && typeof msg.content === 'string' && msg.content.length > 1500) {
-                        const half = 750;
+                        const half = 700;
                         msg.content = `${msg.content.slice(0, half)}\n[Older tool output truncated; inspect again if needed.]\n${msg.content.slice(-half)}`;
                         modified = true;
                     }
                 }
                 // Remove images from older messages (keep only the very last message's images)
-                if (i < total - 1) {
+                if (!preservedImages.has(i)) {
                     if (msg.images && msg.images.length > 0) {
                         delete msg.images;
                         modified = true;
@@ -202,7 +214,7 @@ export function startAutoMemoryGuard(getSession) {
     guardTimer = setInterval(async () => {
         try {
             const stats = getMemoryStats();
-            if (stats.pressure === 'high' || stats.heapUsedMB > 160) {
+            if (stats.pressure === 'high' || stats.pressure === 'critical' || stats.heapUsedMB > 160) {
                 await reclaimMemory(getSession?.(), false);
             }
         }

@@ -55,6 +55,7 @@ export type AgentEvent =
   | { type: 'status'; message: string };
 export interface AgentInput {
   message: string;
+  images?: ImageAttachment[];
   history: Message[];
   provider: Provider;
   workspace: string;

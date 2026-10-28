@@ -381,6 +381,7 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
   if (name === 'file_outline') {
     const stat = await fs.stat(target);
     if (!stat.isFile()) throw new Error('Not a regular file');
+    if (stat.size > 10 * 1024 * 1024) throw new Error('File exceeds the 10 MB outline limit');
     const content = await fs.readFile(target, 'utf8');
     const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
     const outline = extractFileAstOutline(relPath, content);
@@ -572,11 +573,13 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     try {
       const stat = await fs.stat(target);
       exists = stat.isFile();
+      if (!exists) throw new Error('Not a regular file');
+      if (stat.size > 10 * 1024 * 1024) throw new Error('Existing file exceeds the 10 MB read limit');
       if (exists) {
         oldContent = await fs.readFile(target, 'utf8');
       }
-    } catch {
-      exists = false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
     // 1. Read-Before-Write Grounding Gate (throws on failure so executeTool records ok: false)

@@ -2,6 +2,7 @@
 <html lang="tr" data-theme="light">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>T Bot 2.0 — Tri-Core Local AI Coding Agent</title>
   <link rel="icon" href="icon.ico">
@@ -40,23 +41,23 @@
       <canvas id="logo-canvas" width="28" height="28" class="logo-canvas" title="T Bot 2.0 Canlı Siber-Zen Çekirdek"></canvas>
       <div class="brand-text">
         <span class="brand-name">T BOT <span class="brand-version">2.0</span></span>
-        <span class="brand-badge">TRI-CORE · CYBER-ZEN</span>
+        <span class="brand-badge">YEREL KODLAMA ASİSTANI</span>
       </div>
     </div>
 
     <div class="titlebar-center">
       <button id="btn-workspace" class="workspace-btn" title="Çalışma Klasörünü Değiştir (Tıkla)">
         <span class="ws-icon">📁</span>
-        <span id="workspace-path" class="ws-path">C:\Users\Egemen\Desktop\T Bot</span>
+        <span id="workspace-path" class="ws-path">Çalışma alanı yükleniyor…</span>
         <span class="ws-caret">▾</span>
       </button>
     </div>
 
     <div class="titlebar-right">
       <div id="telemetry-badge" class="telemetry-badge" title="Canlı Bellek ve Token Tasarrufu">
-        <span class="telemetry-ram">▣ <span id="telemetry-ram-val">48 MB</span></span>
+        <span class="telemetry-ram">▣ <span id="telemetry-ram-val">— MB</span></span>
         <span class="telemetry-sep">·</span>
-        <span class="telemetry-savings">%<span id="telemetry-savings-val">68</span> Tasarruf</span>
+        <span class="telemetry-savings">%<span id="telemetry-savings-val">0</span> Tasarruf</span>
       </div>
 
       <button id="btn-theme-toggle" class="titlebar-action-btn theme-toggle-btn" title="Temayı Değiştir (Açık / Koyu)">
@@ -78,37 +79,9 @@
 
   <!-- Üst Ultracode 4-Aşamalı Stepper & Hızlı Mod Çubuğu -->
   <section id="top-bar" class="top-bar">
-    <div class="ultracode-stepper-container">
-      <div class="stepper-label">
-        <span class="stepper-sparkle">◆</span> ULTRACODE:
-      </div>
-      <div class="ultracode-stepper" id="ultracode-stepper">
-        <div class="step step-active" data-step="1">
-          <span class="step-indicator">◉</span>
-          <span class="step-title">1. Araştırma</span>
-        </div>
-        <div class="step-arrow">──▶</div>
-        <div class="step" data-step="2">
-          <span class="step-indicator">○</span>
-          <span class="step-title">2. Denetim</span>
-        </div>
-        <div class="step-arrow">──▶</div>
-        <div class="step" data-step="3">
-          <span class="step-indicator">○</span>
-          <span class="step-title">3. Öz-Onarım</span>
-        </div>
-        <div class="step-arrow">──▶</div>
-        <div class="step" data-step="4">
-          <span class="step-indicator">○</span>
-          <span class="step-title">4. Özet</span>
-        </div>
-      </div>
-    </div>
-
     <div class="top-quick-actions">
-      <button id="btn-quick-ultra" class="quick-toggle-btn active" title="Ultracode Yüksek Doğruluklu Kodlama Modu (Açık/Kapalı)">
-        <span class="q-icon">⚡</span> Ultracode
-      </button>
+      <button class="quick-btn" data-toggle-sidebar="left" aria-label="Sohbet panelini göster veya gizle" aria-expanded="true">☰ Sohbetler</button>
+      <button class="quick-btn" data-toggle-sidebar="right" aria-label="Görev panelini göster veya gizle" aria-expanded="true">Görevler</button>
       <button id="btn-quick-yolo" class="quick-toggle-btn" title="YOLO Modu: Araçları onaysız otomatik yürüt (Dikkatli Kullanın)">
         <span class="q-icon" id="yolo-icon">🛡️</span> <span id="yolo-label">Onaylı</span>
       </button>
@@ -169,20 +142,14 @@
 
     <!-- Orta Alan: Terminal / Akış Akışı -->
     <main id="main-terminal" class="main-terminal">
-      <div id="chat-feed" class="chat-feed">
+      <div id="chat-feed" class="chat-feed" role="log" aria-label="Sohbet" aria-live="polite" aria-relevant="additions">
         <!-- Boş Karşılama Ekranı (Hero) -->
         <div id="empty-hero" class="empty-hero">
           <div class="hero-logo-wrapper">
             <canvas id="hero-logo-canvas" width="112" height="112" class="hero-logo-canvas"></canvas>
           </div>
           <h1 class="hero-title">T BOT <span class="hero-version">2.0</span></h1>
-          <p class="hero-tagline">Tri-Core Local AI Coding Agent · Siber-Zen Çekirdek · Sıfır-Bellek Şişkinliği</p>
-          <div class="hero-pill-bar">
-            <span class="hero-pill">⚡ AST Grounder</span>
-            <span class="hero-pill">🌿 %50-%75 Token Tasarrufu</span>
-            <span class="hero-pill">🚀 Sıfır Gecikme Daemon</span>
-            <span class="hero-pill">🛡️ Deterministik Anti-Halüsinasyon</span>
-          </div>
+          <p class="hero-tagline">Kodunuzu birlikte geliştirelim. Bir görev yazın veya aşağıdan başlayın.</p>
 
           <div class="hero-prompt-grid">
             <div class="hero-card" data-prompt="Projeyi AST ve Repo Haritası ile analiz et, proje yapısını özetle ve geliştirme önerileri sun.">
@@ -193,12 +160,12 @@
               <div class="card-desc">Tüm kaynak kodları, fonksiyon ilişkilerini ve dosya yapısını tara.</div>
             </div>
 
-            <div class="hero-card" data-prompt="Ultracode modunu kullanarak kod tabanındaki potansiyel hataları ve tip uyumsuzluklarını denetle ve düzelt.">
+            <div class="hero-card" data-prompt="Kod tabanındaki potansiyel hataları ve tip uyumsuzluklarını denetle ve düzelt.">
               <div class="card-head">
                 <span class="card-icon">⚡</span>
-                <span class="card-title">Ultracode ile Onar</span>
+                <span class="card-title">Hataları Bul ve Düzelt</span>
               </div>
-              <div class="card-desc">4 aşamalı araştırma, denetim ve öz-onarım hattını çalıştır.</div>
+              <div class="card-desc">Sorunu incele, gerekli değişiklikleri yap ve sonucu doğrula.</div>
             </div>
 
             <div class="hero-card" data-prompt="Webde ve yerel dokümantasyonda arama yaparak son teknik gelişmeleri derle.">
@@ -256,7 +223,7 @@
           </button>
           <input type="file" id="file-input-hidden" multiple style="display:none" accept="image/*,.txt,.md,.json,.ts,.js,.py,.css,.html">
 
-          <textarea id="user-input" class="user-input" rows="1" placeholder="Bir talimat yazın veya '/' ile komutları açın (Shift+Enter yeni satır, Enter gönder)..." autofocus></textarea>
+          <textarea aria-label="T Bot’a mesaj yazın" id="user-input" class="user-input" rows="1" placeholder="Bir talimat yazın veya '/' ile komutları açın (Shift+Enter yeni satır, Enter gönder)..." autofocus></textarea>
 
           <button id="btn-send" class="btn-send" title="Gönder (Enter)">
             <span class="send-icon">➤</span>
@@ -277,24 +244,24 @@
           <span class="hud-sep">│</span>
           <div class="hud-item hud-savings">
             <span class="hud-label">Tasarruf:</span>
-            <span id="hud-savings-val" class="hud-val-accent">%68</span>
+            <span id="hud-savings-val" class="hud-val-accent">%0</span>
             <div class="hud-mini-bar" id="hud-mini-bar" title="Token Tasarruf Oranı">▰▰▰▰▱</div>
             <span id="hud-tokens-saved" class="hud-dim">(0 Tok)</span>
           </div>
           <span class="hud-sep">│</span>
           <div class="hud-item hud-grounding">
             <span class="hud-label">Doğrulama:</span>
-            <span id="hud-grounding-val" class="hud-success">Grounded ✓</span>
+            <span id="hud-grounding-val" class="hud-success">—</span>
           </div>
           <span class="hud-sep">│</span>
           <div class="hud-item hud-ram">
             <span class="hud-label">RAM:</span>
-            <span id="hud-ram-val" class="hud-cyan">48 MB</span>
+            <span id="hud-ram-val" class="hud-cyan">— MB</span>
             <span id="hud-ram-dot" class="hud-dot-green">●</span>
           </div>
           <span class="hud-sep">│</span>
           <div class="hud-item hud-shortcut" title="Klavye Kısayolları">
-            <span class="hud-dim">Kısayol: Ctrl+K / Ctrl+Shift+Space</span>
+            <span class="hud-dim">Kısayol: Ctrl+K</span>
           </div>
         </div>
       </div>
@@ -342,7 +309,7 @@
           </div>
 
           <div class="todo-add-form">
-            <input type="text" id="input-new-todo" class="todo-input" placeholder="Yeni görev maddesi ekle (Enter)...">
+            <input type="text" aria-label="Yeni görev" id="input-new-todo" class="todo-input" placeholder="Yeni görev maddesi ekle (Enter)...">
             <button id="btn-add-todo" class="zen-btn-primary zen-btn-xs">+</button>
           </div>
 
@@ -360,13 +327,7 @@
             </div>
           </div>
           <div class="skills-tags-container">
-            <span class="skill-tag active" title="AST Doğrulama"><span class="tag-dot"></span> AST Validator</span>
-            <span class="skill-tag active" title="Repo Haritası Motoru"><span class="tag-dot"></span> Repo-Map</span>
-            <span class="skill-tag active" title="Yerel Tarayıcı Otomasyonu"><span class="tag-dot"></span> Playwright</span>
-            <span class="skill-tag active" title="Masaüstü Ekran & Giriş"><span class="tag-dot"></span> Computer</span>
-            <span class="skill-tag active" title="Git İşlemleri"><span class="tag-dot"></span> Git</span>
-            <span class="skill-tag active" title="Sıfır Bellek Kaçağı"><span class="tag-dot"></span> Memory-Guard</span>
-            <span id="mcp-server-count-tag" class="skill-tag mcp-tag" title="MCP Sunucusu"><span class="tag-dot"></span> MCP (Hazır)</span>
+            <span id="mcp-server-count-tag" class="skill-tag mcp-tag">MCP yapılandırması yükleniyor…</span>
           </div>
         </div>
       </div>
@@ -377,7 +338,7 @@
   <div id="command-palette" class="command-palette hidden">
     <div class="palette-header">
       <span class="palette-icon">⚡</span>
-      <input type="text" id="palette-search" class="palette-search" placeholder="Bir komut arayın... (ör: /model, /yolo)">
+      <input type="text" aria-label="Komut ara" id="palette-search" class="palette-search" placeholder="Bir komut arayın... (ör: /model, /yolo)">
       <span class="palette-hint">ESC kapatır</span>
     </div>
     <div class="palette-items" id="palette-items">
@@ -388,10 +349,6 @@
       <div class="palette-item" data-cmd="/provider">
         <span class="palette-cmd">/provider</span>
         <span class="palette-desc">Sağlayıcı ve API Anahtarlarını Yönet</span>
-      </div>
-      <div class="palette-item" data-cmd="/ultracode">
-        <span class="palette-cmd">/ultracode</span>
-        <span class="palette-desc">4 Aşamalı Ultracode Kodlama Modunu Aç/Kapat</span>
       </div>
       <div class="palette-item" data-cmd="/yolo">
         <span class="palette-cmd">/yolo</span>
@@ -453,7 +410,7 @@
             <button id="btn-toggle-key-visibility" class="zen-btn-ghost zen-btn-sm" type="button">👁️</button>
             <button id="btn-save-key" class="zen-btn-primary zen-btn-sm" type="button">Kaydet</button>
           </div>
-          <span class="input-help" id="api-key-help">Anahtarlarınız sadece yerel makinenizde şifreli olarak saklanır.</span>
+          <span class="input-help" id="api-key-help">Anahtarınız bu makinedeki yerel kimlik bilgisi deposunda saklanır.</span>
         </div>
 
         <div class="form-group">
@@ -519,7 +476,7 @@
         <button id="modal-btn-close-goal" class="zen-btn-ghost">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">T Bot bu hedefi tamamlamak için çok adımlı otonom döngüye geçer ve adımları otomatik yürütür.</p>
+        <p class="modal-desc">Hedef çalışma alanına kaydedilir ve en fazla dört adımlı otonom döngü başlar. Araç izinleri seçtiğiniz onay moduna göre uygulanır.</p>
         <div class="form-group">
           <label for="input-modal-goal">Hedef Açıklaması:</label>
           <textarea id="input-modal-goal" class="zen-input" rows="3" placeholder="Örnek: Projedeki bellek sızıntılarını test et, gereksiz döngüleri optimize et ve testleri çalıştır."></textarea>

@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { estimateTokens, globalTokenTracker } from './token-optimizer.js';
 function normalizeWorkspace(workspace) {
-    return workspace.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const normalized = workspace.replace(/\\/g, '/').replace(/\/+$/, '');
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 function normalizeRelPath(relPath) {
     return relPath.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
@@ -10,6 +12,7 @@ function buildCacheKey(workspace, relPath) {
     return `${normalizeWorkspace(workspace)}::${normalizeRelPath(relPath)}`;
 }
 const MAX_CACHEABLE_CONTENT_CHARS = 150 * 1024; // 150 KB bellek koruma sınırı
+const MAX_CACHE_ENTRIES = 64;
 /**
  * Line-based Differential Unified Diff Engine.
  * Produces standard @@ -L...,... +L...,... @@ diff blocks with context lines.
@@ -180,10 +183,35 @@ export function computeUnifiedLineDiff(prevContent, newContent, contextLines = 2
 export class ContextReadCache {
     entries = new Map();
     turnCounter = 0;
+    /** Discard coverage unless the actual source text survived request compression. */
+    retainVisibleReads(messages) {
+        const outputs = messages.filter(message => message.role === 'tool').map(message => {
+            try {
+                const parsed = JSON.parse(message.content);
+                return typeof parsed.content === 'string' ? parsed.content : message.content;
+            }
+            catch {
+                return message.content;
+            }
+        });
+        for (const entry of this.entries.values()) {
+            entry.reads = entry.reads.filter(read => read.output && outputs.some(output => output.includes(read.output)));
+        }
+    }
     checkAndRecordRead(workspace, relPath, fullContent, startLine, endLine, formattedSlice) {
         this.turnCounter++;
         const currentTurn = this.turnCounter;
         const key = buildCacheKey(workspace, relPath);
+        // Never retain unbounded full-file line arrays for oversized reads.
+        if (fullContent.length > MAX_CACHEABLE_CONTENT_CHARS) {
+            this.entries.delete(key);
+            return { cached: false, output: formattedSlice, savedTokens: 0 };
+        }
+        if (!this.entries.has(key) && this.entries.size >= MAX_CACHE_ENTRIES) {
+            const oldest = this.entries.keys().next().value;
+            if (oldest !== undefined)
+                this.entries.delete(oldest);
+        }
         const hash = createHash('sha256').update(fullContent, 'utf8').digest('hex');
         const lines = fullContent.length === 0 ? [] : fullContent.split(/\r?\n/);
         const totalLines = lines.length;
@@ -195,26 +223,24 @@ export class ContextReadCache {
                 const recentReads = existing.reads.slice(-3);
                 const coveredRecently = recentReads.some(r => r.startLine <= effStart &&
                     r.endLine >= effEnd &&
-                    currentTurn - r.turnIndex <= 6);
-                existing.reads.push({
-                    startLine: effStart,
-                    endLine: effEnd,
-                    turnIndex: currentTurn,
-                });
-                if (existing.reads.length > 6) {
-                    existing.reads.shift();
-                }
+                    currentTurn - r.turnIndex <= 2);
                 if (coveredRecently && totalLines > 40) {
                     const output = `[DİFERANSİYEL ÖNBELLEK İSABETİ: ${relPath} (L${effStart}-L${effEnd}) sha256:${hash.slice(0, 8)} — Dosya önceki okumadan beri değişmedi (${totalLines} satır). Bağlamdaki mevcut içeriği kullanın.]`;
                     const originalTokens = estimateTokens(formattedSlice);
                     const cachedTokens = estimateTokens(output);
                     const savedTokens = Math.max(0, originalTokens - cachedTokens);
+                    globalTokenTracker.recordContextCacheSaving(savedTokens);
                     return {
                         cached: true,
                         output,
                         savedTokens,
                     };
                 }
+                // A cache reference is not a physical read. Only actual contents refresh
+                // coverage, so compression can never leave an indefinitely reused stub.
+                existing.reads.push({ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice });
+                if (existing.reads.length > 6)
+                    existing.reads.shift();
                 return {
                     cached: false,
                     output: formattedSlice,
@@ -222,10 +248,12 @@ export class ContextReadCache {
                 };
             }
             // Dosya önbellekte vardı fakat içeriği (hash) değişti
-            const readRecently = existing.reads.some(r => currentTurn - r.turnIndex <= 8);
+            const readRecently = existing.reads.some(r => currentTurn - r.turnIndex <= 2);
             const isFullRead = effStart === 1 && effEnd >= totalLines;
-            const hasOverlap = existing.reads.some(r => Math.max(r.startLine, effStart) <= Math.min(r.endLine, effEnd));
-            if (readRecently && (isFullRead || hasOverlap) && existing.lastContent) {
+            // A whole-file diff is reconstructible only after the whole prior version
+            // was actually shown. Overlap alone can hide newly requested source lines.
+            const previouslyReadFullFile = existing.reads.some(r => r.startLine === 1 && r.endLine >= existing.totalLines);
+            if (readRecently && isFullRead && previouslyReadFullFile && existing.lastContent) {
                 const diffOutput = computeUnifiedLineDiff(existing.lastContent, fullContent, 2);
                 if (diffOutput && diffOutput.length < formattedSlice.length * 0.65) {
                     const fullTokens = estimateTokens(formattedSlice);
@@ -238,10 +266,7 @@ export class ContextReadCache {
                         existing.lines = lines;
                         existing.totalLines = totalLines;
                         existing.lastContent = fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined;
-                        existing.reads.push({ startLine: effStart, endLine: effEnd, turnIndex: currentTurn });
-                        if (existing.reads.length > 6) {
-                            existing.reads.shift();
-                        }
+                        existing.reads = [];
                         globalTokenTracker.recordContextCacheSaving(savedTokens);
                         return {
                             cached: true,
@@ -259,7 +284,7 @@ export class ContextReadCache {
                 lines,
                 totalLines,
                 lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
-                reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn }],
+                reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],
             });
             return {
                 cached: false,
@@ -275,7 +300,7 @@ export class ContextReadCache {
             lines,
             totalLines,
             lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
-            reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn }],
+            reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],
         });
         return {
             cached: false,
@@ -305,5 +330,16 @@ export class ContextReadCache {
     }
 }
 export { ContextReadCache as FileReadCache };
-export const globalContextCache = new ContextReadCache();
+const readCacheScope = new AsyncLocalStorage();
+export function withContextReadCache(action) {
+    return readCacheScope.run(new ContextReadCache(), action);
+}
+// Legacy tool imports resolve to the cache owned by their current agent invocation.
+export const globalContextCache = new Proxy(new ContextReadCache(), {
+    get(fallback, key) {
+        const cache = readCacheScope.getStore() ?? fallback;
+        const value = Reflect.get(cache, key);
+        return typeof value === 'function' ? value.bind(cache) : value;
+    },
+});
 //# sourceMappingURL=context-cache.js.map

@@ -156,7 +156,7 @@ async function readMemoryFile(filePath: string): Promise<MemoryFact[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return [];
     }
-    return [];
+    throw error;
   }
 
   if (!raw.trim()) {
@@ -196,19 +196,22 @@ async function readMemoryFile(filePath: string): Promise<MemoryFact[]> {
   }
 }
 
-async function writeMemoryFile(filePath: string, entries: MemoryFact[]): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const lockPath = `${filePath}.lock`;
-  await withFileLock(lockPath, async () => {
+/** Serialize the entire read/modify/write transaction to avoid losing concurrent facts. */
+async function updateMemoryFile(
+  filePath: string,
+  update: (entries: MemoryFact[]) => MemoryFact[],
+): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+  await withFileLock(`${filePath}.lock`, async () => {
+    const entries = await readMemoryFile(filePath);
+    const updated = update(entries);
+    if (updated === entries) return;
     const tmpPath = `${filePath}.${randomUUID()}.tmp`;
-    const data = JSON.stringify(entries, null, 2);
     try {
-      await writeFile(tmpPath, data, 'utf8');
+      await writeFile(tmpPath, JSON.stringify(updated, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
       await rename(tmpPath, filePath);
-    } catch {
-      // Fallback for Windows if rename fails due to file locking/concurrency
-      await writeFile(filePath, data, 'utf8');
-      await unlink(tmpPath).catch(() => {});
+    } finally {
+      await unlink(tmpPath).catch(() => undefined);
     }
   });
 }
@@ -232,29 +235,30 @@ export async function rememberFact(
   const targetScope: 'project' | 'global' = scope === 'global' ? 'global' : 'project';
   const filePath = targetScope === 'global' ? getGlobalMemoryPath() : getProjectMemoryPath(workspace);
 
-  const entries = await readMemoryFile(filePath);
-  const existingIdx = entries.findIndex(e => e.key.toLowerCase() === cleanKey.toLowerCase());
-  const existing = existingIdx >= 0 ? entries[existingIdx] : undefined;
+  await updateMemoryFile(filePath, entries => {
+    const existingIdx = entries.findIndex(e => e.key.toLowerCase() === cleanKey.toLowerCase());
+    const existing = existingIdx >= 0 ? entries[existingIdx] : undefined;
 
-  const resolvedCategory = normalizeCategory(category) ?? existing?.category;
-  const resolvedTags = normalizeTags(tags) ?? existing?.tags;
+    const resolvedCategory = normalizeCategory(category) ?? existing?.category;
+    const resolvedTags = normalizeTags(tags) ?? existing?.tags;
 
-  const entry: MemoryFact = {
-    key: cleanKey,
-    value: cleanVal,
-    scope: targetScope,
-    updatedAt: new Date().toISOString(),
-    ...(resolvedCategory ? { category: resolvedCategory } : {}),
-    ...(resolvedTags ? { tags: resolvedTags } : {}),
-  };
+    const entry: MemoryFact = {
+      key: cleanKey,
+      value: cleanVal,
+      scope: targetScope,
+      updatedAt: new Date().toISOString(),
+      ...(resolvedCategory ? { category: resolvedCategory } : {}),
+      ...(resolvedTags ? { tags: resolvedTags } : {}),
+    };
 
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
-  } else {
-    entries.push(entry);
-  }
+    if (existingIdx >= 0) {
+      entries[existingIdx] = entry;
+    } else {
+      entries.push(entry);
+    }
 
-  await writeMemoryFile(filePath, entries);
+    return [...entries];
+  });
   return `Saved to ${targetScope} memory: ${cleanKey}`;
 }
 
@@ -503,32 +507,17 @@ export async function forgetFact(
 
   let removed = false;
 
-  if (!scope || scope === 'project') {
-    const projectEntries = await readMemoryFile(projectPath);
-    const newProject = projectEntries.filter(e => {
-      if (e.key.toLowerCase() === cleanKey) {
-        removed = true;
-        return false;
-      }
-      return true;
+  const paths = [
+    ...(!scope || scope === 'project' ? [projectPath] : []),
+    ...(!scope || scope === 'global' ? [globalPath] : []),
+  ];
+  for (const filePath of paths) {
+    await updateMemoryFile(filePath, entries => {
+      const filtered = entries.filter(entry => entry.key.toLowerCase() !== cleanKey);
+      if (filtered.length === entries.length) return entries;
+      removed = true;
+      return filtered;
     });
-    if (newProject.length !== projectEntries.length) {
-      await writeMemoryFile(projectPath, newProject);
-    }
-  }
-
-  if (!scope || scope === 'global') {
-    const globalEntries = await readMemoryFile(globalPath);
-    const newGlobal = globalEntries.filter(e => {
-      if (e.key.toLowerCase() === cleanKey) {
-        removed = true;
-        return false;
-      }
-      return true;
-    });
-    if (newGlobal.length !== globalEntries.length) {
-      await writeMemoryFile(globalPath, newGlobal);
-    }
   }
 
   return removed;

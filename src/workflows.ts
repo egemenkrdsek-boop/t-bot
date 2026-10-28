@@ -160,6 +160,7 @@ Yönergeler:
     input.onEvent({ type: 'status', message: `Otonom Hedef [Adım ${step}/${maxSteps}] · ${currentGoal.objective}` });
 
     let stepFailed = false;
+    const stepStartLength = conversation.length;
     const stepResult = await runner({
       ...input,
       history: conversation,
@@ -172,10 +173,11 @@ Yönergeler:
 
     conversation = stepResult;
 
-    const lastAssistant = [...stepResult].reverse().find(m => m.role === 'assistant' && m.content.trim());
+    const lastAssistant = stepResult.slice(stepStartLength).reverse().find(m => m.role === 'assistant' && m.content.trim());
     const assistantContent = lastAssistant?.content || '';
-    const isCompleted = /\[(GOAL_COMPLETE|HEDEF_TAMAMLANDI)\]/i.test(assistantContent);
+    const isCompleted = !stepFailed && !input.signal?.aborted && /\[(GOAL_COMPLETE|HEDEF_TAMAMLANDI)\]\s*$/i.test(assistantContent);
 
+    let completionSaved = false;
     await withGoalLock(input.workspace, async () => {
       const lockGoal = await getGoal(input.workspace);
       if (lockGoal?.id === currentGoal.id && lockGoal.status === 'active') {
@@ -195,10 +197,11 @@ Yönergeler:
           updatedAt: new Date().toISOString(),
           revision: randomUUID(),
           lastRun: input.signal?.aborted ? 'interrupted' : stepFailed ? 'error' : 'finished',
-          notes: nextNotes,
+          notes: nextNotes.slice(-100),
           ...(assistantContent ? { lastResult: assistantContent.slice(0, 8_000) } : {}),
         };
         await saveGoal(input.workspace, updatedGoal);
+        completionSaved = updatedGoal.status === 'completed';
         currentGoal = updatedGoal;
       }
     });
@@ -207,7 +210,7 @@ Yönergeler:
     await reclaimMemory(options.session ?? (input as any).session, false).catch(() => undefined);
 
     if (isCompleted) {
-      input.onEvent({
+      if (completionSaved) input.onEvent({
         type: 'status',
         message: 'Otonom Hedef [Tamamlandı] · Hedef Başarıyla Gerçekleştirildi ([GOAL_COMPLETE])',
       });
@@ -224,7 +227,7 @@ Yönergeler:
 
 /** Planlama yalnızca sağlayıcı düzeyinde bir çağrıdır: Araçlar sunulmaz ve yürütülmez. */
 export async function planTask(input: AgentInput): Promise<Message[]> {
-  const user: Message = { role: 'user', content: input.message };
+  const user: Message = { role: 'user', content: input.message, ...(input.images?.length ? { images: input.images } : {}) };
   const prompt: Message = {
     role: 'system',
     content:

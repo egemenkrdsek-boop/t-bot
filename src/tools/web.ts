@@ -1,80 +1,7 @@
 import type { ToolDefinition } from '../types.js';
 
-/**
- * SSRF Protection: Checks if a hostname resolves to a local or private network address.
- * Blocks localhost, 127.0.0.1, 169.254.169.254, 10.x, 192.168.x, 172.16-31.x, IPv6 loopback/link-local.
- */
-export function isPrivateOrLocalHost(hostname: string): boolean {
-  if (!hostname) return true;
-  const host = hostname.toLowerCase().trim().replace(/^\[|\]$/g, '');
-
-  if (
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
-    host.endsWith('.local') ||
-    host === 'ip6-localhost' ||
-    host === 'ip6-loopback'
-  ) {
-    return true;
-  }
-
-  // IPv6 local/private/link-local checks
-  if (
-    host === '::1' ||
-    host === '::' ||
-    host.startsWith('fe80:') ||
-    host.startsWith('fc00:') ||
-    host.startsWith('fd00:')
-  ) {
-    return true;
-  }
-
-  // Pure integer or hex/octal representations (common SSRF bypass attempts)
-  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host) || /^0[0-7]+$/.test(host)) {
-    return true;
-  }
-
-  // Standard IPv4 dotted decimal
-  const ipv4Match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
-  if (ipv4Match) {
-    const o1 = Number(ipv4Match[1]);
-    const o2 = Number(ipv4Match[2]);
-    const o3 = Number(ipv4Match[3]);
-    const o4 = Number(ipv4Match[4]);
-
-    if (o1 > 255 || o2 > 255 || o3 > 255 || o4 > 255) return true;
-    if (o1 === 127) return true; // 127.0.0.0/8 loopback
-    if (o1 === 10) return true; // 10.0.0.0/8 private network
-    if (o1 === 169 && o2 === 254) return true; // 169.254.0.0/16 link-local / cloud metadata
-    if (o1 === 192 && o2 === 168) return true; // 192.168.0.0/16 private network
-    if (o1 === 172 && o2 >= 16 && o2 <= 31) return true; // 172.16.0.0/12 private network
-    if (o1 === 0 || o1 >= 224) return true; // 0.0.0.0/8, multicast, broadcast
-  }
-
-  return false;
-}
-
-/**
- * Validates and ensures an HTTP/HTTPS URL does not target private or loopback networks.
- */
-export function validatePublicUrl(rawUrl: string): URL {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new Error(`Geçersiz URL: "${rawUrl}". Lütfen tam ve geçerli bir HTTP/HTTPS URL'si belirtin.`);
-  }
-
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`Güvensiz protokol: "${parsed.protocol}". Yalnızca HTTP veya HTTPS protokolleri desteklenir.`);
-  }
-
-  if (isPrivateOrLocalHost(parsed.hostname)) {
-    throw new Error(`[SSRF KORUMASI] Yerel veya özel ağ adreslerine erişim engellendi (${parsed.hostname}).`);
-  }
-
-  return parsed;
-}
+import { fetchPublicText, validatePublicUrl } from './public-network.js';
+export { isPrivateOrLocalHost, validatePublicUrl } from './public-network.js';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -129,26 +56,20 @@ async function searchDuckDuckGo(query: string, maxResults: number, signal?: Abor
   const timeoutSignal = AbortSignal.timeout(12000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-  const response = await fetch(url, {
-    method: 'GET',
+  const response = await fetchPublicText(url, {
     headers: {
       'User-Agent': USER_AGENT,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9,tr;q=0.8',
     },
     signal: combinedSignal,
-    redirect: 'follow',
   });
 
-  if (response.url) {
-    validatePublicUrl(response.url);
-  }
-
-  if (!response.ok) {
+  if (response.status < 200 || response.status >= 300) {
     return [];
   }
 
-  const html = await response.text();
+  const html = response.body;
   const results: SearchResultItem[] = [];
 
   // Match result blocks in DuckDuckGo HTML
@@ -200,12 +121,12 @@ async function searchWikipedia(query: string, maxResults: number, signal?: Abort
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchPublicText(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       signal: combinedSignal,
     });
-    if (!response.ok) return [];
-    const data: unknown = await response.json();
+    if (response.status < 200 || response.status >= 300) return [];
+    const data: unknown = JSON.parse(response.body);
     if (!Array.isArray(data) || data.length < 4) return [];
 
     const titles = Array.isArray(data[1]) ? data[1] : [];
@@ -237,12 +158,12 @@ async function searchNpm(query: string, maxResults: number, signal?: AbortSignal
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   try {
-    const response = await fetch(url, {
+    const response = await fetchPublicText(url, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       signal: combinedSignal,
     });
-    if (!response.ok) return [];
-    const data = await response.json() as { objects?: Array<{ package?: { name?: string; description?: string; links?: { npm?: string } } }> };
+    if (response.status < 200 || response.status >= 300) return [];
+    const data = JSON.parse(response.body) as { objects?: Array<{ package?: { name?: string; description?: string; links?: { npm?: string } } }> };
     if (!data || !Array.isArray(data.objects)) return [];
 
     const results: SearchResultItem[] = [];
@@ -391,26 +312,20 @@ export async function fetchUrlContent(rawUrl: string, maxChars = 12000, signal?:
   const timeoutSignal = AbortSignal.timeout(12000);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-  const response = await fetch(urlObj.toString(), {
-    method: 'GET',
+  const response = await fetchPublicText(urlObj.toString(), {
     headers: {
       'User-Agent': USER_AGENT,
       'Accept': 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8',
     },
     signal: combinedSignal,
-    redirect: 'follow',
   });
 
-  if (response.url) {
-    validatePublicUrl(response.url);
-  }
-
-  if (!response.ok) {
+  if (response.status < 200 || response.status >= 300) {
     throw new Error(`URL indirme başarısız oldu (HTTP ${response.status}: ${response.statusText}): ${rawUrl}`);
   }
 
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-  const rawBody = await response.text();
+  const contentType = response.contentType.toLowerCase();
+  const rawBody = response.body;
 
   let formatted = '';
   if (contentType.includes('application/json') || rawBody.trimStart().startsWith('{') || rawBody.trimStart().startsWith('[')) {

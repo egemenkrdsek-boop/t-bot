@@ -13,6 +13,9 @@ export interface ManagedProcess {
     child: ChildProcess;
     stdin?: Writable | null;
 }
+/** Avoid implicitly giving model-launched programs provider and bridge secrets.
+ * This is defense in depth; commands still run with the user's OS permissions. */
+export declare function shellEnvironment(source?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export declare function stopAllBackgroundProcesses(): void;
 export declare function pruneCompletedProcesses(): number;
 export declare const shellToolDefinitions: ToolDefinition[];

@@ -208,7 +208,7 @@ Kurallar:
     if (input.signal?.aborted) return fail('İstek İptal Edildi.');
 
     const memStats = getMemoryStats();
-    const waveSize = memStats.pressure === 'high' ? 1 : 2;
+    const waveSize = memStats.pressure === 'high' || memStats.pressure === 'critical' ? 1 : 2;
     const waveEnd = Math.min(waveStart + waveSize, subtasks.length);
     const waveIndices: number[] = [];
     for (let i = waveStart; i < waveEnd; i++) waveIndices.push(i);
@@ -318,7 +318,10 @@ Kurallar:
   });
   // Store the user's actual request, not the injected research transcript.
   if (result[input.history.length]?.role === 'user') {
-    result[input.history.length] = { role: 'user', content: input.message };
+    result[input.history.length] = {
+      role: 'user', content: input.message,
+      ...(input.images?.length ? { images: input.images } : {}),
+    };
   }
   return result;
 }

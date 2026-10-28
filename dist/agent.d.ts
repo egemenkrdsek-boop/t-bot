@@ -15,5 +15,7 @@ export interface AgentRunOptions {
     workspace?: string;
     onEvent?: (event: AgentEvent) => void;
 }
+/** Keep native Responses call items consistent with budgeted, normalized tool calls. */
+export declare function reconcileResponseItems(items: Record<string, unknown>[], calls: ToolCall[]): Record<string, unknown>[];
 /** Run one user turn, returning the conversation including any native tool calls. */
 export declare function runAgent(input: AgentInput, options?: AgentRunOptions): Promise<Message[]>;

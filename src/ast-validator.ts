@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { builtinModules } from 'node:module';
 import ts from 'typescript';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface AstValidationResult {
   valid: boolean;
@@ -23,7 +24,17 @@ const HTML_VOID_ELEMENTS = new Set<string>([
  * In-memory ledger tracking cross-file symbol debts during multi-file refactoring.
  * Key: normalized absolute target file path -> Value: Set of required symbol names.
  */
-const pendingExports = new Map<string, Set<string>>();
+const pendingExportScope = new AsyncLocalStorage<Map<string, Set<string>>>();
+const pendingExports = new Proxy(new Map<string, Set<string>>(), {
+  get(fallback, key) {
+    const ledger = pendingExportScope.getStore() ?? fallback;
+    const value = Reflect.get(ledger, key, ledger);
+    return typeof value === 'function' ? value.bind(ledger) : value;
+  },
+});
+export function withPendingExportScope<T>(action: () => T): T {
+  return pendingExportScope.run(new Map(), action);
+}
 
 export function getPendingCrossFileExports(): Map<string, Set<string>> {
   return pendingExports;

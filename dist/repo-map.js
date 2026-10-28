@@ -622,7 +622,7 @@ async function collectWorkspaceSourceFiles(rootDir, maxFiles = 80, startMs = Dat
 /**
  * Builds a compact, query-ranked AST repository map within maxTokens budget.
  * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
- * Strictly bounded by a 250ms time budget to never freeze the main thread.
+ * Uses a cooperative 250ms traversal budget and skips oversized generated files.
  */
 export async function buildWorkspaceRepoMap(workspace, query, maxTokens = 900) {
     if (!workspace || isBroadOrSystemWorkspace(workspace))
@@ -647,6 +647,9 @@ export async function buildWorkspaceRepoMap(workspace, query, maxTokens = 900) {
             continue;
         }
         const relPath = relative(workspace, absPath).replace(/\\/g, '/');
+        // A single generated source file must not defeat the map's time/memory budget.
+        if (fileStat.size > 512 * 1024)
+            continue;
         const cached = repoMapCache.get(absPath);
         let summary;
         let symbolNames;
@@ -671,6 +674,11 @@ export async function buildWorkspaceRepoMap(workspace, query, maxTokens = 900) {
                 ? `${relPath} (${outline.totalLines}L): ${topSymbols.join(', ')}`
                 : `${relPath} (${outline.totalLines}L)`;
             symbolNames = outline.symbols.map(s => s.name.toLowerCase());
+            if (repoMapCache.size >= 256 && !repoMapCache.has(absPath)) {
+                const oldest = repoMapCache.keys().next().value;
+                if (oldest !== undefined)
+                    repoMapCache.delete(oldest);
+            }
             repoMapCache.set(absPath, {
                 mtimeMs: fileStat.mtimeMs,
                 summary,

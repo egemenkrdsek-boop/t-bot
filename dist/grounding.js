@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { validateCodeAstAndGrounding, getPendingCrossFileExports, clearPendingCrossFileExports, } from './ast-validator.js';
 /**
  * Normalizes a file path to a canonical form.
@@ -80,6 +81,7 @@ export class GroundingLedger {
      * Resets turn-scoped evidence sets and HUD warnings at the start of each new user request.
      */
     beginTurn() {
+        this.inspectedFiles.clear();
         this.turnModifiedFiles.clear();
         this.turnCommandsRun = [];
         this.turnGitCommits = 0;
@@ -217,19 +219,23 @@ export class GroundingLedger {
         else if (typeof result === 'string') {
             rawOutput = result;
             if (typeof isErrorOrOkOrWorkspace === 'boolean') {
-                const outputLooksOk = isToolResultOk(toolName, rawOutput);
-                if (isErrorOrOkOrWorkspace === false && outputLooksOk) {
-                    rawOk = true;
-                }
-                else {
-                    rawOk = isErrorOrOkOrWorkspace;
-                }
+                rawOk = isErrorOrOkOrWorkspace;
             }
             else {
                 rawOk = true;
             }
         }
-        const ok = rawOk && isToolResultOk(toolName, rawOutput);
+        let ok = rawOk && isToolResultOk(toolName, rawOutput);
+        if (toolName === 'shell' || toolName === 'run_command' || toolName === 'execute_command') {
+            // Starting a background job is not evidence of successful completion.
+            try {
+                const job = JSON.parse(rawOutput);
+                if (job && typeof job === 'object' && 'status' in job) {
+                    ok = ok && job.status === 'completed' && job.exitCode === 0;
+                }
+            }
+            catch { /* Foreground tools return plain text with an exit-code trailer. */ }
+        }
         const ws = typeof isErrorOrOkOrWorkspace === 'string'
             ? isErrorOrOkOrWorkspace
             : typeof maybeWorkspace === 'string'
@@ -354,7 +360,25 @@ export class GroundingLedger {
 /**
  * Global singleton grounding ledger.
  */
-export const globalGroundingLedger = new GroundingLedger();
+const groundingScope = new AsyncLocalStorage();
+let visibleGroundingLedger = new GroundingLedger();
+export function withGroundingLedger(workspace, publish, action) {
+    const ledger = new GroundingLedger(workspace);
+    if (publish)
+        visibleGroundingLedger = ledger;
+    return groundingScope.run(ledger, action);
+}
+/** Legacy tools resolve this facade to their own invocation's ledger. */
+export const globalGroundingLedger = new Proxy(new GroundingLedger(), {
+    get(_fallback, key) {
+        const ledger = groundingScope.getStore() ?? visibleGroundingLedger;
+        const value = Reflect.get(ledger, key);
+        return typeof value === 'function' ? value.bind(ledger) : value;
+    },
+    set(_fallback, key, value) {
+        return Reflect.set(groundingScope.getStore() ?? visibleGroundingLedger, key, value);
+    },
+});
 const workspaceLedgers = new Map();
 /**
  * Get or create a session-based GroundingLedger for a given workspace.
@@ -431,7 +455,7 @@ export function auditAssistantClaims(responseText, ledger = globalGroundingLedge
     if (testClaimPattern.test(text)) {
         const testCmdRegex = /(?:npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test|vitest|jest|mocha|pytest|cargo\s+test|go\s+test|playwright|node\s+--test)/i;
         const hasSuccessfulTest = turnCommands.some(cmd => testCmdRegex.test(cmd));
-        if (!hasSuccessfulTest && !hasGuiOrBrowser) {
+        if (!hasSuccessfulTest) {
             warnings.push('Anti-Halüsinasyon / Temelsiz Doğrulama Uyarısı: Asistan testlerin başarıyla geçtiğini iddia etti, ancak bu turda başarıyla tamamlanan herhangi bir test komutu (npm test, vitest, jest vb.) bulunamadı.');
         }
     }
@@ -448,6 +472,14 @@ export function auditAssistantClaims(responseText, ledger = globalGroundingLedge
     const fileModClaimPattern = /(?:dosya(?:yı|ları|sını)?\s+(?:başarıyla\s+)?(?:güncelledim|oluşturdum|yazdım|değiştirdim|düzenledim|kaydettim|oluşturuldu|güncellendi|yazıldı))|(?:kod(?:u)?\s+(?:başarıyla\s+)?(?:değiştirdim|güncelledim|düzenledim|yazdım))|(?:değişiklikler(?:i)?\s+(?:başarıyla\s+)?(?:kaydettim|uyguladım|yaptım))|(?:(?:created|updated|modified|edited|wrote|patched)\s+the\s+file(?:s)?)|(?:file(?:s)?\s+(?:has\s+been|were)\s+(?:created|updated|modified|written|patched))/i;
     const citedFileModPattern = /[`'"']?([a-zA-Z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|md|html|css|yml|yaml))[`'"']?\s+(?:dosyasını\s+)?(?:güncelledim|oluşturdum|değiştirdim|düzenledim|yazdım|yamaladım|kaydettim|güncellendi|oluşturuldu|değiştirildi)|(?:updated|modified|created|edited|patched|wrote)\s+[`'"']?([a-zA-Z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|md|html|css|yml|yaml))[`'"']?/i;
     const citedMatch = responseText.match(citedFileModPattern);
+    if (turnModified.size > 0) {
+        for (const match of responseText.matchAll(new RegExp(citedFileModPattern.source, 'gi'))) {
+            const cited = match[1] || match[2];
+            if (cited && !turnModified.has(normalizePath(cited, ledger.workspace))) {
+                warnings.push(`Citation Grounding: '${cited}' için bu turda doğrulanmış bir dosya değişikliği bulunamadı.`);
+            }
+        }
+    }
     if ((fileModClaimPattern.test(text) || citedMatch) && turnModified.size === 0) {
         const citedFile = citedMatch ? citedMatch[1] || citedMatch[2] : undefined;
         if (citedFile) {

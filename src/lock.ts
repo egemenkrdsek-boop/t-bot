@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, stat, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 export function isProcessAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -23,8 +24,9 @@ export async function acquireFileLock(
   while (true) {
     try {
       const handle = await open(lockPath, 'wx', 0o600);
+      const ownership = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
       try {
-        await handle.writeFile(String(process.pid), 'utf8');
+        await handle.writeFile(ownership, 'utf8');
       } catch (writeError) {
         await handle.close().catch(() => undefined);
         await unlink(lockPath).catch(() => undefined);
@@ -40,7 +42,10 @@ export async function acquireFileLock(
         } catch {
           // Ignore handle close errors
         } finally {
-          await unlink(lockPath).catch(() => undefined);
+          // Preserve a replacement lock if this pathname no longer belongs to us.
+          if (await readFile(lockPath, 'utf8').catch(() => '') === ownership) {
+            await unlink(lockPath).catch(() => undefined);
+          }
         }
       };
     } catch (error) {
@@ -51,15 +56,16 @@ export async function acquireFileLock(
       let isStale = false;
       try {
         const st = await stat(lockPath);
-        if (Date.now() - st.mtimeMs > staleMs) {
-          isStale = true;
-        } else {
           const content = await readFile(lockPath, 'utf8').catch(() => '');
-          const pid = parseInt(content.trim(), 10);
+          let pid = Number(content.trim()); // Compatibility with older PID-only locks.
+          try {
+            const parsed = JSON.parse(content);
+            if (parsed && typeof parsed === 'object') pid = parsed.pid;
+          } catch { /* Invalid/incomplete locks get an age grace period below. */ }
           if (!pid) {
             // 0-byte kilit dosyası yarış durumu: Eğer dosya son 2 saniye içinde oluşturulmuşsa
             // başka bir süreç henüz PID yazıyor demektir; bayat sayıp silme ve bekle!
-            if (Date.now() - st.mtimeMs < 2000) {
+            if (Date.now() - st.mtimeMs < Math.max(2000, staleMs)) {
               isStale = false;
             } else {
               isStale = true;
@@ -67,7 +73,6 @@ export async function acquireFileLock(
           } else if (!isProcessAlive(pid)) {
             isStale = true;
           }
-        }
       } catch {
         isStale = true;
       }

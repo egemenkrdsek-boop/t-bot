@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { executeDesktopRequest } from './desktop-request.js';
 export const computerToolDefinitions = [{
         name: 'computer',
         description: 'Control the local desktop GUI with semantic UI Automation, pinpoint target resolution, on-screen live HUD, and automatic visual verification. Coordinates are absolute physical desktop pixels.',
@@ -103,22 +104,24 @@ export async function closeIdleDesktopDaemon() {
     pendingRequests.clear();
     lineBuffer = '';
 }
-export function getScriptPath() {
-    const defaultPath = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
-    const resPath = process.resourcesPath || '';
+/** Native PowerShell cannot read Electron's virtual ASAR filesystem. */
+export function resolveComputerScriptPath(defaultPath, resPath, cwd, exists = existsSync) {
+    const packaged = /\.asar[\\/]/i.test(defaultPath);
     const candidates = [
-        defaultPath,
-        join(resPath, 'app.asar.unpacked', 'scripts', 'computer.ps1'),
-        join(resPath, 'app', 'scripts', 'computer.ps1'),
-        join(resPath, 'scripts', 'computer.ps1'),
-        join(process.cwd(), 'scripts', 'computer.ps1'),
+        ...(packaged ? [defaultPath.replace(/\.asar([\\/])/i, '.asar.unpacked$1')] : [defaultPath]),
+        ...(resPath ? [join(resPath, 'app.asar.unpacked', 'scripts', 'computer.ps1'),
+            join(resPath, 'app', 'scripts', 'computer.ps1'), join(resPath, 'scripts', 'computer.ps1')] : []),
+        ...(!packaged ? [join(cwd, 'scripts', 'computer.ps1')] : []),
     ];
     for (const candidate of candidates) {
-        if (candidate && existsSync(candidate)) {
+        if (candidate && exists(candidate)) {
             return candidate;
         }
     }
-    return defaultPath;
+    throw new Error('Desktop PowerShell script is unavailable outside the application archive. Reinstall T Bot.');
+}
+export function getScriptPath() {
+    return resolveComputerScriptPath(fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url)), process.resourcesPath || '', process.cwd());
 }
 async function getDesktopDaemon() {
     if (desktopDaemon && !desktopDaemon.killed)
@@ -195,7 +198,9 @@ async function getDesktopDaemon() {
     }
 }
 async function sendDaemonRequest(payload, signal) {
+    signal?.throwIfAborted();
     const daemon = await getDesktopDaemon();
+    signal?.throwIfAborted();
     const id = randomUUID();
     const reqPayload = { ...payload, id };
     return new Promise((resolve, reject) => {
@@ -283,20 +288,20 @@ async function runStandalonePs(request, signal) {
                 try {
                     const parsed = JSON.parse(out);
                     if (parsed && typeof parsed === 'object') {
-                        resolve(out);
+                        resolve(parsed.ok === true && parsed.data !== undefined ? JSON.stringify(parsed.data) : out);
                         return;
                     }
                 }
                 catch { }
             }
             if (code === 0) {
-                resolve(out);
+                reject(new Error('Desktop process returned no valid result.'));
             }
             else {
                 const errDetail = stderr.trim() || out || `exit code ${code}`;
                 resolve(JSON.stringify({
-                    ok: true,
-                    warning: `Computer action completed with notice (${code}): ${errDetail}`
+                    ok: false,
+                    warning: `Computer action failed (${code}): ${errDetail}`
                 }));
             }
         });
@@ -661,37 +666,17 @@ export async function handleComputerTool(name, args, context) {
         await mkdir(directory, { recursive: true });
         request.screenshotPath = join(directory, `screenshot-${randomUUID()}.png`);
     }
-    // Warm daemon execution for low latency; fallback to standalone PS if daemon fails
+    // Retry only observations: a lost action response may follow a successful click/type.
     let rawRes;
     try {
-        rawRes = await sendDaemonRequest(request, context.signal);
+        rawRes = await executeDesktopRequest(request, {
+            daemon: sendDaemonRequest, standalone: runStandalonePs, close: closeIdleDesktopDaemon,
+        }, context.signal);
     }
-    catch (daemonError) {
-        if (isKillSwitchError(daemonError)) {
-            await closeIdleDesktopDaemon();
-            throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${daemonError.message}`);
-        }
-        // Daemon'ı SADECE süreç gerçekten kapandığında (!desktopDaemon || desktopDaemon.killed) veya zaman aşımı (timed out) olduğunda kapat!
-        const isDead = !desktopDaemon || desktopDaemon.killed;
-        const isTimeout = daemonError?.message?.includes('timed out');
-        if (isDead || isTimeout) {
-            try {
-                await closeIdleDesktopDaemon();
-            }
-            catch { }
-        }
-        try {
-            rawRes = await runStandalonePs(request, context.signal);
-        }
-        catch (standaloneError) {
-            if (isKillSwitchError(standaloneError)) {
-                throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${standaloneError.message}`);
-            }
-            rawRes = JSON.stringify({
-                ok: true,
-                warning: `Desktop action notice: ${standaloneError?.message || String(standaloneError)}`
-            });
-        }
+    catch (error) {
+        if (isKillSwitchError(error))
+            throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
     }
     let data = {};
     try {
@@ -700,6 +685,8 @@ export async function handleComputerTool(name, args, context) {
     catch {
         data = { raw: rawRes };
     }
+    if (data.ok === false)
+        return JSON.stringify(data);
     if (action === 'inspect') {
         const elements = data.elements || [];
         const elementsSummary = formatElementsSummary(elements);
@@ -728,30 +715,16 @@ export async function handleComputerTool(name, args, context) {
             const directory = join(context.workspace, '.tbot', 'screenshots');
             await mkdir(directory, { recursive: true });
             const shotPath = join(directory, `screenshot-${randomUUID()}.png`);
-            let shotRaw;
-            try {
-                shotRaw = await sendDaemonRequest({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
-            }
-            catch (shotDaemonError) {
-                if (isKillSwitchError(shotDaemonError)) {
-                    await closeIdleDesktopDaemon();
-                    throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${shotDaemonError.message}`);
-                }
-                const isDead = !desktopDaemon || desktopDaemon.killed;
-                const isTimeout = shotDaemonError?.message?.includes('timed out');
-                if (isDead || isTimeout) {
-                    try {
-                        await closeIdleDesktopDaemon();
-                    }
-                    catch { }
-                }
-                shotRaw = await runStandalonePs({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
-            }
+            const shotRaw = await executeDesktopRequest({ action: 'screenshot', screenshotPath: shotPath }, {
+                daemon: sendDaemonRequest, standalone: runStandalonePs, close: closeIdleDesktopDaemon,
+            }, context.signal);
             let shotData = {};
             try {
                 shotData = JSON.parse(shotRaw);
             }
             catch { }
+            if (shotData.ok === false)
+                throw new Error(String(shotData.warning || shotData.error || 'Desktop screenshot failed.'));
             const elements = shotData.elements || [];
             const elementsSummary = formatElementsSummary(elements);
             return JSON.stringify({

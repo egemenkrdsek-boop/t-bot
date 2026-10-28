@@ -28,6 +28,7 @@ import { globalGroundingLedger } from './grounding.js';
 import { rememberFact, recallFacts, forgetFact } from './memory.js';
 import { reclaimMemory, getMemoryStats, startAutoMemoryGuard, stopAutoMemoryGuard } from './memory-guard.js';
 import type { AgentEvent, AgentInput, ApprovalRequest, Provider } from './types.js';
+import { APP_VERSION, MINIMUM_NODE_VERSION, supportsNodeVersion } from './version.js';
 
 const safe = (text: string): string => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 
@@ -102,14 +103,16 @@ async function approveOnce(request: ApprovalRequest): Promise<boolean> {
 export async function main(argv: string[]): Promise<void> {
   const options = parseCli(argv);
   if (options.command === 'help') { printUsage(); return; }
-  if (options.command === 'version') { console.log('T Bot 2.0.0'); return; }
+  if (options.command === 'version') { console.log(`T Bot ${APP_VERSION}`); return; }
   if (options.command === 'providers') { for (const p of PROVIDER_CATALOG) console.log(`${p.id.padEnd(12)} ${p.label}${p.requiresApiKey ? ' (API anahtarı gerekli)' : ' (yerel/özel)'}`); return; }
   if (options.command === 'config') { await configure(await loadConfig()); return; }
   if (options.command === 'sessions') { await listSessions(); return; }
   if (options.command === 'doctor') {
     const config = await loadConfig();
     const resolved = await resolveProviderConfig(config);
-    console.log(safe(`Node ${process.version}\nPlatform ${process.platform}\nÇalışma Dizini ${process.cwd()}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI Anahtarı ${resolved.apiKey ? 'Mevcut' : 'Ayarlı Değil'}\nYapılandırma ${configDirectory()}`));
+    const supportedNode = supportsNodeVersion(process.versions.node);
+    console.log(safe(`T Bot ${APP_VERSION}\nNode ${process.version} (${supportedNode ? 'uygun' : `en az ${MINIMUM_NODE_VERSION} gerekli`})\nPlatform ${process.platform}\nÇalışma Dizini ${resolve(options.workspace || process.cwd())}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI Anahtarı ${resolved.apiKey ? 'Mevcut' : 'Ayarlı Değil'}\nYapılandırma ${configDirectory()}`));
+    if (!supportedNode) process.exitCode = 1;
     return;
   }
   let config = await loadConfig();
@@ -237,7 +240,7 @@ export async function main(argv: string[]): Promise<void> {
   };
 
   const runRouted = async (input: AgentInput) => {
-    const skills = resolveSkills(input.message);
+    const skills = resolveSkills(input.message, input.workspace);
     if (skillRequiresReadOnly(skills, input.message) || skills.some(s => s.id === 'imagegen')) return runAgent(input);
     if (ultracode) return runUltracode({ ...input, workerProvider: workerProvider ?? provider });
     if (workerProvider) return runSubagents({ ...input, workerProvider });

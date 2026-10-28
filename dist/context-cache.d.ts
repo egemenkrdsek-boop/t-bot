@@ -1,7 +1,9 @@
+import type { Message } from './types.js';
 export interface ReadRangeRecord {
     startLine: number;
     endLine: number;
     turnIndex: number;
+    output?: string;
 }
 export interface CachedFileEntry {
     workspace: string;
@@ -32,9 +34,12 @@ export declare function computeUnifiedLineDiff(prevContent: string, newContent: 
 export declare class ContextReadCache {
     private entries;
     private turnCounter;
+    /** Discard coverage unless the actual source text survived request compression. */
+    retainVisibleReads(messages: Message[]): void;
     checkAndRecordRead(workspace: string, relPath: string, fullContent: string, startLine: number, endLine: number, formattedSlice: string): DifferentialReadResult;
     invalidateFile(workspace: string, relPath: string): void;
     clearWorkspace(workspace?: string): void;
 }
 export { ContextReadCache as FileReadCache };
+export declare function withContextReadCache<T>(action: () => T): T;
 export declare const globalContextCache: ContextReadCache;

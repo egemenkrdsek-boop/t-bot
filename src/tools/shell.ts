@@ -21,13 +21,16 @@ const backgroundProcesses = new Map<string, ManagedProcess>();
 const POWERSHELL_SYNTAX_REGEX =
   /(?:\b(?:Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|Stop-|Restart-|Start-|Copy-|Move-|Rename-|Clear-|Write-|Read-|Measure-|Compare-|ConvertTo-|ConvertFrom-|Resolve-|Split-|Join-)\w*|\$env:|\$PSVersionTable|\$ErrorActionPreference|\[System\.|\[Math\]::|\[Console\]::)/i;
 
-const DEFAULT_SPAWN_ENV = {
-  ...process.env,
-  CI: 'true',
-  GIT_TERMINAL_PROMPT: '0',
-  GCM_INTERACTIVE: 'never',
-  NPM_CONFIG_YES: 'true',
-};
+/** Avoid implicitly giving model-launched programs provider and bridge secrets.
+ * This is defense in depth; commands still run with the user's OS permissions. */
+export function shellEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (/(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE_KEY)(?:_|$)/i.test(name)) continue;
+    env[name] = value;
+  }
+  return { ...env, CI: 'true', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' };
+}
 
 function spawnCommand(
   command: string,
@@ -40,7 +43,7 @@ function spawnCommand(
 ): ChildProcess {
   const isWin = process.platform === 'win32';
   const isPowerShell = isWin && POWERSHELL_SYNTAX_REGEX.test(command);
-  const env = { ...DEFAULT_SPAWN_ENV };
+  const env = shellEnvironment();
 
   if (isPowerShell) {
     return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
@@ -204,7 +207,7 @@ export const shellToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'process_write',
-    description: 'Send input text to a running background process standard input (stdin).',
+    description: 'Send input text to a running background process standard input (stdin). Requires approval because input can execute commands.',
     parameters: {
       type: 'object',
       properties: {

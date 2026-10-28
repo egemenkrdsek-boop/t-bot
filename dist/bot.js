@@ -13,6 +13,7 @@ import { runUltracode } from './ultracode.js';
 import { startGoal, runGoal, getGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal } from './workflows.js';
 import { SessionStore } from './sessions.js';
 import { handleComputerTool } from './tools/computer.js';
+import { createApprovalNonce, parseApprovalCallback } from './telegram-security.js';
 // Module-level bridge state
 let isRunning = false;
 let currentBotUsername;
@@ -270,10 +271,11 @@ ${truncatedArgs}
 \`\`\`
 
 Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki butonları kullanın (60sn)`;
+    const nonce = createApprovalNonce();
     const reply_markup = {
         inline_keyboard: [[
-                { text: '✓ Onayla', callback_data: 'approve_yes' },
-                { text: '✗ Reddet', callback_data: 'approve_no' },
+                { text: '✓ Onayla', callback_data: `approve_yes:${nonce}` },
+                { text: '✗ Reddet', callback_data: `approve_no:${nonce}` },
             ]],
     };
     await sendTelegramMessage(token, chatId, promptText, reply_markup);
@@ -287,6 +289,7 @@ Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki but
         }, 60_000);
         timeoutId.unref();
         activeApproval = {
+            nonce,
             tool: request.tool,
             chatId,
             resolve,
@@ -708,8 +711,8 @@ async function runPollingLoop(token, signal, options) {
                     if (allowed.includes(cqChatId)) {
                         await answerCallbackQuery(token, cq.id);
                         const pendingApproval = activeApproval;
-                        if (pendingApproval && pendingApproval.chatId === cqChatId && (cq.data === 'approve_yes' || cq.data === 'approve_no')) {
-                            const approved = cq.data === 'approve_yes';
+                        const approved = pendingApproval ? parseApprovalCallback(cq.data, pendingApproval.nonce) : undefined;
+                        if (pendingApproval && pendingApproval.chatId === cqChatId && approved !== undefined) {
                             clearTimeout(pendingApproval.timeoutId);
                             const { resolve, tool } = pendingApproval;
                             activeApproval = null;

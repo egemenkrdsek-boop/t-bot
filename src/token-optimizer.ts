@@ -8,7 +8,7 @@ export const stringTokenCache = new Map<string, number>();
 export const messageTokenCache = new WeakMap<Message, { contentRef: string; tokens: number }>();
 export const toolTokenCache = new WeakMap<ToolDefinition, number>();
 const minifiedToolCache = new WeakMap<ToolDefinition, ToolDefinition>();
-export const compressedToolOutputCache = new WeakMap<Message, string>();
+export const compressedToolOutputCache = new WeakMap<Message, { content: string; summary: string }>();
 
 /**
  * Fast, dependency-free BPE token estimator with 600-entry LRU memoization and charCodeAt fast-paths.
@@ -134,7 +134,9 @@ export function estimateMessagesTokens(
 
   for (const message of messages) {
     const cachedMsg = messageTokenCache.get(message);
-    if (cachedMsg && cachedMsg.contentRef === message.content) {
+    // Attachments, calls and native response items may change independently of content.
+    if (cachedMsg && cachedMsg.contentRef === message.content &&
+      !message.images?.length && !message.toolCalls?.length && !message.toolCallId && !message.responseItems?.length) {
       total += cachedMsg.tokens;
       continue;
     }
@@ -164,7 +166,11 @@ export function estimateMessagesTokens(
       msgTokens += estimateTokens(JSON.stringify(message.responseItems));
     }
 
-    messageTokenCache.set(message, { contentRef: message.content, tokens: msgTokens });
+    if (!message.images?.length && !message.toolCalls?.length && !message.toolCallId && !message.responseItems?.length) {
+      messageTokenCache.set(message, { contentRef: message.content, tokens: msgTokens });
+    } else {
+      messageTokenCache.delete(message);
+    }
     total += msgTokens;
   }
 
@@ -586,7 +592,7 @@ const MAX_TOOL_RESULT_CHARS = 12_000;
 
 /**
  * Deterministically summarizes older tool outputs into structural evidence (file paths, signatures, errors, lines).
- * Preserves 100% of reasoning context while saving 65-85% of tokens.
+ * This is a lossy summary; source should be read again when exact details matter.
  */
 function extractStructuralEvidence(content: string): string {
   if (content.length <= 400) return content;
@@ -620,9 +626,9 @@ function extractStructuralEvidence(content: string): string {
 
 function getCachedEvidenceSummary(msg: Message): string {
   const cached = compressedToolOutputCache.get(msg);
-  if (cached !== undefined) return cached;
+  if (cached?.content === msg.content) return cached.summary;
   const summary = extractStructuralEvidence(msg.content);
-  compressedToolOutputCache.set(msg, summary);
+  compressedToolOutputCache.set(msg, { content: msg.content, summary });
   return summary;
 }
 
@@ -836,24 +842,23 @@ export class TokenSessionTracker {
   }): TokenSavingsReport {
     this.turnsCount++;
     const inputTokens = Math.max(0, data.sentInputTokens || 0);
-    const cached = Math.max(0, Math.min(inputTokens || Number.MAX_SAFE_INTEGER, data.cachedTokens ?? 0));
+    const cached = Math.max(0, Math.min(inputTokens, data.cachedTokens ?? 0));
     const uncachedInput = Math.max(0, inputTokens - cached);
     const pruned = Math.max(0, data.prunedSchemaTokens ?? 0);
     const compressed = Math.max(0, data.compressedHistoryTokens ?? 0);
     const contextSavedThisTurn = this.pendingContextCacheSavedTokens;
     this.pendingContextCacheSavedTokens = 0;
 
-    // Provider prompt cache saves ~90% of input token cost/budget
-    const turnCacheSavings = Math.round(cached * 0.9);
-    const turnSaved = pruned + compressed + contextSavedThisTurn + turnCacheSavings;
+    // Cache hits still occupy input/context tokens. Pricing varies by provider;
+    // report hits separately instead of inventing a universal cost discount.
+    const turnSaved = pruned + compressed + contextSavedThisTurn;
 
     this.totalSentInputTokens += inputTokens;
     this.totalUncachedInputTokens += uncachedInput;
     this.totalOutputTokens += Math.max(0, data.outputTokens || 0);
     this.totalCachedTokens += cached;
-    // Oturum bazlı şema tasarrufu: her turda sonsuz toplayarak şişirmek yerine
-    // oturumdaki tekil şema optimizasyon tavanını korur
-    this.totalPrunedSchemaTokens = Math.max(this.totalPrunedSchemaTokens, pruned);
+    // Each request would otherwise resend its full schema, so savings accumulate.
+    this.totalPrunedSchemaTokens += pruned;
     this.totalCompressedHistoryTokens += compressed;
     this.totalRawTokens += Math.max(
       data.rawTokens || 0,
@@ -871,12 +876,10 @@ export class TokenSessionTracker {
   }
 
   getReport(): TokenSavingsReport {
-    const cacheCostSavings = Math.round(this.totalCachedTokens * 0.9);
     const totalSavedTokens =
       this.totalPrunedSchemaTokens +
       this.totalCompressedHistoryTokens +
-      this.totalContextCacheSavedTokens +
-      cacheCostSavings;
+      this.totalContextCacheSavedTokens;
 
     // Dürüst oturum bütçesi muhasebesi
     const totalBaselineTokens =
@@ -889,8 +892,7 @@ export class TokenSessionTracker {
     let savingsPercent = 0;
     if (this.turnsCount > 0 && totalBaselineTokens > 0) {
       const rawPercent = (totalSavedTokens / totalBaselineTokens) * 100;
-      // Diferansiyel diff + AST iskelet + prompt cache + şema optimizasyonu ile dürüst ve gerçekçi %50-%75 bandı
-      savingsPercent = Number(Math.min(75, Math.max(50, rawPercent)).toFixed(1));
+      savingsPercent = Number(Math.min(100, Math.max(0, rawPercent)).toFixed(1));
     }
 
     return {
@@ -905,7 +907,7 @@ export class TokenSessionTracker {
       totalSavedTokens,
       turnSavedTokens: this.lastTurnSavedTokens,
       turnCachedTokens: this.lastTurnCachedTokens,
-      cachedTokens: this.lastTurnCachedTokens || this.totalCachedTokens,
+      cachedTokens: this.lastTurnCachedTokens,
       savedTokens: totalSavedTokens,
       savingsPercent,
       turnsCount: this.turnsCount,

@@ -142,32 +142,18 @@ export async function handleImageTool(name: string, args: Record<string, unknown
   let sourceImageMime: string | undefined;
 
   if (sourceImage) {
-    try {
-      const root = await realpath(context.workspace);
-      const target = isAbsolute(sourceImage) ? sourceImage : join(root, sourceImage);
-      const realTarget = await realpath(target);
-      const rel = relative(root, realTarget);
-      if (!rel.startsWith('..') && !isAbsolute(rel)) {
-        const stat = await lstat(realTarget);
-        if (stat.isFile() && stat.size > 0 && stat.size <= maxImage) {
-          const buf = await readFile(realTarget);
-          let mime = '';
-          if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mime = 'image/png';
-          else if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) mime = 'image/jpeg';
-          else if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') mime = 'image/webp';
-          else if (sourceImage.toLowerCase().endsWith('.png')) mime = 'image/png';
-          else if (sourceImage.toLowerCase().endsWith('.jpg') || sourceImage.toLowerCase().endsWith('.jpeg')) mime = 'image/jpeg';
-          else if (sourceImage.toLowerCase().endsWith('.webp')) mime = 'image/webp';
-
-          if (mime) {
-            sourceImageBytes = buf;
-            sourceImageMime = mime;
-          }
-        }
-      }
-    } catch {
-      // Proceed without source image if not found or unreadable
-    }
+    if (config.provider === 'openai') throw new Error('OpenAI reference-image editing is not supported by this tool. Choose Gemini or OpenRouter for source_image.');
+    const root = await realpath(context.workspace);
+    const target = isAbsolute(sourceImage) ? sourceImage : join(root, sourceImage);
+    const realTarget = await realpath(target);
+    const rel = relative(root, realTarget);
+    if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('Source image must be inside the workspace.');
+    const stat = await lstat(realTarget);
+    if (!stat.isFile() || stat.size === 0 || stat.size > maxImage) throw new Error('Source image must be a supported image file within the size limit.');
+    const buf = await readFile(realTarget, { signal: context.signal });
+    const validated = decode(buf.toString('base64'));
+    sourceImageBytes = validated.bytes;
+    sourceImageMime = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' }[validated.extension];
   }
 
   const approvalDesc = sourceImageBytes
@@ -241,15 +227,8 @@ export async function handleImageTool(name: string, args: Record<string, unknown
       const decoded = decode(item.b64_json);
       imageBytes = decoded.bytes;
       imageExt = decoded.extension;
-    } else if (typeof item?.url === 'string' && item.url.startsWith('http')) {
-      const imgRes = await fetch(item.url, { signal });
-      if (!imgRes.ok) throw new Error(`Generated image could not be downloaded from URL: HTTP ${imgRes.status}`);
-      const arrayBuf = await imgRes.arrayBuffer();
-      const buf = Buffer.from(arrayBuf);
-      if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) imageExt = 'png';
-      else if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) imageExt = 'jpg';
-      else if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') imageExt = 'webp';
-      imageBytes = buf;
+    } else if (typeof item?.url === 'string') {
+      throw new Error('OpenAI returned a remote image URL instead of requested inline data. Remote image URLs are not fetched.');
     } else {
       throw new Error('OpenAI image provider returned neither b64_json nor image url.');
     }

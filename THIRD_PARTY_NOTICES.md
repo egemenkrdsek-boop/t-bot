@@ -1,8 +1,12 @@
-# Third-party notices and inspiration
+# Third-party notices and provenance
 
-T Bot is an independent implementation, not a fork of Hermes Agent or OpenCode. Its original code is licensed under the project's [MIT License](LICENSE). The following projects informed the product concept; no source code from either project is included on that basis. This acknowledgment does not imply affiliation or endorsement.
+T Bot's root source license is the [MIT License](LICENSE), Copyright (c) 2026 T Bot contributors. The available repository history starts with `Initial T Bot CLI`; it does not establish an upstream fork or source merge from Hermes Agent or OpenCode. Product descriptions previously used “synthesis” for inspiration. That wording should not be read as evidence that either upstream codebase is incorporated. This review is not a complete source provenance or similarity audit.
 
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent), by Nous Research — the repository's [root MIT license](https://github.com/NousResearch/hermes-agent/blob/main/LICENSE) states Copyright (c) 2025 Nous Research.
-- [OpenCode](https://github.com/anomalyco/opencode) — the repository's [root MIT license](https://github.com/anomalyco/opencode/blob/dev/LICENSE) states Copyright (c) 2025 opencode.
+Conceptual references:
 
-These references are acknowledgments of inspiration, not notices for incorporated upstream code. If upstream material is incorporated later, preserve its applicable copyright and permission notices in all copies or substantial portions, record the exact source and version, and review any file-specific terms. Dependencies have their own licenses; this file is not an exhaustive dependency license inventory. Review the resolved dependency tree and include required notices in distributed artifacts before release.
+- [Hermes Agent by Nous Research](https://github.com/NousResearch/hermes-agent)
+- [OpenCode](https://github.com/anomalyco/opencode)
+
+No affiliation, endorsement, or upstream compatibility is implied. If material from an upstream project is incorporated, preserve its applicable copyright and license notices, record the exact source/version, and check file-specific terms.
+
+Runtime dependencies include the Model Context Protocol TypeScript SDK, Playwright Core, TypeScript and their transitive dependencies. Their own package licenses and notices apply. See [THIRD_PARTY_DEPENDENCIES.md](THIRD_PARTY_DEPENDENCIES.md) for the production dependency license identifiers from the lockfile. Distributed dependency package directories retain their license files. Electron distributions additionally include Electron/Chromium license notices supplied by Electron. Development and packaging tools have their own licenses; the inventory does not claim to cover every downloaded build tool or operating system component.

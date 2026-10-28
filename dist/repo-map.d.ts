@@ -25,6 +25,6 @@ export declare function isBroadOrSystemWorkspace(ws?: string): boolean;
 /**
  * Builds a compact, query-ranked AST repository map within maxTokens budget.
  * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
- * Strictly bounded by a 250ms time budget to never freeze the main thread.
+ * Uses a cooperative 250ms traversal budget and skips oversized generated files.
  */
 export declare function buildWorkspaceRepoMap(workspace: string, query?: string, maxTokens?: number): Promise<string>;
