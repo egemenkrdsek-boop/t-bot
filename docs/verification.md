@@ -229,7 +229,7 @@ Kurulum paketi imzasızdır. `release/build-manifest.json` hash otoritesidir; ma
 
 4.0 kaynak doğrulaması şunları kapsar: doğrulama-sonrası-yazma kapısı, eski doğrulama sonucunun yeni değişikliği kapsamaması, görev türü sınıflandırması, checkpoint kimlik çakışması/geri yükleme bütünlüğü, diagnostics'in derleyiciyi geç yüklemesi ve dizin hedefi, yetenek politikasında bilinmeyen araçların fail-closed davranması, MCP okuma/yazma ayrımı, taint yaşam döngüsü, sandbox durum raporu, kullanıcı sınırlarının checkpoint/Git/delegasyon araçlarına uygulanması ve büyük araç çıktısının bağlamda yarıdan fazla azaltılması.
 
-Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, rakiplere göre token tasarrufu, dünya sıralaması, Windows OS sandbox eşdeğerliği veya tüm olası prompt-injection biçimlerine karşı kesin koruma kanıtı değildir. `npm test` yalnızca birim/bileşen ve fixture düzeyindedir; uygulama başlatılmadı, canlı sağlayıcıya istek atılmadı ve kurulum çalıştırılmadı.
+Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, rakiplere göre token tasarrufu, dünya sıralaması, Windows OS sandbox eşdeğerliği veya tüm olası prompt-injection biçimlerine karşı kesin koruma kanıtı değildir. `npm test` yalnızca birim/bileşen ve fixture düzeyindedir; uygulama başlatılmadı, canlı sağlayıcıya istek atılmadı. Kurulum ve sürüm doğrulaması yapıldı; bu bir görev/E2E testi değildir.
 
 ### 4.0 paket kaydı
 
@@ -239,5 +239,6 @@ Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, r
 | `npm run dist:win` | Windows x64 NSIS yükleyicisi ve SHA256 manifesti üretildi |
 | `release/T-Bot-Setup-4.0.0.exe` | 128.582.213 byte; SHA256 `fd0131557f30d5baa0c1ea265e55d0b5910f7a9c6e97d8a4df1b56f927d1973e` |
 | `app.asar` SHA256 | `deee0450dc2bf2b4abd5c0d059d78264b04e4f75d55041cfb38f511bd675c771` (manifest ile aynı) |
-| CLI sürümü | `node dist/index.js --version` → `T Bot 4.0.0` |
-| Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar üretildi |
+| Desktop yerel kurulum | `deploy-local.ps1` başarılı; ProductVersion `4.0.0.0`; kurulu `app.asar` manifest hash'iyle eşleşti; uygulama açılmadı |
+| Global CLI kurulumu | `t-bot-cli-4.0.0.tgz` `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 4.0.0` |
+| Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar üretildi |
