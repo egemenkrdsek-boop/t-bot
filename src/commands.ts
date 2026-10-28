@@ -65,6 +65,8 @@ export const COMMAND_GROUPS: readonly CommandGroup[] = [
       { name: '/forget', usage: '/forget <anahtar>', description: 'Kayıtlı bellek maddesini siler', surfaces: CLI_DESKTOP, argument: 'required' },
       { name: '/gc', usage: '/gc', description: 'Bellek koruyucusunu ve çöp toplayıcıyı çalıştırır', surfaces: CLI_DESKTOP, argument: 'none', aliases: ['/ram'] },
       { name: '/doctor', usage: '/doctor', description: 'Ortam, sağlayıcı ve sistem sağlığını denetler', surfaces: CLI_DESKTOP, argument: 'none' },
+      { name: '/checkpoints', usage: '/checkpoints', description: 'Son dosya checkpoint\'lerini listeler', surfaces: CLI_DESKTOP, argument: 'none' },
+      { name: '/undo', usage: '/undo <checkpoint-id|last>', description: 'Bir checkpoint\'i geri yükler (onay ister)', surfaces: CLI_DESKTOP, argument: 'optional' },
       { name: '/bot', usage: '/bot [start|stop|token|allow|status]', description: 'Telegram bot köprüsünü yönetir', surfaces: CLI_DESKTOP, argument: 'optional' },
       { name: '/gui', usage: '/gui [live|headless|stop]', description: 'Tarayıcı ve masaüstü görünürlüğünü yönetir', surfaces: CLI_DESKTOP, argument: 'optional' },
     ],

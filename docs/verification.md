@@ -212,3 +212,32 @@ Yeni testler komut kataloğu/alias tutarlılığını, CLI ve masaüstü yüzey 
 Bu 3.1.0 derlemesi önceki 3.1.0 kurulumunun üzerine aynı görünür sürüm numarasıyla kuruldu; sürüm etiketi değiştirilmedi. CLI ve Desktop artık `host-services.ts` ve `turn-runner.ts` ortak katmanlarını kullanır. Desktop'ta görsel sağlayıcı eksikliği, özel base URL model kataloğu, OpenRouter anahtar doğrulaması, komut paleti tıklamaları, modal Escape davranışı, `/effort`, `/skills`, `/sessions`, `/resume`, `/imagegen`, `/gui`, `/mcp` ve `/bot` komutları ile MCP/Telegram panelleri eklendi. Bunlar E2E, gerçek GUI açılışı, canlı model, gerçek MCP sunucusu veya Telegram akışıyla doğrulanmadı.
 
 Kurulum paketi imzasızdır. `release/build-manifest.json` hash otoritesidir; manifest imza yerine geçmez. Paket içine gömülü belge, kendi hash'i hesaplanmadan önce üretildiği için bir önceki derlemenin hash'ini gösterebilir; dış depodaki bu kayıt ve manifest esas alınır. Masaüstü yükleyicisi `deploy-local.ps1` ile sessiz kuruldu; kurulu uygulama açılmadı ve gerçek GUI/tarayıcı/Telegram akışı denenmedi.
+
+## 4.0.0 kaynak ve doğrulama kaydı
+
+28 Ekim 2026'da T Bot 4.0.0 kaynak ağacında aşağıdaki statik/birim kontrolleri tamamlandı. Bu kayıt E2E, canlı sağlayıcı, gerçek tarayıcı, gerçek masaüstü otomasyonu, gerçek Telegram veya kurulum çalıştırması değildir.
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm test` | **248/248 başarılı**, 0 hata, 0 atlama |
+| `npm run typecheck` | Başarılı |
+| `npm run check:layers` | Başarılı; 71 TypeScript dosyasında katman yönü ihlali yok |
+| `node --check` renderer/preload | Başarılı |
+| `npm run build` | Başarılı |
+| `node dist/index.js --version` | `T Bot 4.0.0` |
+| `node dist/index.js --help` | Komut kataloğu yüklendi |
+
+4.0 kaynak doğrulaması şunları kapsar: doğrulama-sonrası-yazma kapısı, eski doğrulama sonucunun yeni değişikliği kapsamaması, görev türü sınıflandırması, checkpoint kimlik çakışması/geri yükleme bütünlüğü, diagnostics'in derleyiciyi geç yüklemesi ve dizin hedefi, yetenek politikasında bilinmeyen araçların fail-closed davranması, MCP okuma/yazma ayrımı, taint yaşam döngüsü, sandbox durum raporu, kullanıcı sınırlarının checkpoint/Git/delegasyon araçlarına uygulanması ve büyük araç çıktısının bağlamda yarıdan fazla azaltılması.
+
+Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, rakiplere göre token tasarrufu, dünya sıralaması, Windows OS sandbox eşdeğerliği veya tüm olası prompt-injection biçimlerine karşı kesin koruma kanıtı değildir. `npm test` yalnızca birim/bileşen ve fixture düzeyindedir; uygulama başlatılmadı, canlı sağlayıcıya istek atılmadı ve kurulum çalıştırılmadı.
+
+### 4.0 paket kaydı
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm pack --ignore-scripts` | CLI tarball `t-bot-cli-4.0.0.tgz` üretildi |
+| `npm run dist:win` | Windows x64 NSIS yükleyicisi ve SHA256 manifesti üretildi |
+| `release/T-Bot-Setup-4.0.0.exe` | 128.582.069 byte; SHA256 `f437bb87a04c9a88fd3d8505a918a2a1fd740ea2db5aead1fd40251f5dd0e77b` |
+| `app.asar` SHA256 | `118d428926edcf93e8fdf1338b09e75f86f4823f5e0eb9beca2c86de17c7eb07` (manifest ile aynı) |
+| CLI sürümü | `node dist/index.js --version` → `T Bot 4.0.0` |
+| Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar üretildi |

@@ -125,3 +125,9 @@ Yukarıdaki paket öncesi pending kaydından sonra ana ajan `f126fbee9d622bc9aff
 ### 2.2.1 kaynak aşaması
 
 Yeni patch metadata sürümü 2.2.1; RAM guard ham geçmiş kaybı ve Telegram save/clear hata sunumu için kaynak düzeltmeleri yürütülüyor. Bu kayıt anında yeni final tam suite, build, kurulum veya yayın sonucu yoktur. Eski 62 madde ve geniş hedeflerin kapsamı korunur; dar bir bugfix bütün kalite ya da bilgi kaybının sıfırlanması şartını tamamlanmış saydırmaz. Sonraki tamamlanma kanıtı ayrıca eklenmelidir.
+
+### 4.0.0 Precision güncellemesi
+
+4.0.0, 3.1.0'ın çalışan çekirdeğini koruyarak sınır modüllerini yeniden yazdı: doğrulama-sonrası-yazma kapısı, checkpoint/undo, diagnostics'in geç yüklenmesi, MCP okuma/yazma yetenek ayrımı, taint, isteğe bağlı kabuk sandbox'ı ve CLI/masaüstü `/checkpoints` + `/undo` parity'si. 248/248 birim/bileşen testi, typecheck, katman denetimi, build ve Windows setup üretimi başarılıdır.
+
+Bu güncelleme aşağıdaki geniş hedefleri **tamamlanmış saymaz**: dünya sıralaması, rakiplere göre %50–75 token tasarrufu, canlı model/browser/computer/Telegram doğruluğu, Windows OS sandbox eşdeğerliği, PTY/genel LSP/eklenti API'si ve tüm prompt-injection biçimlerine karşı kesin koruma. E2E ve gerçek kurulum çalıştırması yapılmadı; yalnızca statik/birim kanıtı ve paket artefaktı vardır.

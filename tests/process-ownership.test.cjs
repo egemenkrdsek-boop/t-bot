@@ -19,6 +19,7 @@ function processHarness(afterRealpath) {
       if (name === 'node:crypto') return { randomUUID: () => `${String(++sequence).padStart(8, '0')}-0000-4000-8000-000000000000` };
       if (name === '../windows-system.js') return { windowsSystemExecutable: () => 'C:\\Windows\\System32\\taskkill.exe' };
       if (name === '../security/env.js') return { childEnvironment: () => ({ ComSpec: 'C:\\Windows\\System32\\cmd.exe', SystemRoot: 'C:\\Windows', PATH: 'C:\\Windows\\System32' }) };
+      if (name === '../security/sandbox.js') return { assertShellAllowed: () => {}, sandboxWrap: () => undefined };
       if (name === 'node:fs/promises') return { realpath: async path => {
         const result = await require(name).realpath(path);
         afterRealpath?.();

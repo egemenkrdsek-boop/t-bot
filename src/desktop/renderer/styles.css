@@ -30,6 +30,8 @@
   --titlebar-h: 42px;
   --topbar-h: 38px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
 }
 
 html[data-theme="light"], body[data-theme="light"] {
@@ -91,6 +93,10 @@ a:hover { text-decoration: underline; }
 @keyframes tbot-palette {
   from { opacity: 0; transform: translate(-50%, -4px) scale(0.99); }
   to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+@keyframes tbot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50% { box-shadow: 0 0 0 4px transparent; }
 }
 .message-wrapper, .tool-card, .approval-card { animation: tbot-enter 140ms var(--ease); }
 .command-palette { animation: tbot-palette 120ms var(--ease); }
@@ -305,9 +311,21 @@ a:hover { text-decoration: underline; }
   flex: none; display: flex; align-items: center; gap: 10px;
   padding: 7px 14px; border-top: 1px solid var(--border); background: var(--bg-elevated);
 }
-.run-spine { display: flex; align-items: center; gap: 3px; flex: none; }
-.run-node { width: 5px; height: 5px; border-radius: 50%; background: var(--border-strong); }
-.run-node.active { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.run-spine { position: relative; display: flex; align-items: center; gap: 5px; flex: none; }
+.run-spine::before {
+  content: ''; position: absolute; left: 2px; right: 2px; top: 50%;
+  height: 1px; background: var(--border); pointer-events: none;
+}
+.run-node {
+  position: relative; z-index: 1; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--border-strong);
+  transition: background var(--motion-base) var(--ease), transform var(--motion-base) var(--ease), box-shadow var(--motion-base) var(--ease);
+}
+.run-node.active {
+  background: var(--accent);
+  transform: scale(1.4);
+  animation: tbot-pulse 1.8s ease-in-out infinite;
+}
 .thinking-content { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
 .thinking-spinner { color: var(--accent); font: 12px/1 var(--font-mono); width: 12px; text-align: center; }
 .thinking-step-badge { color: var(--faint); font: 10px/1 var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }

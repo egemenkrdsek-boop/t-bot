@@ -1625,6 +1625,41 @@
         break;
       }
 
+      case '/checkpoints': {
+        const checkpoints = await tbot.listCheckpoints?.(state.workspace).catch(() => []) || [];
+        if (!checkpoints.length) {
+          notice('Henüz dosya checkpoint\'i yok.');
+          break;
+        }
+        showReport('Dosya Checkpoint\'leri', checkpoints.slice(0, 20).map(item =>
+          `\`${escapeHtml(String(item.id || ''))}\` — ${escapeHtml(String(item.path || ''))} · ${escapeHtml(String(item.tool || ''))} · ${Number(item.bytes || 0)} bayt`));
+        break;
+      }
+
+      case '/undo': {
+        const checkpoints = await tbot.listCheckpoints?.(state.workspace).catch(() => []) || [];
+        if (!checkpoints.length) {
+          notice('Geri yüklenecek checkpoint yok.');
+          break;
+        }
+        const wanted = argument && argument.toLowerCase() !== 'last' ? argument : checkpoints[0].id;
+        const target = checkpoints.find(item => item.id === wanted);
+        if (!target) {
+          notice(`Checkpoint bulunamadı: ${escapeHtml(wanted)}`);
+          break;
+        }
+        if (!window.confirm(`${target.path} dosyası ${target.createdAt} tarihli checkpoint'e geri yüklenecek. Devam edilsin mi?`)) {
+          notice('Geri yükleme iptal edildi.');
+          break;
+        }
+        const restored = await tbot.restoreCheckpoint?.(state.workspace, target.id, true)
+          .catch(error => ({ ok: false, error: String(error) }));
+        notice(restored?.ok
+          ? `Geri yüklendi: **${escapeHtml(String(restored.path || target.path))}** (${Number(restored.bytes || 0)} bayt). Bu işlem de checkpoint olarak saklandı.`
+          : `Geri yüklenemedi: ${escapeHtml(String(restored?.error || 'bilinmeyen hata'))}`);
+        break;
+      }
+
       case '/sessions': {
         const sessions = await tbot.listSessions?.(state.workspace).catch(() => []) || [];
         if (!sessions.length) {
@@ -2279,6 +2314,7 @@
         { name: `Electron (${doc?.electronVersion || '33.x'}) & Chrome`, status: 'pass', desc: `Chrome ${doc?.chromeVersion || 'v130'} donanım hızlandırmalı renderer` },
         { name: `V8 JavaScript Motoru (${doc?.v8Version || '—'})`, status: 'pass', desc: 'JavaScript motoru sürümü' },
         { name: `Sağlayıcı: ${doc?.provider || state.provider}`, status: doc?.hasApiKey ? 'pass' : 'warn', desc: doc?.hasApiKey ? 'Yerel API anahtarı mevcut; bağlantı testi yapılmadı' : 'API Anahtarı girilmemiş veya çevrimdışı modda' },
+        { name: `Kabuk İzolasyonu: ${doc?.sandbox?.kind || 'yok'}`, status: doc?.sandbox?.available ? 'pass' : 'warn', desc: doc?.sandbox?.reason || 'OS sandbox adaptörü yok; onay sınırı ve kullanıcı izinleri geçerli' },
         { name: `Bellek Koruma (Memory Guard)`, status: 'pass', desc: `Toplam Bellek: ${doc?.memoryStats?.totalWorkingSetMB ?? state.telemetry.ramMB} MB · Electron süreçlerinin ölçülen çalışma kümesi` },
       ];
 

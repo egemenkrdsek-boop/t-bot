@@ -1,15 +1,15 @@
 ![T Bot logosu](assets/tabit.webp)
 
-# T Bot 3.1
+# T Bot 4.0
 
 T Bot, terminalden veya Windows masaüstü uygulamasından kullanılan **yerel** bir yapay zekâ kodlama ajanıdır. Aynı çekirdek; CLI/TUI, Electron masaüstü ve Telegram girişlerinden çalışır. Ayrı bir bulut backend'i yoktur; model çağrıları, tarayıcı, MCP ve Telegram gibi dış bağlantılar kullanıcı tarafından yapılandırılır.
 
-3.1'in odağı dört başlıktır:
+4.0'ın odağı dört başlıktır:
 
-- **Odaklı ajan:** görev sözleşmesi, faz sırası, cerrahi okuma/yama ve gerçek doğrulama.
-- **Token ekonomisi:** büyük araç çıktıları yerel artifact'lara taşınır; bağlam model profiline göre bütçelenir; prompt önbelleği korunur.
+- **Hassas ajan:** doğrulama-sonrası tamamlanma kapısı, gerçek dosya checkpoint/undo, kanıta dayalı nihai yanıt.
+- **Güvenlik sınırı:** isteğe bağlı OS kabuk sandbox'ı, okuma/yazma MCP yetenek ayrımı, taint takibi ve kullanıcı sınırlarının araç katmanında uygulanması.
+- **Token ekonomisi:** büyük araç çıktıları yerel artifact'lara taşınır; bağlam model profiline göre bütçelenir; sağlayıcı `usage` değeri ile yerel tahmin ayrı raporlanır.
 - **Sade arayüz:** OpenCode'un terminal estetiğinden ilham alan, tek vurgu rengi, monospace kod, düşük gürültü ve klavye öncelikli masaüstü/TUI.
-- **Tek komut ve sınır katmanı:** CLI/TUI ve masaüstü aynı komut kataloğunu kullanır; kullanıcının açık “dokunma/çalıştırma” sınırları oturum boyunca saklanır ve araç çalışmadan önce uygulanır.
 
 ## Kurulum
 
@@ -27,7 +27,7 @@ Linux / macOS:
 sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, sürüm/yardım kontrolü yapar ve hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz. Kurulumdan sonra:
+Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, sürüm/yardım kontrolü yapar ve hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz. Belirli bir sürüm dalını/tag'ini kurmak için `TBOT_INSTALL_REF=v4.0.0` (PowerShell: `$env:TBOT_INSTALL_REF='v4.0.0'`) ayarlanabilir; tam commit sabitlemek için `TBOT_INSTALL_REVISION` kullanılır. Kurulumdan sonra:
 
 ```text
 tbot config                 Sağlayıcı ve API anahtarını yapılandır
@@ -51,7 +51,7 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-Bu akış `release/T-Bot-Setup-3.1.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler. Manifest ve yükleyiciyi birlikte saklayın. Yayımlama işlemi bu deponun sorumluluğunda değildir.
+Bu akış `release/T-Bot-Setup-4.0.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler. Manifest ve yükleyiciyi birlikte saklayın. Yayımlama işlemi bu deponun sorumluluğunda değildir.
 
 Geliştirme için:
 
@@ -59,18 +59,16 @@ Geliştirme için:
 npm run desktop
 ```
 
-## 3.1 ile gelenler
+## 4.0 ile gelenler
 
 ### Ajan çekirdeği
 
 - Görev sözleşmesi ve üç veya daha fazla adımlı işlerde plan/todo disiplini.
 - `locate → plan → act → verify → report` fazları; her fazda yalnızca uygun araçlar.
-- `project_verify`: `package.json` içinde tanımlı `typecheck`, `lint`, `check` veya `test` script'lerini onayla çalıştırır; keyfi komut kabul etmez.
-- Okuma-sonrası-yazma, revizyon kontrolü, atomik yama ve hata sonrası alternatif yaklaşım.
-- Kullanıcının açık sınırları (`README.md` dosyasına dokunma, `npm test` çalıştırma, yalnızca belirli bir dosyayı değiştirme) oturum boyunca saklanır; araç onaya gitmeden önce yerel olarak reddedilir. Sınırlar yalnızca açık ifadelerden çıkarılır; “testleri unutma” gibi cümleler yanlış yorumlanmaz.
-- CLI/TUI, masaüstü ve Telegram aynı komut kataloğunu kullanır; `/effort`, `/skills`, `/sessions`, `/resume`, `/imagegen`, `/gui`, `/mcp` ve `/bot` masaüstünde de çalışır. Desteklenmeyen komut sessizce yok sayılmaz, açıkça bildirilir.
-- Görsel sağlayıcı, model kataloğu ve API anahtarı doğrulaması `host-services.ts` üzerinden iki yüzeyde ortaktır; özel uç nokta model listesi base URL'i korur.
-- Küçük modeller için tek araç/tek adım modu, daraltılmış şema seti ve daha kısa bağlam bütçesi.
+- Nihai yanıt kapısı, doğrulamanın **son yazmadan sonra** çalışmasını ister; önceki bir doğrulama geçişi sonraki değişikliği kapsamaz.
+- “Sadece incele, hiçbir şeyi değiştirme” gibi açık sınırlar görev sözleşmesine yansır; denetim görevi yazma talep etmez.
+- `file_write`/`file_patch` öncesi yerel checkpoint; `/checkpoints` ve `/undo <id|last>` ile geri yükleme. Geri yükleme mevcut dosyayı da checkpoint'ler.
+- Diagnostics TypeScript derleyicisini yalnızca çağrıldığında yükler; CLI açılışına derleyici maliyeti eklemez.
 
 ### Token ve bağlam
 
@@ -84,7 +82,7 @@ npm run desktop
 
 - Masaüstü: sade üç bölge (oturumlar, transcript, inspector), tek Tabit yeşili vurgu, emoji yok.
 - `Run Spine`: gerçek araç olaylarından türetilen `Keşif → Plan → Uygulama → Doğrulama` düğümleri; aktif faz görünür.
-- Masaüstü ve CLI'da `/plan`, `/plan apply`, `/ultracode` ve `/subagents` akışları; `/tokens`, `/memory`, `/remember`, `/forget` ve `/doctor` iki yüzeyde de çalışır.
+- Masaüstü ve CLI'da `/plan`, `/plan apply`, `/ultracode` ve `/subagents` akışları; `/tokens`, `/memory`, `/remember`, `/forget`, `/checkpoints`, `/undo` ve `/doctor` iki yüzeyde de çalışır.
 - Browser Use, Computer Use ve arka plan geliştirme sunucuları için araç yönergeleri.
 - Kapalı araç kartlarında DOM üretilmez; büyük geçmiş 40 kayıtla sınırlıdır.
 - Komut paleti `Ctrl+K`; `Esc` durdur; `Enter` gönder.
@@ -94,11 +92,12 @@ npm run desktop
 ### Güvenlik
 
 - Gizli anahtarlar Windows'ta DPAPI + kullanıcıya özel ACL ile saklanır; alt süreç ortamından sır adları çıkarılır.
-- Açık kullanıcı sınırları model talimatından bağımsız olarak araç çağrısı katmanında uygulanır; kabuk üzerinden korunan bir dosyaya yazma denemesi de reddedilir. Bu, eksiksiz bir OS sandbox değildir.
-- Kabuk, dosya yazma, GUI, URL indirme ve doğrulama komutları varsayılan olarak onay ister.
-- Hassas yollar okumada onaya, yazmada redde tabidir.
-- Web/MCP/tool içeriği güvenilmeyen kanıt olarak işaretlenir; prompt injection için kesin garanti değildir.
-- Kabuk gerçek kullanıcı izinleriyle çalışır. OS sandbox yoktur; süreç ağacı, ortam filtresi ve onay sınırı uygulanır.
+- Açık kullanıcı sınırları model talimatından bağımsız olarak araç çağrısı katmanında uygulanır; kabuk üzerinden korunan bir dosyaya yazma denemesi de reddedilir. `no-write` checkpoint, Git yazımı ve skill oluşturmayı; `no-command` süreç kontrolü ve alt ajan devrini kapsar. Bu, eksiksiz bir OS sandbox değildir.
+- Kabuk, dosya yazma, GUI, URL indirme, checkpoint geri yükleme ve doğrulama komutları varsayılan olarak onay ister.
+- `TBOT_SANDBOX=required` seçildiğinde Linux'ta bubblewrap, macOS'ta sandbox-exec aranır; adaptör yoksa kabuk çalışmaz. Windows'ta OS sandbox adaptörü yoktur ve bu açıkça raporlanır.
+- Hassas yollar okumada onaya, yazmada redde tabidir; kabuk komutunda kimlik dosyası benzeri bir yol geçerse onay metni ek uyarı gösterir.
+- Web/MCP/tool içeriği güvenilmeyen kanıt olarak işaretlenir; taint tekrarı onay gerektirir. Prompt injection için kesin garanti yoktur.
+- Kabuk gerçek kullanıcı izinleriyle çalışır. OS sandbox yoksa süreç ağacı, ortam filtresi ve onay sınırı uygulanır.
 
 ## Sağlayıcılar
 
@@ -119,7 +118,7 @@ tbot --bot
 ## Doğrulama ve sınırlar
 
 - Testler birim/bileşen ve kaydedilmiş protokol fixture'larıdır; E2E, canlı sağlayıcı, gerçek tarayıcı veya gerçek Telegram akışı çalıştırılmaz.
-- 3.1 kaynak doğrulaması: **224 test, 0 hata/atlama**, typecheck ve build başarılı. Ayrıntılar [doğrulama kaydında](docs/verification.md).
+- 4.0 kaynak doğrulaması: test/typecheck/build sonuçları [doğrulama kaydında](docs/verification.md) güncellenir. Aşağıdaki sınırlar değişmez: E2E, canlı sağlayıcı, gerçek tarayıcı ve gerçek Telegram akışı çalıştırılmaz.
 - “Dünya #1” veya rakiplere göre %50–75 tasarruf iddiası bu depoda bağımsız benchmark olmadan kanıtlanmış sayılmaz. Ölçülebilir hedef, aynı fixture setinde 2.2.1'e göre daha az bağlam göndermektir.
 - TypeScript/JavaScript ve JSON kontrolleri tüm diller için doğrulama garantisi değildir.
 - Gizli anahtar redaksiyonu sezgiseldir; bilinmeyen biçimleri yakalama garantisi yoktur.

@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.0.0
+
+### Precision and security
+
+- Added local file checkpoints before `file_write`/`file_patch`; `checkpoint_list`, `checkpoint_restore`, `/checkpoints` and `/undo <id|last>` are available in CLI and desktop. Restores snapshot the current file first, so an undo can itself be undone.
+- Checkpoint IDs now include the workspace-relative path and a random suffix; identical content in the same millisecond no longer collides.
+- Wired the optional OS shell sandbox (`TBOT_SANDBOX=required|bwrap|sandbox-exec`). Required mode fails closed when no adapter exists; `/doctor` reports the effective mode. Windows remains approval-only and is documented as such.
+- Split MCP capabilities into read (catalog) and write (call/remote tools); a reduced policy can no longer execute arbitrary remote MCP tools. Unknown tools now fail closed under a host allowlist.
+- Hardened user boundaries: `no-write` covers checkpoints, Git writes and skill creation; `no-command` covers process control and delegated subagents. Shell commands that reference credential-like files get an explicit approval warning.
+- Completion gate now requires verification **after** the last write and uses the latest verification result, not an earlier pass. Review-only requests no longer produce a write-required task contract.
+- Diagnostics loads the TypeScript compiler lazily; it no longer adds the compiler to every CLI/desktop start. Directory targets are expanded correctly.
+- Added a static layer/import check (`npm run check:layers`) and regression tests for phase gates, checkpoints, diagnostics, capabilities, taint, sandbox status, task contracts and context reduction.
+
+### Interface
+
+- Added the signal-spine pulse and motion tokens to the desktop run bar; all motion remains opacity/transform-only and is disabled by `prefers-reduced-motion`.
+- Desktop `/doctor` now reports shell isolation; `/checkpoints` and `/undo` use the same core checkpoint service as the CLI.
+
+### Verification limits
+
+- Unit/component tests and static checks only; no E2E app launch, live provider, browser, computer or Telegram run.
+- Token values remain local estimates. No competitor benchmark, "world #1" or 50–75% external-savings claim is made.
+
 ## 3.1.0
 
 ### Command parity

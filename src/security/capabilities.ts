@@ -15,7 +15,8 @@ export type Capability =
   | 'proc.write'
   | 'net.public'
   | 'gui'
-  | 'mcp'
+  | 'mcp.read'
+  | 'mcp.write'
   | 'memory.read'
   | 'memory.write'
   | 'image'
@@ -61,15 +62,17 @@ const EXACT: Record<string, Capability[]> = {
   web_search: ['net.public'],
   url_fetch: ['net.public'],
   computer: ['gui', 'proc.spawn'],
-  mcp_catalog: ['mcp'],
-  mcp_call: ['mcp'],
+  mcp_catalog: ['mcp.read'],
+  mcp_call: ['mcp.write'],
 };
 
 export function capabilitiesForTool(name: string): Capability[] {
   if (EXACT[name]) return EXACT[name];
   if (name.startsWith('browser_')) return ['gui', 'net.public', 'proc.spawn'];
-  if (name.startsWith('computer_')) return ['gui', 'proc.spawn'];
-  if (name.startsWith('mcp_')) return ['mcp'];
+  if (name.startsWith('computer_') || name === 'computer') return ['gui', 'proc.spawn'];
+  // Remote MCP tools are presented with an mcp_ prefix and can have arbitrary
+  // side effects. Treat them as writes; only the local catalog is read-only.
+  if (name.startsWith('mcp_')) return ['mcp.write'];
   if (name.startsWith('memory_')) return name === 'memory_recall' ? ['memory.read'] : ['memory.write'];
   if (name.startsWith('process_')) return name === 'process_list' || name === 'process_output' ? ['proc.read'] : ['proc.write'];
   if (name.startsWith('git_')) return ['fs.read'];
@@ -79,7 +82,11 @@ export function capabilitiesForTool(name: string): Capability[] {
 /** A host-provided allowlist. An empty/undefined set means "no extra restriction". */
 export function capabilitiesAllowed(name: string, allowed?: ReadonlySet<Capability>): boolean {
   if (!allowed) return true;
-  return capabilitiesForTool(name).every(capability => allowed.has(capability));
+  const capabilities = capabilitiesForTool(name);
+  // Fail closed for an unclassified tool. A new tool must declare its effect
+  // before it can run under a reduced policy.
+  if (capabilities.length === 0) return false;
+  return capabilities.every(capability => allowed.has(capability));
 }
 
 export function defaultCapabilities(readOnly: boolean): ReadonlySet<Capability> {
@@ -88,7 +95,7 @@ export function defaultCapabilities(readOnly: boolean): ReadonlySet<Capability> 
       'fs.read',
       'proc.read',
       'net.public',
-      'mcp',
+      'mcp.read',
       'memory.read',
       'checkpoint.read',
       'diagnostics',
@@ -102,7 +109,8 @@ export function defaultCapabilities(readOnly: boolean): ReadonlySet<Capability> 
     'proc.write',
     'net.public',
     'gui',
-    'mcp',
+    'mcp.read',
+    'mcp.write',
     'memory.read',
     'memory.write',
     'image',

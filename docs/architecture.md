@@ -1,6 +1,6 @@
 # Mimari ve kapsam
 
-T Bot 3.1 aynı yerel ajan çekirdeğini CLI/TUI, Electron masaüstü ve Telegram girişlerinden kullanır. Ayrı bir sunucu backend'i yoktur; dış model, tarayıcı, MCP ve Telegram bağlantıları kullanıcı yapılandırmasına bağlıdır.
+T Bot 4.0 aynı yerel ajan çekirdeğini CLI/TUI, Electron masaüstü ve Telegram girişlerinden kullanır. Ayrı bir sunucu backend'i yoktur; dış model, tarayıcı, MCP ve Telegram bağlantıları kullanıcı yapılandırmasına bağlıdır.
 
 ```text
 CLI / TUI ─────┐
@@ -18,18 +18,22 @@ Telegram ──────┘                              │
 | Katman | Kaynaklar | Sorumluluk |
 | --- | --- | --- |
 | Protokol ve tipler | `src/types.ts`, `src/context-budget.ts` | Ortak event, tool çağrısı, onay ve bütçe sözleşmeleri |
+| Çekirdek sözleşmeler | `src/core/` | Görev sözleşmesi ve faz/tamamlanma kapısı; araç veya yüzey import etmez |
+| Güvenlik ilkeleri | `src/security/` | Yetenekler, taint, yol/URL/ortam/sandbox sınırları; araç veya yüzey import etmez |
 | Komut yüzeyi | `src/commands.ts` | Komut adları, kullanım, argüman kuralları ve yüzey desteği; CLI/TUI/masaüstü tek kaynak |
 | Ortak host | `src/host-services.ts`, `src/turn-runner.ts` | Görsel sağlayıcı, model kataloğu, API anahtarı doğrulaması ve goal/plan/ultracode/subagent tur dağıtımı |
 | Ajan | `src/agent.ts` | Tur döngüsü, faz disiplini, bağlam montajı, sentez ve hata kurtarma |
 | Kullanıcı sınırları | `src/constraints.ts` | Açık yol/komut/araç sınırlarının çıkarımı, kalıcılığı ve araç öncesi uygulanması |
 | Bağlam | `src/token-optimizer.ts`, `src/context-window.ts`, `src/context-cache.ts`, `src/tools/artifacts.ts` | Şema budama, pencereleme, kanıt özeti, büyük çıktı artifact'ları |
 | Araçlar | `src/tools/index.ts`, `src/tools/*.ts` | Ad/argüman normalleştirme, onay, risk sınırı, dosya/kabuk/Git/web/tarayıcı/masaüstü/MCP |
-| Doğrulama | `src/tools/verify.ts`, `src/grounding.ts`, `src/ast-validator.ts` | Proje script'leri, kanıt defteri, sözdizimi ve iddia denetimi |
+| Doğrulama | `src/tools/verify.ts`, `src/tools/diagnostics.ts`, `src/grounding.ts`, `src/ast-validator.ts` | Proje script'leri, yerel TS tanılaması, sözdizimi ve iddia denetimi |
 | Sağlayıcılar | `src/providers.ts`, `src/openai-responses.ts` | Streaming, tool-call protokolleri, usage, model yetenekleri |
-| Kalıcı durum | `src/config.ts`, `src/secrets.ts`, `src/sessions.ts`, `src/memory.ts` | Ayar, sır, oturum checkpoint'i, bellek |
+| Kalıcı durum | `src/config.ts`, `src/secrets.ts`, `src/sessions.ts`, `src/memory.ts`, `src/checkpoints.ts` | Ayar, sır, oturum checkpoint'i, bellek, dosya checkpoint'i |
 | Masaüstü | `src/desktop/main.ts`, `preload.cjs`, `renderer/` | Electron yaşam döngüsü, IPC, izole renderer, oturum/onay UI |
 | CLI/TUI | `src/index.ts`, `src/app.ts`, `src/tui.ts`, `src/theme.ts` | Argümanlar, terminal etkileşimi, durum satırı |
 | Telegram | `src/bot.ts`, `src/telegram-security.ts` | Long polling, sohbet yetkisi, uzak onay |
+
+`npm run check:layers` bu yönü statik olarak denetler: `core/` ve `security/` üst katmanları import edemez, `tools/` yüzeyleri import edemez, Electron yalnızca `desktop/` içinde kullanılır.
 
 ## Ajan turu
 
@@ -51,10 +55,11 @@ Telegram ──────┘                              │
 ## Güvenlik sınırı
 
 - Dosya araçları çalışma alanı dışına çıkmayı ve görülen symlink/junction'ları reddeder; atomik sandbox garantisi yoktur.
-- Kabuk, dosya yazma, GUI, URL indirme ve `project_verify` onay ister. Kabuk gerçek kullanıcı izinleriyle çalışır; OS sandbox değildir.
+- Kabuk, dosya yazma, GUI, URL indirme, checkpoint geri yükleme ve `project_verify` onay ister. `TBOT_SANDBOX=required` seçilirse Linux'ta bubblewrap, macOS'ta sandbox-exec aranır; adaptör yoksa kabuk fail-closed durur. Windows'ta OS sandbox adaptörü yoktur; onay ve yetenek politikası sınırdır.
 - Alt süreç ortamından API anahtarı, token, parola ve bulut kimlik bilgileri çıkarılır.
 - Gizli anahtarlar Windows'ta DPAPI + ACL ile korunur. Windows dışında dosya izinleri kullanılır; şifreleme garantisi yoktur.
-- Web, MCP, dosya ve araç içeriği güvenilmeyen kanıt olarak etiketlenir. Prompt injection için kesin engel iddiası yoktur; onay ve araç yetkisi asıl sınırdır.
+- Web, MCP, dosya ve araç içeriği güvenilmeyen kanıt olarak etiketlenir; taint tekrarı onay gerektirir. Prompt injection için kesin engel iddiası yoktur; onay ve araç yetkisi asıl sınırdır.
+- Dosya checkpoint'leri `.tbot/checkpoints` altında tutulur; geri yükleme öncesi mevcut içerik de checkpoint'lenir. Bu, tüm işlemleri kapsayan bir transaction değildir.
 
 ## Paketleme
 

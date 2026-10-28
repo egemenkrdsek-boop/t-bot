@@ -1,20 +1,28 @@
 /**
  * Local TypeScript diagnostics without a language server.
  *
+ * The compiler is loaded only when this tool is actually called. Importing it
+ * at module load would add the full TypeScript compiler to every CLI/desktop
+ * start, which is unacceptable for a local agent that is often idle.
+ *
  * This is a pragmatic coding-intelligence tool: it uses the TypeScript
  * compiler already present in the project, respects tsconfig.json when one
  * exists, and returns a bounded list of syntactic and semantic errors. It is
  * not a full LSP client and it does not claim to diagnose other languages.
  */
-import { readFile } from 'node:fs/promises';
-import { relative } from 'node:path';
-import * as ts from 'typescript';
+import { stat } from 'node:fs/promises';
+import { relative, resolve } from 'node:path';
+import type * as TS from 'typescript';
 import type { ToolDefinition } from '../types.js';
 import { resolveWorkspacePath } from '../security/paths.js';
+
+type TSModule = typeof import('typescript');
 
 const MAX_FILES = 200;
 const MAX_DIAGNOSTICS = 100;
 const MAX_FILE_BYTES = 1_000_000;
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'] as const;
+const EXCLUDED_DIRECTORIES = ['node_modules', 'dist', 'build', '.git', '.tbot', 'release', 'artifacts'];
 
 export const diagnosticsToolDefinitions: ToolDefinition[] = [
   {
@@ -31,7 +39,7 @@ export const diagnosticsToolDefinitions: ToolDefinition[] = [
   },
 ];
 
-function defaultOptions(): ts.CompilerOptions {
+function defaultOptions(ts: TSModule): TS.CompilerOptions {
   return {
     noEmit: true,
     skipLibCheck: true,
@@ -44,29 +52,38 @@ function defaultOptions(): ts.CompilerOptions {
   };
 }
 
-function workspaceFiles(workspace: string): string[] {
+function workspaceFiles(ts: TSModule, workspace: string): string[] {
   return ts.sys.readDirectory(
     workspace,
-    ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
-    ['node_modules', 'dist', 'build', '.git', '.tbot', 'release', 'artifacts'],
+    [...SOURCE_EXTENSIONS],
+    EXCLUDED_DIRECTORIES,
     undefined,
     MAX_FILES
   ).slice(0, MAX_FILES);
 }
 
-async function safeSourceFiles(workspace: string, rootNames: string[]): Promise<string[]> {
+function withinWorkspace(workspace: string, file: string): boolean {
+  const normalize = (value: string): string => process.platform === 'win32' ? resolve(value).toLowerCase() : resolve(value);
+  const root = normalize(workspace);
+  const target = normalize(file);
+  const rel = relative(root, target);
+  return Boolean(rel) && !rel.startsWith('..') && !rel.includes(`..${process.platform === 'win32' ? '\\' : '/'}`);
+}
+
+async function selectSourceFiles(workspace: string, rootNames: readonly string[]): Promise<string[]> {
   const selected: string[] = [];
   for (const file of rootNames) {
     if (selected.length >= MAX_FILES) break;
+    if (!withinWorkspace(workspace, file)) continue;
     try {
-      const info = await readFile(file);
-      if (info.length <= MAX_FILE_BYTES) selected.push(file);
+      const info = await stat(file);
+      if (info.isFile() && info.size <= MAX_FILE_BYTES) selected.push(file);
     } catch { /* missing files are reported by the compiler if referenced */ }
   }
   return selected;
 }
 
-function formatDiagnostic(diagnostic: ts.Diagnostic, workspace: string): Record<string, unknown> {
+function formatDiagnostic(ts: TSModule, diagnostic: TS.Diagnostic, workspace: string): Record<string, unknown> {
   const file = diagnostic.file;
   const position = file && diagnostic.start !== undefined
     ? file.getLineAndCharacterOfPosition(diagnostic.start)
@@ -91,8 +108,11 @@ export async function handleDiagnosticsTool(
   if (name !== 'diagnostics') throw new Error(`Unknown diagnostics tool: ${name}`);
   signal?.throwIfAborted();
 
+  const ts = await import('typescript');
+  signal?.throwIfAborted();
+
   const configPath = ts.findConfigFile(workspace, ts.sys.fileExists, 'tsconfig.json');
-  let options = defaultOptions();
+  let options = defaultOptions(ts);
   let rootNames: string[] = [];
 
   if (configPath) {
@@ -104,18 +124,22 @@ export async function handleDiagnosticsTool(
         rootNames = parsed.fileNames;
       }
     } catch {
-      options = defaultOptions();
+      options = defaultOptions(ts);
     }
   }
 
   if (typeof args.path === 'string' && args.path.trim()) {
     const target = await resolveWorkspacePath(workspace, args.path.trim());
-    rootNames = [target];
+    let targetIsDirectory = false;
+    try { targetIsDirectory = (await stat(target)).isDirectory(); } catch { /* compiler reports a missing file */ }
+    rootNames = targetIsDirectory
+      ? ts.sys.readDirectory(target, [...SOURCE_EXTENSIONS], EXCLUDED_DIRECTORIES, undefined, MAX_FILES)
+      : [target];
   } else if (!rootNames.length) {
-    rootNames = workspaceFiles(workspace);
+    rootNames = workspaceFiles(ts, workspace);
   }
 
-  const files = await safeSourceFiles(workspace, rootNames);
+  const files = await selectSourceFiles(workspace, rootNames);
   if (!files.length) {
     return JSON.stringify({
       ok: false,
@@ -137,7 +161,7 @@ export async function handleDiagnosticsTool(
     ? Math.max(1, Math.min(MAX_DIAGNOSTICS, Math.floor(args.limit)))
     : 50;
   const formatted = diagnostics
-    .map(diagnostic => formatDiagnostic(diagnostic, workspace))
+    .map(diagnostic => formatDiagnostic(ts, diagnostic, workspace))
     .sort((a, b) => Number(a.severity !== 'error') - Number(b.severity !== 'error'))
     .slice(0, limit);
   const errors = formatted.filter(item => item.severity === 'error').length;
@@ -152,7 +176,10 @@ export async function handleDiagnosticsTool(
   }, null, 2);
 }
 
-/** Exported for component tests without touching the tool registry. */
-export function _diagnosticsInternals(): { defaultOptions: typeof defaultOptions; workspaceFiles: typeof workspaceFiles } {
+/** Exported for component tests without loading the compiler at module import. */
+export function _diagnosticsInternals(): {
+  defaultOptions: (ts: TSModule) => TS.CompilerOptions;
+  workspaceFiles: (ts: TSModule, workspace: string) => string[];
+} {
   return { defaultOptions, workspaceFiles };
 }

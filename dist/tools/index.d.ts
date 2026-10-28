@@ -1,6 +1,7 @@
 import type { ApprovalRequest, ToolCall, ToolDefinition } from '../types.js';
 import type { McpConnection } from '../mcp.js';
 import { type ImageProviderConfig } from './image.js';
+import { type Capability } from '../security/capabilities.js';
 export interface ToolContext {
     workspace: string;
     approve: (request: ApprovalRequest) => Promise<boolean>;
@@ -9,6 +10,8 @@ export interface ToolContext {
     imageProvider?: ImageProviderConfig;
     /** Host-supplied conversation identity; never accepted from tool arguments. */
     processOwner?: string;
+    /** Optional host capability allowlist. Omitted means the normal tool policy applies. */
+    capabilities?: ReadonlySet<Capability>;
     [key: string]: unknown;
 }
 export declare function isToolResultOk(name: string, output: string): boolean;

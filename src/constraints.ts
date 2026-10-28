@@ -35,6 +35,19 @@ const WRITE_TOOLS = new Set([
   'file_rename',
   'file_move',
   'skill_create',
+  'checkpoint_restore',
+  'image_generate',
+  'git_add',
+  'git_commit',
+  'git_branch',
+]);
+
+const COMMAND_TOOLS = new Set([
+  'shell',
+  'project_verify',
+  'process_start',
+  'process_write',
+  'delegate_task',
 ]);
 
 const TOOL_FAMILIES: Record<string, (name: string) => boolean> = {
@@ -243,7 +256,7 @@ export function constraintViolation(call: ToolCall, constraints: readonly Constr
       return `Tool error: user constraint blocks file writes: "${constraint.source}".`;
     }
 
-    if (constraint.kind === 'no-command' && (name === 'shell' || name === 'project_verify' || name === 'process_start')) {
+    if (constraint.kind === 'no-command' && COMMAND_TOOLS.has(name)) {
       return `Tool error: user constraint blocks command execution: "${constraint.source}".`;
     }
 

@@ -9,6 +9,9 @@ try {
     $requestedRevision = [string]$env:TBOT_INSTALL_REVISION
     if ($requestedRevision -and $requestedRevision -notmatch '\A[a-fA-F0-9]{40}\z') { throw 'TBOT_INSTALL_REVISION must be a full 40-character commit SHA.' }
     $requestedRevision = $requestedRevision.ToLowerInvariant()
+    $requestedRef = [string]$env:TBOT_INSTALL_REF
+    if (-not $requestedRef) { $requestedRef = 'main' }
+    if ($requestedRef -notmatch '\A[A-Za-z0-9._/-]{1,80}\z' -or $requestedRef.Contains('..')) { throw 'TBOT_INSTALL_REF must be a branch or tag name.' }
     foreach ($command in @('node', 'npm.cmd', 'git')) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required command missing: $command. Install Node.js >=22.12 and Git, then reopen the terminal." }
     }
@@ -17,8 +20,8 @@ try {
     $env:ELECTRON_SKIP_BINARY_DOWNLOAD = '1'
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     $staging = [IO.Path]::GetFullPath((Join-Path $tempRoot ('tbot-install-' + [Guid]::NewGuid().ToString('N'))))
-    Write-Host 'Building T Bot CLI from GitHub main in a temporary checkout...'
-    & git clone --depth 1 --branch main -- 'https://github.com/egemenkrdsek-boop/t-bot.git' $staging
+    Write-Host "Building T Bot CLI from GitHub $requestedRef in a temporary checkout..."
+    & git clone --depth 1 --branch $requestedRef -- 'https://github.com/egemenkrdsek-boop/t-bot.git' $staging
     if ($LASTEXITCODE -ne 0) { throw 'Unable to clone T Bot source.' }
     if ($requestedRevision) {
         & git -C $staging fetch --depth 1 origin $requestedRevision
@@ -30,7 +33,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[a-f0-9]{40}$') { throw 'Unable to identify the source revision.' }
     if ($requestedRevision) {
         if ($revision -ne $requestedRevision) { throw 'Checkout does not match TBOT_INSTALL_REVISION.' }
-    } else {
+    } elseif ($requestedRef -eq 'main') {
         $mainRevision = (& git -C $staging rev-parse refs/remotes/origin/main).Trim()
         if ($LASTEXITCODE -ne 0 -or $revision -ne $mainRevision) { throw 'Checkout does not match the remote main branch.' }
     }

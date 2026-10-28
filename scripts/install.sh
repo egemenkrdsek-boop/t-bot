@@ -10,19 +10,21 @@ if [ -n "$PINNED_REVISION" ] && [ "${#PINNED_REVISION}" -ne 40 ]; then
   printf 'TBOT_INSTALL_REVISION must be a full 40-character commit SHA.\n' >&2; exit 1
 fi
 PINNED_REVISION=$(printf '%s' "$PINNED_REVISION" | tr 'A-F' 'a-f')
+INSTALL_REF=${TBOT_INSTALL_REF:-main}
+case "$INSTALL_REF" in *[!A-Za-z0-9._/-]*|*..*) printf 'TBOT_INSTALL_REF must be a branch or tag name.\n' >&2; exit 1 ;; esac
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/tbot-install.XXXXXXXX")
 trap 'rm -rf -- "$STAGING"' EXIT
 trap 'exit 1' HUP INT TERM
-printf 'Building T Bot CLI from GitHub main in a temporary checkout...\n'
-git clone --depth 1 --branch main -- 'https://github.com/egemenkrdsek-boop/t-bot.git' "$STAGING"
+printf 'Building T Bot CLI from GitHub %s in a temporary checkout...\n' "$INSTALL_REF"
+git clone --depth 1 --branch "$INSTALL_REF" -- 'https://github.com/egemenkrdsek-boop/t-bot.git' "$STAGING"
 if [ -n "$PINNED_REVISION" ]; then
   git -C "$STAGING" fetch --depth 1 origin "$PINNED_REVISION"
   git -C "$STAGING" checkout --detach "$PINNED_REVISION" --
 fi
 REVISION=$(git -C "$STAGING" rev-parse HEAD)
 EXPECTED_REVISION="$PINNED_REVISION"
-if [ -z "$EXPECTED_REVISION" ]; then EXPECTED_REVISION=$(git -C "$STAGING" rev-parse refs/remotes/origin/main); fi
-[ "$REVISION" = "$EXPECTED_REVISION" ] || { printf 'Checkout does not match the requested revision.\n' >&2; exit 1; }
+if [ -z "$EXPECTED_REVISION" ] && [ "$INSTALL_REF" = "main" ]; then EXPECTED_REVISION=$(git -C "$STAGING" rev-parse refs/remotes/origin/main); fi
+if [ -n "$EXPECTED_REVISION" ]; then [ "$REVISION" = "$EXPECTED_REVISION" ] || { printf 'Checkout does not match the requested revision.\n' >&2; exit 1; }; fi
 printf 'Source revision: %s\n' "$REVISION"
 (
   cd "$STAGING"

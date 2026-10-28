@@ -30,6 +30,8 @@ import { reclaimMemory, getMemoryStats, startAutoMemoryGuard, stopAutoMemoryGuar
 import { resolveImageProviderConfig, storeProviderApiKey } from './host-services.js';
 import type { AgentEvent, AgentInput, ApprovalRequest, Provider } from './types.js';
 import { APP_VERSION, MINIMUM_NODE_VERSION, supportsNodeVersion } from './version.js';
+import { sandboxStatus } from './security/sandbox.js';
+import { listCheckpoints, restoreCheckpoint } from './checkpoints.js';
 
 const safe = (text: string): string => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 
@@ -111,7 +113,8 @@ export async function main(argv: string[]): Promise<void> {
     const config = await loadConfig();
     const resolved = await resolveProviderConfig(config);
     const supportedNode = supportsNodeVersion(process.versions.node);
-    console.log(safe(`T Bot ${APP_VERSION}\nNode ${process.version} (${supportedNode ? 'uygun' : `en az ${MINIMUM_NODE_VERSION} gerekli`})\nPlatform ${process.platform}\nÇalışma Dizini ${resolve(options.workspace || process.cwd())}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI Anahtarı ${resolved.apiKey ? 'Mevcut' : 'Ayarlı Değil'}\nYapılandırma ${configDirectory()}`));
+    const sandbox = sandboxStatus();
+    console.log(safe(`T Bot ${APP_VERSION}\nNode ${process.version} (${supportedNode ? 'uygun' : `en az ${MINIMUM_NODE_VERSION} gerekli`})\nPlatform ${process.platform}\nÇalışma Dizini ${resolve(options.workspace || process.cwd())}\nSağlayıcı ${resolved.id}\nModel ${resolved.model}\nAPI Anahtarı ${resolved.apiKey ? 'Mevcut' : 'Ayarlı Değil'}\nKabuk İzolasyonu ${sandbox.kind} (${sandbox.reason})\nYapılandırma ${configDirectory()}`));
     if (!supportedNode) process.exitCode = 1;
     return;
   }
@@ -609,12 +612,14 @@ export async function main(argv: string[]): Promise<void> {
           let hasKey = false;
           try { hasKey = Boolean((await resolveProviderConfig(config, workspace)).apiKey); } catch { /* report the failure below */ }
           const mem = getMemoryStats();
+          const sandbox = sandboxStatus();
           return [
             `T Bot ${APP_VERSION} · ${process.platform}/${process.arch}`,
             `Node ${process.version} (${supportsNodeVersion(process.versions.node) ? 'uygun' : `en az ${MINIMUM_NODE_VERSION} gerekli`})`,
             `Çalışma alanı: ${workspace}`,
             `Sağlayıcı: ${config.provider} · Model: ${config.model}`,
             `API anahtarı: ${hasKey ? 'mevcut' : 'ayarlı değil'}`,
+            `Kabuk izolasyonu: ${sandbox.kind} · ${sandbox.reason}`,
             `Bellek: ${mem.heapUsedMB} MB heap · ${mem.rssMB} MB RSS · baskı ${mem.pressure}`,
             `Yapılandırma: ${configDirectory()}`,
           ].join('\n');
@@ -761,6 +766,28 @@ export async function main(argv: string[]): Promise<void> {
           globalGroundingLedger.clear();
           await store.save(session);
           return undefined;
+        }
+
+        if (command === '/checkpoints') {
+          const checkpoints = await listCheckpoints(workspace, 20);
+          if (!checkpoints.length) return 'Henüz dosya checkpoint\'i yok.';
+          return [
+            'Son dosya checkpoint\'leri:',
+            ...checkpoints.map(item => `  ${item.id}  ${item.path}  ${item.createdAt}  ${item.tool}  ${item.bytes} bayt`),
+            'Geri yüklemek için: /undo <checkpoint-id> veya /undo last',
+          ].join('\n');
+        }
+
+        if (command === '/undo') {
+          const argument = command.replace(/^\/undo\s*/i, '').trim();
+          const checkpoints = await listCheckpoints(workspace, 20);
+          if (!checkpoints.length) return 'Geri yüklenecek checkpoint yok.';
+          const target = !argument || argument.toLowerCase() === 'last'
+            ? checkpoints[0]
+            : checkpoints.find(item => item.id === argument);
+          if (!target) return `Checkpoint bulunamadı: ${argument}`;
+          const restored = await restoreCheckpoint(workspace, target.id);
+          return `[OK] Geri yüklendi: ${restored.path} (${restored.bytes} bayt). Bu geri yükleme de checkpoint olarak saklandı.`;
         }
 
         if (command === '/sessions') return `Oturum kimliği: ${session.id}. Tüm oturumlar için tbot sessions kullanın.`;

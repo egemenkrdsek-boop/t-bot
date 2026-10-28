@@ -63,7 +63,7 @@ export function buildTaskContract(
   const requiresWrite = !options.readOnly && hasEdit && (!isQuestion || isEditContinuation);
   const browser = BROWSER_INTENT.test(text);
   const computer = COMPUTER_INTENT.test(text);
-  const inspect = INSPECT_INTENT.test(text) || (!requiresWrite && !browser && !computer);
+  const inspect = INSPECT_INTENT.test(text);
 
   let kind: TaskKind;
   if (options.readOnly) kind = 'inspect';

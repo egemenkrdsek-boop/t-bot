@@ -274,7 +274,14 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
   const constraints = collectConstraints(
     conversation.filter(message => message.role === 'user').map(message => message.content)
   );
-  const contract = buildTaskContract(input.message, { weakMode: budget.weak, readOnly });
+  // A hard "do not change anything" boundary must shape the task contract, not
+  // only the tool dispatcher. Otherwise the completion gate demands a write the
+  // user explicitly forbade.
+  const noWriteBoundary = constraints.some(constraint => constraint.kind === 'no-write');
+  const contract = buildTaskContract(input.message, {
+    weakMode: budget.weak,
+    readOnly: readOnly || noWriteBoundary,
+  });
 
   session = options.session ?? {
     id: 'temp-session',
@@ -314,7 +321,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
     const boundaries = constraintPrompt(constraints);
     if (boundaries) systemSections.push(boundaries);
     systemSections.push(taskContractPrompt(contract));
-    if (repoMap) systemSections.push(`[PROJE MİMARİ VE SEMBOL HARİTASI (RepoMap)]\n${repoMap}`);
+    if (repoMap) systemSections.push(`[PROJECT ARCHITECTURE AND SYMBOL MAP]\n${repoMap}`);
     if (memoryContext) systemSections.push(memoryContext);
     if (skillPrompt) systemSections.push(skillPrompt);
     system = { role: 'system', content: systemSections.join('\n\n') };
@@ -373,7 +380,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
         .filter(m => m.role !== 'system')
         .map(m => (m.role === 'user' && m.content === input.message && stripped !== input.message ? { ...m, content: userContent } : m));
       const focusSummary = isFast ? '' : getActiveFocusSummary(workspace);
-      const focusMessages: Message[] = focusSummary ? [{ role: 'system', content: `[AKTİF ODAK & GÖREV PUSULASI]\n${focusSummary}` }] : [];
+      const focusMessages: Message[] = focusSummary ? [{ role: 'system', content: `[ACTIVE FOCUS AND TASK COMPASS]\n${focusSummary}` }] : [];
       const compressed = prepareContext(messagesToCompress, activeTools, focusMessages);
       const messages: Message[] = [
         system,

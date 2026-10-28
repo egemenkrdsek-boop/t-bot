@@ -6,14 +6,14 @@
  * tools; they never happen automatically. Content is stored separately from
  * metadata so listing checkpoints stays cheap on long sessions.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { ToolDefinition } from './types.js';
 import { workspaceStatePath } from './workspace-state.js';
 import { assertNotSensitivePath, resolveWorkspacePath } from './security/paths.js';
 
-const CHECKPOINT_ID = /^ckpt-[a-z0-9]+-[a-f0-9]{12}$/;
+const CHECKPOINT_ID = /^ckpt-[a-z0-9]+-[a-f0-9]{12,24}$/;
 const MAX_CONTENT_BYTES = 1_000_000;
 const MAX_CHECKPOINTS = 40;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
@@ -46,7 +46,7 @@ async function prune(workspace: string): Promise<void> {
   let entries: { id: string; size: number; mtime: number }[];
   try {
     entries = await Promise.all((await readdir(directory))
-      .filter(name => /^ckpt-[a-z0-9]+-[a-f0-9]{12}\.json$/.test(name))
+      .filter(name => /^ckpt-[a-z0-9]+-[a-f0-9]{12,24}\.json$/.test(name))
       .map(async name => {
         const info = await stat(join(directory, name));
         return { id: name.slice(0, -5), size: info.size, mtime: info.mtimeMs };
@@ -84,7 +84,12 @@ export async function saveCheckpoint(
   }
 
   const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
-  const id = `ckpt-${Date.now().toString(36)}-${sha256.slice(0, 12)}`;
+  // Include the workspace-relative path and a random suffix. Timestamp + content
+  // alone collide when two different files receive the same content in the same
+  // millisecond, which silently discarded a checkpoint in the first version.
+  const pathHash = createHash('sha256').update(rel, 'utf8').digest('hex').slice(0, 8);
+  const nonce = randomBytes(4).toString('hex');
+  const id = `ckpt-${Date.now().toString(36)}-${pathHash}${nonce}`;
   const directory = checkpointDirectory(workspace);
   await mkdir(directory, { recursive: true, mode: 0o700 });
 
@@ -118,7 +123,7 @@ export async function listCheckpoints(workspace: string, limit = 20): Promise<Ch
   try { names = await readdir(directory); } catch { return []; }
   const bounded = Math.max(1, Math.min(MAX_CHECKPOINTS, Math.floor(limit) || 20));
   const metas = await Promise.all(names
-    .filter(name => /^ckpt-[a-z0-9]+-[a-f0-9]{12}\.json$/.test(name))
+    .filter(name => /^ckpt-[a-z0-9]+-[a-f0-9]{12,24}\.json$/.test(name))
     .map(async name => {
       try {
         const parsed = JSON.parse(await readFile(join(directory, name), 'utf8')) as CheckpointMeta;
@@ -147,6 +152,11 @@ export async function restoreCheckpoint(workspace: string, id: string): Promise<
   const { meta, content } = await readCheckpoint(workspace, id);
   const target = await resolveWorkspacePath(workspace, meta.path);
   assertNotSensitivePath(target, { operation: 'write' });
+  // Make the restore itself undoable. A missing file has nothing to snapshot.
+  try {
+    const current = await readFile(target, 'utf8');
+    await saveCheckpoint(workspace, meta.path, current, 'checkpoint_restore').catch(() => undefined);
+  } catch { /* new file restore */ }
   await mkdir(dirname(target), { recursive: true });
   const temp = `${target}.tbot-restore-${randomUUID()}`;
   await writeFile(temp, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });

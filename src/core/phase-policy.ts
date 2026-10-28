@@ -5,7 +5,7 @@
  * report. This module makes the important parts of that contract executable:
  * an inspection task cannot write, an edit task cannot silently finish
  * without changing a file, and a changed file cannot be declared successful
- * without a verification attempt.
+ * on the strength of a verification that ran before the last change.
  */
 import type { ToolCall } from '../types.js';
 import type { TaskContract } from './task-contract.js';
@@ -18,6 +18,14 @@ export interface PhaseState {
   writes: number;
   verificationAttempts: number;
   verificationPassed: boolean;
+  /** Monotonic order of completed tool results. */
+  sequence: number;
+  /** Sequence of the last successful write, or 0 when nothing was written. */
+  lastWriteSequence: number;
+  /** Sequence of the last verification attempt, or 0 when none ran. */
+  lastVerifySequence: number;
+  /** Result of the most recent verification, never an OR of older results. */
+  lastVerificationPassed: boolean;
   toolCalls: number;
 }
 
@@ -54,7 +62,12 @@ const WRITE_TOOLS = new Set([
 ]);
 
 const VERIFICATION_COMMAND = /(?:\b(?:test|tests|typecheck|type check|lint|verify|check|tsc|vitest|jest|pytest)\b)/iu;
-const SUCCESS_CLAIM = /(?:\b(?:passed|success|successful|fixed|completed|done|verified|green|başarılı|tamamlandı|düzeltildi|doğrulandı|geçti)\b)/iu;
+const SUCCESS_CLAIM = /(?:\b(?:passed|passes?|success|successful|fixed|completed|done|verified|green|works?|working|başarılı|tamamlandı|düzeltildi|doğrulandı|geçti)\b)/iu;
+const NEGATED_CLAIM = /\b(?:not|never|no|without|un)\s*(?:yet\s+)?(?:been\s+)?(?:verified|successful|success|fixed|completed|complete|done|passed|passing|green|working|works)\b|\b(?:doesn't|does not|didn't|did not|isn't|is not|aren't|are not)\s+(?:work|working|pass|passing)\b/giu;
+
+function makesSuccessClaim(text: string): boolean {
+  return SUCCESS_CLAIM.test(String(text || '').replace(NEGATED_CLAIM, ' '));
+}
 
 export function createPhaseState(): PhaseState {
   return {
@@ -63,6 +76,10 @@ export function createPhaseState(): PhaseState {
     writes: 0,
     verificationAttempts: 0,
     verificationPassed: false,
+    sequence: 0,
+    lastWriteSequence: 0,
+    lastVerifySequence: 0,
+    lastVerificationPassed: false,
     toolCalls: 0,
   };
 }
@@ -107,7 +124,7 @@ export function phaseViolation(
   readOnly: boolean
 ): string | undefined {
   if (readOnly && !isReadTool(call.name)) {
-    return 'Tool denied: this investigator is restricted to read-only tools.';
+    return 'Araç reddedildi: Bu ajan salt okunur araçlarla sınırlandırılmıştır.';
   }
   if (contract.kind === 'inspect' && isWriteTool(call.name)) {
     return 'Tool denied: this is an inspection-only task. Report findings instead of changing files.';
@@ -125,15 +142,21 @@ export function recordPhaseToolResult(
   ok: boolean
 ): void {
   state.toolCalls++;
+  state.sequence++;
   const args = call.arguments ?? {};
   if (isVerificationCall(call.name, args)) {
     state.verificationAttempts++;
     state.verificationPassed = state.verificationPassed || ok;
+    state.lastVerifySequence = state.sequence;
+    state.lastVerificationPassed = ok;
     state.phase = 'verify';
     return;
   }
   if (isWriteTool(call.name)) {
-    if (ok) state.writes++;
+    if (ok) {
+      state.writes++;
+      state.lastWriteSequence = state.sequence;
+    }
     state.phase = 'act';
     return;
   }
@@ -156,11 +179,16 @@ export function finalAnswerViolation(
   if (contract.requiresWrite && state.writes === 0) {
     return 'Completion gate: this is an edit task, but no file was changed. Make the requested change with file_patch or file_write, or state clearly why it cannot be made.';
   }
-  if (contract.requiresVerification && state.writes > 0 && state.verificationAttempts === 0) {
-    return 'Completion gate: files were changed, but no verification was run. Call project_verify or diagnostics now. If neither is available, say the change is unverified.';
-  }
-  if (contract.requiresVerification && state.verificationAttempts > 0 && !state.verificationPassed && SUCCESS_CLAIM.test(finalText)) {
-    return 'Completion gate: verification did not pass. Do not claim success. Report the failing command and the remaining error, or fix it and verify again.';
+  if (contract.requiresVerification && state.writes > 0) {
+    const verifiedAfterLastWrite = state.lastVerifySequence > state.lastWriteSequence;
+    if (!verifiedAfterLastWrite) {
+      return state.verificationAttempts > 0
+        ? 'Completion gate: verification ran before the last file change, so it does not cover the current state. Run project_verify or diagnostics again after the final change.'
+        : 'Completion gate: files were changed, but no verification was run. Call project_verify or diagnostics now. If neither is available, say the change is unverified.';
+    }
+    if (!state.lastVerificationPassed && makesSuccessClaim(finalText)) {
+      return 'Completion gate: the latest verification did not pass. Do not claim success. Report the failing command and the remaining error, or fix it and verify again.';
+    }
   }
   return undefined;
 }

@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('tbot', {
   getSkillsAndMcp: (workspace) => ipcRenderer.invoke('sys:skills-mcp', workspace),
   runDoctor: (workspace) => ipcRenderer.invoke('sys:doctor', workspace),
   getMemoryStats: () => ipcRenderer.invoke('sys:mem-stats'),
+  listCheckpoints: (workspace) => ipcRenderer.invoke('checkpoints:list', workspace),
+  restoreCheckpoint: (workspace, id, confirmed) => ipcRenderer.invoke('checkpoints:restore', { workspace, id, confirmed }),
   trimMemory: () => ipcRenderer.invoke('sys:trim-memory'),
   setGuiMode: (mode) => ipcRenderer.invoke('gui:set-mode', mode),
   getBotStatus: () => ipcRenderer.invoke('bot:status'),

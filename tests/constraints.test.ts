@@ -59,6 +59,17 @@ test('the prompt section is compact and only lists effective boundaries', () => 
   assert.equal(constraintPrompt([]), '');
 });
 
+test('no-write and no-command boundaries cover checkpoint, git and delegation tools', () => {
+  const noWrite = collectConstraints(["Don't change anything; just review."]);
+  assert.match(constraintViolation(call('checkpoint_restore', { id: 'ckpt-1' }), noWrite, workspace) ?? '', /blocks file writes/);
+  assert.match(constraintViolation(call('git_commit', { message: 'x' }), noWrite, workspace) ?? '', /blocks file writes/);
+  assert.match(constraintViolation(call('skill_create', { name: 'x' }), noWrite, workspace) ?? '', /blocks file writes/);
+
+  const noCommand = collectConstraints(['Do not run any commands.']);
+  assert.match(constraintViolation(call('delegate_task', {}), noCommand, workspace) ?? '', /blocks command execution/);
+  assert.match(constraintViolation(call('process_write', { id: 'p1', input: 'x' }), noCommand, workspace) ?? '', /blocks command execution/);
+});
+
 test('path boundaries block writes but not reads', () => {
   const constraints = collectConstraints(["Don't touch README.md"]);
   assert.ok(constraintViolation(call('file_write', { path: 'README.md', content: 'x' }), constraints, workspace));

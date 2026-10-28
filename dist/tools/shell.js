@@ -4,6 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { windowsSystemExecutable } from '../windows-system.js';
 import { childEnvironment } from '../security/env.js';
+import { assertShellAllowed, sandboxWrap } from '../security/sandbox.js';
 /** Unique, parseable marker carrying the real exit code of a finished command. */
 export const SHELL_EXIT_MARKER = 'TBOT_EXIT';
 const backgroundProcesses = new Map();
@@ -57,9 +58,26 @@ function resolveCommandInterpreter(env) {
     return join(root, 'System32', 'cmd.exe');
 }
 function spawnCommand(command, options) {
+    // Approval prompts answer "may this run?". The optional sandbox adapter adds
+    // an OS boundary on platforms where one is actually available. TBOT_SANDBOX=
+    // required fails closed instead of silently falling back to an unsandboxed run.
+    assertShellAllowed();
     const isWin = process.platform === 'win32';
     const isPowerShell = isWin && POWERSHELL_SYNTAX_REGEX.test(command);
     const env = shellEnvironment();
+    if (!isWin) {
+        const wrapped = sandboxWrap(command, options.cwd);
+        if (wrapped) {
+            return spawn(wrapped.file, wrapped.args, {
+                cwd: options.cwd,
+                shell: false,
+                windowsHide: options.windowsHide ?? true,
+                detached: options.detached,
+                stdio: options.stdio,
+                env,
+            });
+        }
+    }
     if (isPowerShell) {
         return spawn(windowsSystemExecutable('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
             cwd: options.cwd,

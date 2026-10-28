@@ -491,6 +491,11 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     }
 
     const isGuiTool = actualCall.name === 'computer' || actualCall.name.startsWith('browser_');
+    // Shell is already approval-gated, but a command that names a credential
+    // file deserves an explicit warning in the approval prompt. This is a
+    // high-signal heuristic, not a complete parser.
+    const sensitiveShellCommand = toolName === 'shell' && typeof actualArgs.command === 'string' &&
+      /(?:^|[\\/\s"'`])(?:\.env(?:\.[\w.-]+)?|\.ssh[\\/]|id_rsa|id_ed25519|credentials|secrets?\.(?:json|ya?ml|txt)|\.pem|\.p12|\.pfx)\b/i.test(actualArgs.command);
     // GUI access can submit forms, send messages and operate terminals. Default
     // to the same approval boundary as shell; trusted/YOLO callers may approve.
     const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL !== 'false';
@@ -523,9 +528,11 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
               : sensitiveReadPath !== undefined
                 ? `Read the protected file "${String(actualArgs.path)}"; it may contain credentials or private keys.`
                 : `Allow ${actualCall.name} with the supplied arguments.`;
-      const approvalDescription = taintSensitive
-        ? `${description}\n[Untrusted content warning: this argument repeats text from a web, MCP, browser or desktop result. Confirm it matches your intent.]`
-        : description;
+      const approvalDescription = [
+        description,
+        sensitiveShellCommand ? '[Sensitive path warning: this command references a credential-like file. Confirm that reading or changing it is intended.]' : '',
+        taintSensitive ? '[Untrusted content warning: this argument repeats text from a web, MCP, browser or desktop result. Confirm it matches your intent.]' : '',
+      ].filter(Boolean).join('\n');
       // Show the actual text that will be typed (truncated, never masked) so the
       // user can review what will be submitted.
       const approvalArgs: Record<string, unknown> = remote

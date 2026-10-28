@@ -52,9 +52,13 @@ test('surface catalogs expose the commands implemented by that surface', () => {
   assert.ok(desktop.has('/gui'));
   assert.ok(desktop.has('/bot'));
   assert.ok(desktop.has('/mcp'));
+  assert.ok(desktop.has('/checkpoints'));
+  assert.ok(desktop.has('/undo'));
 
   const cli = new Set(commandCatalog('cli').map(command => command.name));
   assert.ok(cli.has('/doctor'));
+  assert.ok(cli.has('/checkpoints'));
+  assert.ok(cli.has('/undo'));
   assert.ok(cli.has('/ram') === false, 'aliases are resolved through findCommand, not duplicated in the catalog');
   assert.ok(commandNamesFor('cli').includes('/ram'));
   assert.ok(cli.has('/bot'));

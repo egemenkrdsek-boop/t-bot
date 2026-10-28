@@ -32,6 +32,8 @@ import { BUILTIN_SKILLS, loadCustomSkills } from '../skills.js';
 import { loadConnections, getMcpToken, saveConnection, setMcpToken, removeConnection } from '../mcp-config.js';
 import { getTelegramBotStatus, startTelegramBotBridge, stopTelegramBotBridge } from '../bot.js';
 import { connectMcp, type McpConnection } from '../mcp.js';
+import { listCheckpoints, restoreCheckpoint } from '../checkpoints.js';
+import { sandboxStatus } from '../security/sandbox.js';
 import { MCP_PRESETS } from '../mcp-presets.js';
 import { PROVIDER_CATALOG, createProvider } from '../providers.js';
 import { TOOL_TITLE_MAP, formatToolTitle } from '../theme.js';
@@ -563,6 +565,7 @@ function registerIpcHandlers() {
       provider: config.provider,
       model: config.model,
       hasApiKey,
+      sandbox: sandboxStatus(),
       memoryStats,
       uptimeSeconds: Math.round(process.uptime()),
     };
@@ -570,6 +573,23 @@ function registerIpcHandlers() {
 
   handle('sys:mem-stats', () => {
     return getDesktopMemoryStats(mainWindow || undefined);
+  });
+
+  handle('checkpoints:list', async (_event, workspace?: string) => {
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+    return await listCheckpoints(resolvedWorkspace, 20);
+  });
+
+  handle('checkpoints:restore', async (_event, { workspace, id, confirmed }: { workspace?: string; id?: string; confirmed?: boolean } = {}) => {
+    if (confirmed !== true) return { ok: false, error: 'Geri yükleme kullanıcı onayı gerektirir.' };
+    if (typeof id !== 'string' || !id.trim()) return { ok: false, error: 'Checkpoint kimliği gerekli.' };
+    const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+    try {
+      const restored = await restoreCheckpoint(resolvedWorkspace, id.trim());
+      return { ok: true, ...restored };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   // Shared command catalog: the renderer must not maintain a second, stale list.

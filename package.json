@@ -1,6 +1,6 @@
 {
   "name": "t-bot-cli",
-  "version": "3.1.0",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Local AI coding agent with CLI, Windows desktop tools and Telegram gateway",
   "type": "module",
@@ -40,6 +40,8 @@
     "start": "node --expose-gc dist/index.js",
     "dev": "tsx --expose-gc src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check:layers": "node scripts/check-layers.mjs",
+    "check": "npm run typecheck && npm run check:layers && npm test",
     "evaluate:components": "node --import tsx scripts/evaluate-components.mjs",
     "prepare": "node scripts/prepare.mjs",
     "test": "node --import tsx --test tests/*.test.ts tests/*.test.cjs"

@@ -86,8 +86,9 @@ export function sandboxStatus(env: NodeJS.ProcessEnv = process.env): SandboxStat
 
 export function assertShellAllowed(env: NodeJS.ProcessEnv = process.env): void {
   const status = sandboxStatus(env);
-  if (status.mode === 'required' && !status.available) {
-    throw new Error(`Shell sandbox required but unavailable: ${status.reason}`);
+  const explicit = status.mode === 'required' || status.mode === 'bwrap' || status.mode === 'sandbox-exec';
+  if (explicit && !status.available) {
+    throw new Error(`Shell sandbox ${status.mode} requested but unavailable: ${status.reason}`);
   }
 }
 
