@@ -369,6 +369,7 @@ export const APPROVAL_REQUIRED_TOOLS = [
   'shell',
   'file_write',
   'file_patch',
+  'skill_create',
   'process_stop',
   'process_write',
   'git_add',
@@ -453,6 +454,8 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
         ? `Allow remote MCP tool ${actualCall.name} with the supplied arguments.`
         : actualCall.name === 'shell'
           ? 'Run this shell command with your user permissions; it can modify or delete files and access resources outside the workspace.'
+          : actualCall.name === 'skill_create'
+            ? `Save ${actualArgs.scope === 'global' ? 'global instructions for future tasks across workspaces' : 'project instructions for future tasks'}; review the complete skill content before approving.`
           : `Allow ${actualCall.name} with the supplied arguments.`;
       const approvalArgs = remote
         ? redact(actualArgs) as Record<string, unknown>

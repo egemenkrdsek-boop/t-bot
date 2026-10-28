@@ -1,6 +1,7 @@
 {
   "name": "t-bot-cli",
-  "version": "2.0.1",
+  "version": "2.0.2",
+  "license": "MIT",
   "description": "Local AI coding agent with CLI, Windows desktop tools and Telegram gateway",
   "type": "module",
   "main": "dist/desktop/main.js",
@@ -34,7 +35,7 @@
     "copy:desktop": "node scripts/copy-desktop.mjs",
     "build": "tsc && npm run copy:desktop",
     "desktop": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --config electron-builder.yml --win --x64 --publish never",
+    "dist:win": "npm run build && electron-builder --config electron-builder.yml --win --x64 --publish never && node scripts/release-manifest.mjs",
     "start": "node --expose-gc dist/index.js",
     "dev": "tsx --expose-gc src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -22,7 +22,7 @@ import { MCP_PRESETS } from '../mcp-presets.js';
 import { PROVIDER_CATALOG, createProvider } from '../providers.js';
 import { discoverModels, fallbackModels } from '../models.js';
 import { TOOL_TITLE_MAP, formatToolTitle } from '../theme.js';
-import { trimDesktopMemory, getDesktopMemoryStats } from './memory-trimmer.js';
+import { trimDesktopMemory, trimDesktopMemoryUnderPressure, getDesktopMemoryStats } from './memory-trimmer.js';
 import { registerDesktopQuitCleanup } from './quit-cleanup.js';
 import { closeBrowser } from '../tools/browser.js';
 import { closeIdleDesktopDaemon } from '../tools/computer.js';
@@ -45,8 +45,18 @@ let turnAbortController = null;
 let desktopQuitting = false;
 const activeMcpConnections = new Set();
 async function closeDesktopMcp(connection) {
-    if (activeMcpConnections.delete(connection))
-        await connection.close();
+    if (!activeMcpConnections.delete(connection))
+        return;
+    let deadline;
+    try {
+        await Promise.race([
+            Promise.resolve().then(() => connection.close()),
+            new Promise(resolve => { deadline = setTimeout(resolve, 5_000); }),
+        ]);
+    }
+    finally {
+        clearTimeout(deadline);
+    }
 }
 registerDesktopQuitCleanup(app, () => {
     desktopQuitting = true;
@@ -114,6 +124,12 @@ function createMainWindow() {
     // The bridge belongs exclusively to the bundled local document.
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     mainWindow.webContents.on('will-navigate', event => event.preventDefault());
+    mainWindow.webContents.on('render-process-gone', () => {
+        turnAbortController?.abort();
+        for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
+            resolver(false);
+        activeTurnContext?.pendingApprovals.clear();
+    });
     mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     const rendererPath = join(__dirname, 'renderer', 'index.html');
     if (existsSync(rendererPath)) {
@@ -318,6 +334,8 @@ function registerIpcHandlers() {
         return await store.get(sessionId, workspace || getDefaultWorkspace());
     });
     handle('sessions:delete', async (_event, { sessionId, workspace }) => {
+        if (activeTurnContext?.sessionId === sessionId)
+            throw new Error('Çalışan oturum silinemez.');
         const store = new SessionStore(configDirectory());
         return await store.delete(sessionId, workspace || getDefaultWorkspace());
     });
@@ -397,10 +415,10 @@ function registerIpcHandlers() {
         }
         const resolver = activeTurnContext.pendingApprovals.get(requestId);
         if (resolver) {
-            if (approved && alwaysAllowSession)
+            if (approved === true && alwaysAllowSession === true)
                 activeTurnContext.alwaysAllowSession = true;
             activeTurnContext.pendingApprovals.delete(requestId);
-            resolver(Boolean(approved));
+            resolver(approved === true);
             return { handled: true };
         }
         return { handled: false, error: 'Onay isteği bulunamadı veya süresi doldu.' };
@@ -479,7 +497,7 @@ function registerIpcHandlers() {
             const approve = async (request) => {
                 if (abortController.signal.aborted)
                     return false;
-                if (payload.yolo || activeTurnContext?.alwaysAllowSession) {
+                if (payload.yolo === true || activeTurnContext?.alwaysAllowSession) {
                     return true;
                 }
                 const perm = getWorkspacePermission(config, targetWorkspace);
@@ -488,24 +506,36 @@ function registerIpcHandlers() {
                 }
                 const requestId = randomUUID();
                 const toolTitle = TOOL_TITLE_MAP[request.tool] || formatToolTitle(request.tool);
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('agent:approval-request', {
-                        requestId,
-                        tool: request.tool,
-                        toolTitle,
-                        description: request.description,
-                        arguments: request.arguments,
-                    });
-                }
+                if (!mainWindow || mainWindow.isDestroyed())
+                    return false;
                 return new Promise((resolveApproval) => {
                     const timer = setTimeout(() => {
                         pendingApprovals.delete(requestId);
                         resolveApproval(false);
+                        try {
+                            if (mainWindow && !mainWindow.isDestroyed())
+                                mainWindow.webContents.send('agent:approval-expired', { requestId });
+                        }
+                        catch { /* The approval already failed closed if its renderer is gone. */ }
                     }, 120_000);
-                    pendingApprovals.set(requestId, (res) => {
+                    const settle = (approved) => {
                         clearTimeout(timer);
-                        resolveApproval(res);
-                    });
+                        pendingApprovals.delete(requestId);
+                        resolveApproval(approved);
+                    };
+                    pendingApprovals.set(requestId, settle);
+                    try {
+                        mainWindow.webContents.send('agent:approval-request', {
+                            requestId,
+                            tool: request.tool,
+                            toolTitle,
+                            description: request.description,
+                            arguments: request.arguments,
+                        });
+                    }
+                    catch {
+                        settle(false);
+                    }
                 });
             };
             const onEvent = (event) => {
@@ -614,8 +644,12 @@ function startPeriodicMemoryUpdater() {
     if (memoryInterval || isHeadlessVerify)
         return;
     memoryInterval = setInterval(() => {
+        if (desktopQuitting)
+            return;
+        const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+        const stats = getDesktopMemoryStats(window);
+        void trimDesktopMemoryUnderPressure(window, stats).catch(() => undefined);
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-            const stats = getDesktopMemoryStats(mainWindow);
             mainWindow.webContents.send('sys:memory-update', stats);
         }
     }, 15_000);

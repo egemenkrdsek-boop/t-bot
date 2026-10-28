@@ -1,4 +1,5 @@
 import { cyberPulseBadge, theme, unicode } from './theme.js';
+import { APP_VERSION } from './version.js';
 
 // Sol rozet (14x14 matris - assets/tabit.webp sol ikonundan örneklenmiştir):
 // W = Saf Parlak Tabit Beyazı (#FFFFFF) T sembolü,
@@ -123,7 +124,7 @@ function wordPixelColor(
 
 /** Terminal hücresi başına iki dikey sub-pixel çizer; düz metin yedeği içerir. */
 export function logo(width: number, frame = -1): string[] {
-  if (!unicode || width < 30) return [`  ${theme.iceWhite('[T] T BOT')} ${theme.brightMint('v2.0 · TRI-CORE · LOCAL AI')}`];
+  if (!unicode || width < 30) return [`  ${theme.iceWhite('[T] T BOT')} ${theme.brightMint(`v${APP_VERSION} · LOCAL AI`)}`];
   const compact = width < 58;
   const monochrome = process.env.NO_COLOR !== undefined;
   const trueColor = Boolean(process.env.WT_SESSION) || /truecolor|24bit/i.test(process.env.COLORTERM ?? '') || Boolean(process.stdout.isTTY);
@@ -166,8 +167,8 @@ export function logo(width: number, frame = -1): string[] {
     if (y === 12) {
       // 7. terminal satırında "T BOT" yazısının hemen altına açık renkli zarif rozet satırı
       const subtitle = monochrome
-        ? 'v2.0 · TRI-CORE · LOCAL AI'
-        : `${theme.brightMint('v2.0')} ${theme.dim('·')} ${theme.iceWhite('TRI-CORE')} ${theme.dim('·')} ${theme.crystalCyan('LOCAL AI')}`;
+        ? `v${APP_VERSION} · LOCAL AI`
+        : `${theme.brightMint(`v${APP_VERSION}`)} ${theme.dim('·')} ${theme.crystalCyan('LOCAL AI')}`;
       row += subtitle;
     } else {
       const step = compact ? 2 : 1;
@@ -196,7 +197,7 @@ export function logo(width: number, frame = -1): string[] {
 
   // Alt bilgi rozet satırı (geniş terminallerde canlı sistem telemetri rozeti)
   if (!compact && width >= 66) {
-    const badgeText = '◈ SİBER-ZEN ÇEKİRDEK · AST GROUNDER · %50-%75 TOKEN MOTORU · SIFIR GECİKME DAEMON';
+    const badgeText = '◈ YEREL AJAN · KOD DENETİMİ · TOKEN OPTİMİZASYONU';
     const pill = monochrome
       ? `  ╭─ ${badgeText} ─╮`
       : `  ${theme.crystalCyan('╭─')} ${cyberPulseBadge(badgeText, frame >= 0 ? frame : 0)} ${theme.crystalCyan('─╮')}`;

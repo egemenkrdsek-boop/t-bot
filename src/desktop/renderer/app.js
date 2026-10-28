@@ -15,6 +15,7 @@
     currentSessionId: null,
     isThinking: false,
     turnPending: false,
+    sessionLoading: false,
     thinkingStartTime: 0,
     thinkingTimerId: null,
     spinnerIndex: 0,
@@ -23,6 +24,7 @@
     currentStepCount: 0,
     attachedImages: [], // { mimeType: 'image/png', data: base64, name: string }
     currentApproval: null,
+    approvalQueue: [],
     model: 'gemini-2.5-pro',
     provider: 'gemini',
     effort: 'medium',
@@ -404,9 +406,10 @@
   // 6. Canlı Cyber-Wave Düşünme Çubuğu & Zamanlayıcı
   // =========================================================================
   function startThinking(label = 'Düşünülüyor…', step = null) {
+    if (!state.isThinking) state.thinkingStartTime = Date.now();
     state.isThinking = true;
-    state.thinkingStartTime = Date.now();
     if (step) state.currentStepCount = step;
+    if (dom.thinkingSpinner) dom.thinkingSpinner.textContent = '●';
 
     dom.thinkingBar?.classList.remove('hidden');
     if (dom.thinkingLabel) dom.thinkingLabel.textContent = label;
@@ -414,7 +417,7 @@
       dom.thinkingStepBadge.textContent = state.currentStepCount > 0 ? `Adım ${state.currentStepCount}` : 'Çekirdek';
     }
 
-    if (state.thinkingTimerId) clearInterval(state.thinkingTimerId);
+    if (state.thinkingTimerId) return;
     state.thinkingTimerId = setInterval(() => {
       state.spinnerIndex = (state.spinnerIndex + 1) % BRAILLE_SPINNER.length;
       if (dom.thinkingSpinner) dom.thinkingSpinner.textContent = reducedMotion.matches ? '●' : BRAILLE_SPINNER[state.spinnerIndex];
@@ -684,6 +687,19 @@
     return out;
   }
 
+  function isToolError(result, toolName) {
+    if (/^\s*(?:Tool error:|Araç Hatası:)/i.test(result)) return true;
+    if (toolName !== 'shell') return false;
+    const exit = result.match(/(?:^|\n)Exit code: (.+)\s*$/);
+    return exit ? exit[1].trim() !== '0' : /(?:^|\n)(?:Timed out|Aborted); process tree/.test(result);
+  }
+
+  function setToolExpanded(card, expanded) {
+    card.classList.toggle('expanded', expanded);
+    card.querySelector('[data-tool-toggle]')?.setAttribute('aria-expanded', String(expanded));
+    card.querySelector('.tool-card-body')?.classList.toggle('hidden', !expanded);
+  }
+
   function handleToolStart(call, toolTitleOverride = null) {
     finalizeAssistantMessage();
     hideEmptyHero();
@@ -734,7 +750,8 @@
       durationText = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}sn`;
     }
 
-    const isError = /error|hata|fail/i.test(typeof result === 'string' ? result : JSON.stringify(result));
+    const strResult = typeof result === 'string' ? result : JSON.stringify(result ?? '');
+    const isError = isToolError(strResult, call.name);
 
     if (card) {
       const headerRight = card.querySelector('.tool-header-right');
@@ -749,10 +766,10 @@
 
       const bodyEl = card.querySelector('.tool-card-body');
       if (bodyEl) {
-        bodyEl.classList.remove('hidden');
+        // Keep successful output folded; failures are immediately inspectable.
+        if (isError) setToolExpanded(card, true);
         const resultArea = bodyEl.querySelector('.tool-result-area');
         if (resultArea) {
-          const strResult = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 
           // Eğer file_patch diff içeriyorsa renkli diff bas
           if (call.name === 'file_patch' || call.name === 'file_write' || strResult.includes('@@')) {
@@ -769,7 +786,9 @@
               const previewDiv = document.createElement('div');
               previewDiv.className = 'tool-screenshot-preview';
               previewDiv.title = 'Büyütmek için tıklayın';
-              previewDiv.onclick = () => window.tbotOpenLightbox(imgSrc, `${toolTitle} Ekran Görüntüsü`);
+              previewDiv.setAttribute('data-preview-image', '');
+              previewDiv.setAttribute('role', 'button');
+              previewDiv.tabIndex = 0;
               previewDiv.innerHTML = `<img src="${imgSrc}" alt="Screenshot">`;
               resultArea.appendChild(previewDiv);
             }
@@ -787,6 +806,7 @@
   // 10. Canlı Araç Onay Kartı (Approval Request)
   // =========================================================================
   function renderApprovalRequest(req) {
+    if (state.currentApproval) { state.approvalQueue.push(req); return; }
     dom.thinkingBar?.classList.add('hidden');
     finalizeAssistantMessage();
     hideEmptyHero();
@@ -839,8 +859,15 @@
     }
 
     const reqId = state.currentApproval?.requestId;
+    if (!reqId) return;
     state.currentApproval = null;
-    tbot.respondApproval?.(reqId, approved, alwaysAllow);
+    tbot.respondApproval?.(reqId, approved, alwaysAllow)?.catch(error => appendErrorNotice(String(error)));
+    if (alwaysAllow) {
+      for (const pending of state.approvalQueue.splice(0)) {
+        tbot.respondApproval?.(pending.requestId, true, true)?.catch(error => appendErrorNotice(String(error)));
+      }
+    }
+    if (state.approvalQueue.length) { renderApprovalRequest(state.approvalQueue.shift()); return; }
 
     if (state.turnPending) {
       startThinking('Araç Çalıştırılıyor…');
@@ -997,7 +1024,7 @@
   // 13. Kullanıcı Mesajı Gönderme (Turn Execution)
   // =========================================================================
   async function submitUserMessage(options = {}) {
-    if (state.turnPending || state.currentApproval || pendingImageReads) return;
+    if (state.turnPending || state.sessionLoading || state.currentApproval || pendingImageReads) return;
     const rawText = dom.userInput?.value || '';
     const text = rawText.trim();
     const images = [...state.attachedImages];
@@ -1035,13 +1062,10 @@
         provider: state.provider,
       });
 
+      if (res?.sessionId) state.currentSessionId = res.sessionId;
       if (res && res.ok === false) {
-        appendErrorNotice(res.error || 'İşlem başarısız oldu');
+        if (!res.aborted) appendErrorNotice(res.error || 'İşlem başarısız oldu');
       } else {
-        if (res?.sessionId) {
-          state.currentSessionId = res.sessionId;
-        }
-
         if (res?.memoryStats) {
           updateTelemetry(res.memoryStats);
         }
@@ -1063,6 +1087,10 @@
       appendErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
       state.turnPending = false;
+      state.currentApproval = null;
+      state.approvalQueue = [];
+      document.getElementById('live-approval-card')?.remove();
+      finishInterruptedTools();
       setTurnControls();
       finalizeAssistantMessage();
       stopThinking();
@@ -1072,7 +1100,7 @@
   }
 
   function setTurnControls() {
-    [dom.btnSend, dom.btnWorkspace, dom.btnNewSession, dom.modalBtnStartGoal].forEach(button => { if (button) button.disabled = state.turnPending; });
+    [dom.btnSend, dom.btnWorkspace, dom.btnNewSession, dom.modalBtnStartGoal].forEach(button => { if (button) button.disabled = state.turnPending || state.sessionLoading; });
   }
 
   function autoResizeTextarea() {
@@ -1225,9 +1253,13 @@
   // =========================================================================
   // 16. Oturumlar Yönetimi (Sessions)
   // =========================================================================
+  let sessionsRequest = 0;
   async function loadSessionsList() {
+    const request = ++sessionsRequest;
+    const workspace = state.workspace;
     try {
-      const sessions = await tbot.listSessions?.(state.workspace) || [];
+      const sessions = await tbot.listSessions?.(workspace) || [];
+      if (request !== sessionsRequest || workspace !== state.workspace) return;
       if (dom.sessionsCount) dom.sessionsCount.textContent = sessions.length;
       if (!dom.sessionsList) return;
 
@@ -1268,14 +1300,18 @@
 
   window.tbotDeleteSession = async function (e, id) {
     e.stopPropagation();
+    if (state.turnPending || state.sessionLoading) return;
     if (confirm('Bu oturumu silmek istediğinize emin misiniz?')) {
       await tbot.deleteSession?.(id, state.workspace);
+      if (state.currentSessionId === id) { state.currentSessionId = null; clearChatTerminal(); }
       loadSessionsList();
     }
   };
 
   async function switchSession(id) {
-    if (state.turnPending) return;
+    if (state.turnPending || state.sessionLoading) return;
+    state.sessionLoading = true;
+    setTurnControls();
     state.currentSessionId = id;
     clearChatTerminal();
     loadSessionsList();
@@ -1290,18 +1326,25 @@
           }
         });
       }
-    } catch {
-      // Sessizce geç
+    } catch (error) {
+      appendErrorNotice(`Oturum yüklenemedi: ${String(error)}`);
+    } finally {
+      state.sessionLoading = false;
+      setTurnControls();
     }
   }
 
   // =========================================================================
   // 17. Görev Pusulası (Goal & Todos Yönetimi)
   // =========================================================================
+  let workflowRequest = 0;
   async function refreshWorkflow() {
+    const request = ++workflowRequest;
+    const workspace = state.workspace;
     try {
       // main.ts içindeki workflows:get-state IPC çağrısı
-      const stateData = await tbot.getWorkflowState?.(state.workspace);
+      const stateData = await tbot.getWorkflowState?.(workspace);
+      if (request !== workflowRequest || workspace !== state.workspace) return;
       if (stateData) {
         // Hedef Güncellemesi
         if (stateData.goal && (stateData.goal.status === 'active' || stateData.goal.status === 'paused')) {
@@ -1331,7 +1374,8 @@
       }
 
       // Yetenekler ve MCP
-      const sm = await tbot.getSkillsAndMcp?.(state.workspace);
+      const sm = await tbot.getSkillsAndMcp?.(workspace);
+      if (request !== workflowRequest || workspace !== state.workspace) return;
       if (sm && dom.mcpServerCountTag) {
         const connCount = Object.values(sm.mcpConnections || {}).filter(connection => connection?.enabled).length;
         dom.mcpServerCountTag.innerHTML = `<span class="tag-dot"></span> MCP (${connCount > 0 ? `${connCount} Etkin yapılandırma` : 'Etkin yapılandırma yok'})`;
@@ -1404,6 +1448,7 @@
   // 18. Modallar (Config, Doctor, Goal)
   // =========================================================================
   async function openConfigModal() {
+    const request = ++catalogRequest;
     dom.configModal?.classList.remove('hidden');
     if (dom.inputCustomModel) dom.inputCustomModel.value = '';
     if (dom.selectProvider) dom.selectProvider.value = state.provider;
@@ -1411,6 +1456,7 @@
 
     try {
       const cat = await tbot.getModelCatalog?.();
+      if (request !== catalogRequest) return;
       if (cat?.models) {
         if (dom.selectProvider && cat.providers) {
           dom.selectProvider.replaceChildren(...cat.providers.map(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; return option; }));
@@ -1421,11 +1467,12 @@
         updateModelDropdown(state.provider);
       }
     } catch {
-      updateModelDropdown(state.provider);
+      if (request === catalogRequest) updateModelDropdown(state.provider);
     }
   }
 
   function closeConfigModal() {
+    catalogRequest++;
     dom.configModal?.classList.add('hidden');
     if (dom.inputApiKey) { dom.inputApiKey.value = ''; dom.inputApiKey.type = 'password'; }
   }
@@ -1558,8 +1605,8 @@
       if (target.hasAttribute('data-remove-attachment')) window.tbotRemoveAttachment(Number(target.dataset.removeAttachment));
       if (target.hasAttribute('data-preview-image')) window.tbotOpenLightbox(target.querySelector('img')?.src);
       if (target.hasAttribute('data-tool-toggle')) {
-        const expanded = target.parentElement.classList.toggle('expanded');
-        target.setAttribute('aria-expanded', String(expanded));
+        const card = target.parentElement;
+        setToolExpanded(card, !card.classList.contains('expanded'));
       }
     });
     document.addEventListener('keydown', event => {
@@ -1645,11 +1692,18 @@
 
     // 6. Yeni Oturum
     dom.btnNewSession?.addEventListener('click', async () => {
-      if (state.turnPending) return;
-      const session = await tbot.createSession?.(state.workspace);
-      state.currentSessionId = session?.id || `session_${Date.now()}`;
-      clearChatTerminal();
-      loadSessionsList();
+      if (state.turnPending || state.sessionLoading) return;
+      state.sessionLoading = true;
+      setTurnControls();
+      try {
+        const session = await tbot.createSession(state.workspace);
+        state.currentSessionId = session.id;
+        clearChatTerminal();
+        loadSessionsList();
+      } finally {
+        state.sessionLoading = false;
+        setTurnControls();
+      }
     });
 
     // 7. Hızlı Başlatıcılar
@@ -1830,6 +1884,14 @@
   // =========================================================================
   // 20. IPC Gelen Olayları (Event Handlers from preload.cjs)
   // =========================================================================
+  function finishInterruptedTools() {
+    for (const card of activeToolCards.values()) {
+      const badge = card.querySelector('.tool-badge');
+      if (badge) { badge.classList.remove('running'); badge.textContent = 'Durduruldu'; }
+    }
+    activeToolCards.clear();
+  }
+
   function handleAgentEvent(event) {
     if (!event) return;
     switch (event.type) {
@@ -1876,8 +1938,9 @@
       case 'turn_end':
       case 'done':
         state.currentApproval = null;
+        state.approvalQueue = [];
         document.getElementById('live-approval-card')?.remove();
-        activeToolCards.clear();
+        finishInterruptedTools();
         finalizeAssistantMessage();
         stopThinking();
         break;
@@ -1898,6 +1961,16 @@
         renderApprovalRequest(req);
       });
     }
+
+    tbot.onApprovalExpired?.(({ requestId }) => {
+      state.approvalQueue = state.approvalQueue.filter(request => request.requestId !== requestId);
+      if (state.currentApproval?.requestId !== requestId) return;
+      state.currentApproval = null;
+      const card = document.getElementById('live-approval-card');
+      if (card) { card.textContent = 'Onay süresi doldu; işlem reddedildi.'; card.id = ''; }
+      if (state.approvalQueue.length) { renderApprovalRequest(state.approvalQueue.shift()); return; }
+      if (state.turnPending) startThinking('Yanıt Hazırlanıyor…');
+    });
 
     // Canlı Bellek Güncellemesi (sys:memory-update)
     if (typeof tbot.onMemoryUpdate === 'function') {

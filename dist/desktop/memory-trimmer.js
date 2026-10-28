@@ -1,10 +1,9 @@
-import os, { homedir } from 'node:os';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { app } from 'electron';
 let lastFreedMB = 0;
 let lastTrimAt = 0;
+let activeTrim = null;
 const TRIM_COOLDOWN_MS = 10_000;
 /**
  * Returns current desktop memory and CPU metrics across all Electron processes
@@ -59,7 +58,23 @@ export function getDesktopMemoryStats(mainWindow) {
  * Executes Win32 EmptyWorkingSet on all Electron processes (Main, Renderer, GPU, Utility)
  * and invokes V8 GC to minimize physical working set memory.
  */
-export async function trimDesktopMemory(mainWindow, force = true) {
+export function trimDesktopMemory(mainWindow, force = true) {
+    if (activeTrim)
+        return activeTrim;
+    activeTrim = performDesktopMemoryTrim(mainWindow, force).finally(() => { activeTrim = null; });
+    return activeTrim;
+}
+/** Hidden windows still reclaim under critical pressure, without changing session state.
+ * Share the manual trim timestamp so repeated failures cannot spawn helper storms.
+ */
+export async function trimDesktopMemoryUnderPressure(mainWindow, stats = getDesktopMemoryStats(mainWindow)) {
+    const criticalSystemPressure = stats.systemFreeGB <= 0.25 && stats.totalWorkingSetMB >= 128;
+    const excessiveAppMemory = stats.totalWorkingSetMB >= 768;
+    if ((!criticalSystemPressure && !excessiveAppMemory) || activeTrim || Date.now() - lastTrimAt < 120_000)
+        return;
+    return trimDesktopMemory(mainWindow, false);
+}
+async function performDesktopMemoryTrim(mainWindow, force) {
     const now = Date.now();
     if (!force && now - lastTrimAt < TRIM_COOLDOWN_MS) {
         const current = getDesktopMemoryStats(mainWindow);
@@ -131,17 +146,10 @@ async function trimWindowsDesktopPids(mainWindow) {
     const pidList = Array.from(pids).join(',');
     if (!pidList)
         return;
-    const dllPath = join(process.env.APPDATA || homedir(), 'TBot', 'bin', 'tbot-desktop-wstrim-v1.dll');
-    await mkdir(dirname(dllPath), { recursive: true, mode: 0o700 }).catch(() => undefined);
     return new Promise((resolve) => {
         try {
-            const escapedDllPath = dllPath.replace(/'/g, "''");
             const script = `
-$dll = '${escapedDllPath}'
-if (Test-Path -LiteralPath $dll) {
-  [void][Reflection.Assembly]::LoadFrom($dll)
-} else {
-  $def = @'
+$def = @'
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -160,9 +168,7 @@ public static class DesktopMemTrimmer {
     }
 }
 '@
-  Add-Type -TypeDefinition $def -Language CSharp -OutputAssembly $dll
-  [void][Reflection.Assembly]::LoadFrom($dll)
-}
+Add-Type -TypeDefinition $def -Language CSharp
 [DesktopMemTrimmer]::Clean(@(${pidList}))
 `;
             execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {

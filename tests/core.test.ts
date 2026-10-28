@@ -1,19 +1,146 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TokenSessionTracker, estimateMessagesTokens } from '../src/token-optimizer.js';
-import { ContextReadCache, globalContextCache, withContextReadCache } from '../src/context-cache.js';
+import { TokenSessionTracker, estimateMessagesTokens, estimateTokens, pruneToolDefinitions } from '../src/token-optimizer.js';
+import { ContextReadCache, computeUnifiedLineDiff, globalContextCache, withContextReadCache } from '../src/context-cache.js';
 import { rememberFact, forgetFact } from '../src/memory.js';
 import { GroundingLedger, auditAssistantClaims, globalGroundingLedger, withGroundingLedger } from '../src/grounding.js';
 import { getPendingCrossFileExports, withPendingExportScope } from '../src/ast-validator.js';
 import { acquireFileLock } from '../src/lock.js';
 import { reclaimMemory } from '../src/memory-guard.js';
-import { runAgent, reconcileResponseItems } from '../src/agent.js';
-import { getGoal, runGoal, startGoal } from '../src/workflows.js';
+import { runAgent, reconcileResponseItems, isFastConversationalPrompt } from '../src/agent.js';
+import { executeWorkflowTool, getGoal, getTodos, runGoal, saveTodos, startGoal } from '../src/workflows.js';
+import { workspaceStatePath } from '../src/workspace-state.js';
+import { runUltracode } from '../src/ultracode.js';
 import { APP_VERSION, supportsNodeVersion } from '../src/version.js';
 import type { Message, Provider } from '../src/types.js';
+
+test('state paths accept an authorized workspace alias and revalidation of its canonical result', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tbot-state-alias-'));
+  const workspace = join(root, 'workspace');
+  const alias = join(root, 'alias');
+  const outside = join(root, 'outside');
+  try {
+    await mkdir(workspace);
+    await mkdir(outside);
+    await symlink(workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const file = workspaceStatePath(alias, '.tbot/memory.json');
+    assert.equal(workspaceStatePath(alias, file), file);
+    await symlink(outside, join(workspace, '.tbot'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => workspaceStatePath(alias, file), /symbolic links or junctions/);
+    assert.throws(() => workspaceStatePath(alias, join(outside, 'memory.json')), /inside the workspace/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Ultracode summary reports a missing review without inventing approval', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-review-'));
+  try {
+    let primaryCalls = 0;
+    let summaryInstruction = '';
+    const provider: Provider = { id: 'unit', label: 'unit', async *stream(messages) {
+      if (primaryCalls++ === 0) yield { type: 'text', text: 'Implementation notes.' };
+      else {
+        summaryInstruction = messages[0].content;
+        yield { type: 'text', text: 'Review unavailable.' };
+      }
+    } };
+    let workerCalls = 0;
+    const workerProvider: Provider = { id: 'unit', label: 'unit', async *stream() {
+      if (workerCalls++ === 0) yield { type: 'text', text: '[{"role":"Deniz","title":"Review","task":"Inspect source"}]' };
+      else if (workerCalls === 2) yield { type: 'text', text: 'Investigation notes.' };
+      else yield { type: 'error', error: 'simulated reviewer failure' };
+    } };
+    await runUltracode({ message: 'review project', history: [], provider, workerProvider, workspace: dir, approve: async () => false, onEvent: () => {} });
+    assert.match(summaryInstruction, /raporu alınamadığını/);
+    assert.match(summaryInstruction, /onay verilmediğini/);
+    assert.doesNotMatch(summaryInstruction, /\[ONAYLANDI\]/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('project state rejects a .tbot junction without writing to its outside target', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tbot-state-'));
+  const workspace = join(root, 'workspace');
+  const outside = join(root, 'outside');
+  try {
+    await mkdir(workspace);
+    await mkdir(outside);
+    await writeFile(join(outside, 'memory.json'), '[]');
+    await symlink(outside, join(workspace, '.tbot'), process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => workspaceStatePath(workspace, '../outside/state.json'), /inside the workspace/);
+    await assert.rejects(rememberFact(workspace, 'escape', 'must not persist'), /symbolic links or junctions/);
+    await assert.rejects(startGoal(workspace, 'must not persist'), /symbolic links or junctions/);
+    await assert.rejects(saveTodos(workspace, [{ id: '1', text: 'must not persist', status: 'pending' }]), /symbolic links or junctions/);
+    assert.equal(await readFile(join(outside, 'memory.json'), 'utf8'), '[]');
+    await assert.rejects(readFile(join(outside, 'goal.json')), { code: 'ENOENT' });
+    await assert.rejects(readFile(join(outside, 'todos.json')), { code: 'ENOENT' });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('concurrent todo transactions preserve independently added tasks', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-todos-'));
+  try {
+    await Promise.all(Array.from({ length: 6 }, (_, index) => executeWorkflowTool('todo_manage', { action: 'add', items: [`task-${index}`] }, dir)));
+    assert.deepEqual((await getTodos(dir)).map(todo => todo.text).sort(), ['task-0', 'task-1', 'task-2', 'task-3', 'task-4', 'task-5']);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('fast conversation accepts only complete social phrases, never short work or continuations', () => {
+  for (const prompt of ['Merhaba!', 'teşekkür ederim', 'Hi', 'how are you?']) {
+    assert.equal(isFastConversationalPrompt(prompt, false), true, prompt);
+  }
+  for (const prompt of ['refactor authentication', 'continue', 'devam et', 'düzelt', 'deploy', '总结代码', 'hi fix it', 'optimize memory']) {
+    assert.equal(isFastConversationalPrompt(prompt, false), false, prompt);
+  }
+  assert.equal(isFastConversationalPrompt('hello', true), false);
+});
+
+test('token estimates include uncased Unicode scripts in context budgets', () => {
+  for (const text of ['你好世界', '日本語の説明', 'مرحبا بالعالم', 'हिन्दी']) {
+    assert.ok(estimateTokens(text) > 0, text);
+    assert.ok(estimateTokens(text.repeat(100)) > estimateTokens(text), text);
+  }
+});
+
+test('sticky schema intents stay within their owning invocation', () => {
+  const tools = ['file_read', 'git_status', 'image_generate'].map(name => ({ name, description: name, parameters: {} }));
+  const first = new Set<string>();
+  const second = new Set<string>();
+  assert.ok(pruneToolDefinitions(tools, 'git status', [], [], first).tools.some(tool => tool.name === 'git_status'));
+  assert.ok(pruneToolDefinitions(tools, 'continue', [], [], first).tools.some(tool => tool.name === 'git_status'));
+  assert.equal(pruneToolDefinitions(tools, 'continue', [], [], second).tools.some(tool => tool.name === 'git_status'), false);
+});
+
+test('unified diff addresses empty sides and separated insertions correctly', () => {
+  assert.equal(computeUnifiedLineDiff('', 'a', 0), '@@ -0,0 +1,1 @@\n+a');
+  assert.equal(computeUnifiedLineDiff('a', '', 0), '@@ -1,1 +0,0 @@\n-a');
+  assert.equal(computeUnifiedLineDiff('a\nb\nc\nd\ne', 'a\nnew\nb\nc\nd\nother\ne', 0),
+    '@@ -1,0 +2,1 @@\n+new\n@@ -4,0 +6,1 @@\n+other');
+});
+
+test('read cache keeps a short source slice when its reference would cost more tokens', () => {
+  const cache = new ContextReadCache();
+  const content = 'a\n'.repeat(60);
+  cache.checkAndRecordRead('workspace', 'source.ts', content, 1, 1, '1: a');
+  const next = cache.checkAndRecordRead('workspace', 'source.ts', content, 1, 1, '1: a');
+  assert.equal(next.cached, false);
+  assert.equal(next.output, '1: a');
+});
+
+test('budget synthesis never claims completion when the provider returns no final answer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-synthesis-'));
+  try {
+    let round = 0;
+    const provider: Provider = { id: 'unit', label: 'unit', async *stream() {
+      if (round++ === 0) yield { type: 'tool_calls', calls: [{ id: 'a', name: 'file_read', arguments: { path: 'missing.txt' } }] };
+      else yield { type: 'error', error: 'simulated synthesis failure' };
+    } };
+    const messages = await runAgent({ message: 'review project', history: [], provider, workspace: dir, approve: async () => false, onEvent: () => {} }, { maxRounds: 1 });
+    assert.match(messages.at(-1)!.content, /tamamlandığı doğrulanmadı/);
+    assert.doesNotMatch(messages.at(-1)!.content, /işlemi tamamlandı|adımları tamamlandı/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 test('token savings reflect actual removed tokens and keep cache hits separate', () => {
   const tracker = new TokenSessionTracker();

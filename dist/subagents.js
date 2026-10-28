@@ -238,10 +238,10 @@ Kurallar:
             }
             const last = messages.filter(m => m.role === 'assistant' && !m.toolCalls?.length).at(-1);
             if (last?.content.trim()) {
-                reports[index] = last.content.slice(0, MAX_REPORT_CHARS);
+                reports[index] = `${workerError ? `[Kısmi Bulgular - ${workerError.error}]:\n` : ''}${last.content.slice(0, MAX_REPORT_CHARS)}`;
                 input.onEvent({
                     type: 'status',
-                    message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) Tamamlandı`,
+                    message: `[${subtask.role}] ${subtask.title} (${index + 1}/${subtasks.length}) ${workerError ? 'Kısmi Bulgularla Sonlandı' : 'Tamamlandı'}`,
                 });
             }
             else {
@@ -389,6 +389,7 @@ export async function handleSubagentTool(callOrName, ctxOrArgs, maybeCtx) {
             message: `[${sub.role}] Alt Görev (${idx + 1}/${parsedTasks.length}) İnceleniyor...`,
         });
         try {
+            let workerError;
             const messages = await runAgent({
                 message: `Sen ${sub.role} rolündeki uzman bir alt ajansın. Aşağıdaki görevi yalnızca salt-okunur (read-only) araçları kullanarak araştır ve somut kanıtlarla (dosya yolları, satır numaraları, bulgular) özetle.\n\nUzman Rolü: ${sub.role}\nGörev: ${sub.task}`,
                 history: [],
@@ -397,7 +398,10 @@ export async function handleSubagentTool(callOrName, ctxOrArgs, maybeCtx) {
                 approve,
                 signal: ctx.signal,
                 onEvent: ev => {
-                    if (ev.type === 'usage') {
+                    if (ev.type === 'error') {
+                        workerError = ev.error;
+                    }
+                    else if (ev.type === 'usage') {
                         ctx.onEvent?.(ev);
                     }
                     else if (ev.type === 'tool_start') {
@@ -420,7 +424,7 @@ export async function handleSubagentTool(callOrName, ctxOrArgs, maybeCtx) {
                 .at(-1);
             const content = lastAssistant?.content?.trim() || 'Bulgular sentezlenemedi.';
             messages.length = 0;
-            return `### [${sub.role}] Görev ${idx + 1}: ${sub.task}\n${content.slice(0, 6000)}`;
+            return `### [${sub.role}] Görev ${idx + 1}: ${sub.task}\n${workerError ? `[Kısmi rapor; alt ajan hatası: ${workerError}]\n` : ''}${content.slice(0, 6000)}`;
         }
         catch (err) {
             return `### [${sub.role}] Görev ${idx + 1}: ${sub.task}\nAlt ajan hatası: ${err instanceof Error ? err.message : String(err)}`;

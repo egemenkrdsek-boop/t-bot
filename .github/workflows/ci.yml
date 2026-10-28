@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -23,4 +26,5 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node --check dist/desktop/renderer/app.js
+      - run: node --check dist/desktop/preload.cjs
       - run: npm pack --dry-run

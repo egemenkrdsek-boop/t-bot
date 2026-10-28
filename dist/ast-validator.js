@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { builtinModules } from 'node:module';
+import { builtinModules, isBuiltin } from 'node:module';
 import ts from 'typescript';
 import { AsyncLocalStorage } from 'node:async_hooks';
 const BUILTIN_SET = new Set([
@@ -470,7 +470,9 @@ function validateTsJsAstAndGrounding(filePath, content, workspace, ext) {
                     }
                 }
                 else if (spec.startsWith('node:')) {
-                    // Always valid built-in prefix
+                    if (!isBuiltin(spec)) {
+                        return { valid: false, error: `[HALÜSİNASYON ENGELİ - OLMAYAN MODÜL] '${spec}' bir Node.js yerleşik modülü değil.`, warnings };
+                    }
                 }
                 else {
                     const pkgName = getBarePackageName(spec);

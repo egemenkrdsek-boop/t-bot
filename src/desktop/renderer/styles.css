@@ -2082,3 +2082,13 @@ button:disabled { opacity: .45; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Conversation text uses the platform UI font; code retains a fixed-width face. */
+html, body { font-family: var(--font-sans); }
+.user-message-bubble, .assistant-message-body { font-size: 14px; line-height: 1.7; }
+pre, code, .tool-target, .thinking-timer { font-family: var(--font-mono); }
+.tool-card-header { min-height: 40px; }
+.tool-title { font-size: 13px; }
+.tool-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tool-header-left { min-width: 0; }
+.tool-header-right { flex-shrink: 0; }

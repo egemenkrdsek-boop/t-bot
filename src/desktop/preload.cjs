@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld('tbot', {
     ipcRenderer.on('agent:approval-request', listener);
     return () => ipcRenderer.removeListener('agent:approval-request', listener);
   },
+  onApprovalExpired: (callback) => {
+    const listener = (_e, data) => callback(data);
+    ipcRenderer.on('agent:approval-expired', listener);
+    return () => ipcRenderer.removeListener('agent:approval-expired', listener);
+  },
   onMemoryUpdate: (callback) => {
     const listener = (_e, data) => callback(data);
     ipcRenderer.on('sys:memory-update', listener);

@@ -53,14 +53,6 @@ const FAST_CONVERSATIONAL_SYSTEM_PROMPT = `Sen T Bot'sun; ultra-hızlı, zeki ve
 Kullanıcıyla doğal, samimi, kısa ve doğrudan bir dille konuş; selamlaşmalara ve sohbetlere anında, net yanıt ver.
 Gereksiz uzun açıklamalar yapma, doğrudan konuya gir.`;
 
-const ACTION_KEYWORDS = new Set([
-  'dosya', 'klasör', 'kod', 'komut', 'çalıştır', 'aç', 'kapat', 'kur', 'yükle',
-  'sil', 'düzenle', 'yaz', 'oku', 'ara', 'bul', 'tıkla', 'ekran', 'tarayıcı',
-  'whatsapp', 'git', 'push', 'commit', 'build', 'test', 'fix', 'hata', 'sorun',
-  'analiz', 'incele', 'yap', 'oluştur', 'gönder', 'bak', 'kontrol', 'run',
-  'create', 'edit', 'search', 'open', 'click', 'browser'
-]);
-
 /**
  * Fast detection for simple greetings or casual smalltalk.
  * When true, bypasses repo-map, memory search, tool injection, and sets effort: low.
@@ -70,28 +62,10 @@ export function isFastConversationalPrompt(input: string, hasImages: boolean): b
   const trimmed = input.trim();
   if (trimmed.length === 0 || trimmed.length >= 90) return false;
 
-  // Dosya yolu, dosya uzantısı veya URL göstergeleri
-  if (/[/\\]|\.(?:ts|js|py|json|md)\b|https?:\/\//i.test(trimmed)) {
-    return false;
-  }
-  // Kod bloğu veya backtick
-  if (trimmed.includes('`')) {
-    return false;
-  }
-
-  // Kelimeleri küçük harfe çevirip ayıkla
-  const words = trimmed
-    .toLowerCase()
-    .split(/[^a-z0-9_çğıöşü]+/i)
-    .filter(Boolean);
-
-  for (const w of words) {
-    if (ACTION_KEYWORDS.has(w)) {
-      return false;
-    }
-  }
-
-  return true;
+  // Only complete, recognized social phrases can disable tools. An unknown
+  // short request (including a continuation or another language) may need work.
+  const phrase = trimmed.toLocaleLowerCase('tr-TR').replace(/[.!?…,]+$/u, '').trim();
+  return /^(?:merhaba|selam|selamlar|günaydın|iyi (?:akşamlar|geceler)|nasılsın|teşekkürler|teşekkür ederim|sağ ol|hello|hi|hey|good (?:morning|evening|night)|how are you|thanks|thank you)$/u.test(phrase);
 }
 
 const repoMapCache = new Map<string, { repoMap: string; query: string; timestamp: number }>();
@@ -105,6 +79,10 @@ async function getCachedRepoMap(workspace: string, query: string): Promise<strin
   try {
     const map = await buildWorkspaceRepoMap(workspace, query, 900);
     if (map) {
+      if (repoMapCache.size >= 64 && !repoMapCache.has(workspace)) {
+        const oldest = repoMapCache.keys().next().value;
+        if (oldest !== undefined) repoMapCache.delete(oldest);
+      }
       repoMapCache.set(workspace, { repoMap: map, query, timestamp: now });
       return map;
     }
@@ -213,7 +191,7 @@ export async function screenshotImage(call: ToolCall, result: string, workspace:
       }
 
       if (data[0] === 0xff && data[1] === 0xd8 && data[data.length - 2] === 0xff && data[data.length - 1] === 0xd9) {
-        return { mimeType: 'image/jpeg' as any, data: data.toString('base64') };
+        return { mimeType: 'image/jpeg', data: data.toString('base64') };
       }
     } finally {
       await handle.close();
@@ -324,7 +302,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
 
   // Detect fast conversational inputs (greetings, smalltalk) to skip heavy preprocessing
   const hasImages = conversation.some(m => Boolean(m.images && m.images.length > 0));
-  const isFast = isFastConversationalPrompt(input.message, hasImages);
+  const isFast = !skills.length && !activeSkills.length && isFastConversationalPrompt(input.message, hasImages);
 
   let system: Message;
   if (isFast) {
@@ -350,6 +328,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
   const callSignatureCounts = new Map<string, number>();
   let didGroundingRetry = false;
   let wasTruncatedByBudget = false;
+  const intentGroups = new Set<string>();
 
     for (let round = 0; round < maxRounds; round++) {
       if (input.signal?.aborted) {
@@ -360,12 +339,12 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
       const lastUserMessage = [...conversation].reverse().find(m => m.role === 'user');
       const lastUserText = lastUserMessage?.content ?? input.message;
 
-      // 1. Tool Pruning (%50-%75 schema token savings) or Fast Conversational bypass (0 tools)
+      // 1. Prune irrelevant schemas; savings depend on the actual request.
       let activeTools: ToolDefinition[] = [];
       let savedToolTokens = 0;
       if (!isFast) {
         const allTools = [...getToolDefinitions(input.mcpTools), ...WORKFLOW_TOOLS].filter(tool => !readOnly || isReadOnlyTool(tool.name));
-        const pruned = pruneToolDefinitions(allTools, lastUserText, activeSkills, session.messages);
+        const pruned = pruneToolDefinitions(allTools, lastUserText, activeSkills, session.messages, intentGroups);
         activeTools = pruned.tools;
         savedToolTokens = pruned.savedTokens;
       }
@@ -491,7 +470,9 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
       for (let idx = 0; idx < calls.length; idx++) {
         const call = calls[idx];
         if (!call.id || seenIds.has(call.id) || roundSeenIds.has(call.id)) {
-          call.id = `call_${round}_${idx}`;
+          let suffix = 0;
+          do { call.id = `call_${round}_${idx}_${suffix++}`; }
+          while (seenIds.has(call.id) || roundSeenIds.has(call.id));
         }
         roundSeenIds.add(call.id);
       }
@@ -700,6 +681,11 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
           if (event.type === 'text') {
             synthFull += event.text;
             emit(event);
+            if (synthFull.length > MAX_CONTEXT_CHARS) {
+              emit({ type: 'error', error: 'Sağlayıcı yanıtı ajan bağlam sınırını aştı.' });
+              synthFull = synthFull.slice(0, MAX_CONTEXT_CHARS);
+              break;
+            }
           } else if (event.type === 'usage') {
             const sentInputTokens = event.inputTokens ?? estimateMessagesTokens(messages, undefined, []);
             const outputTokens = event.outputTokens ?? estimateMessagesTokens([{ role: 'assistant', content: synthFull }]);
@@ -747,8 +733,8 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
       // Sentez turu herhangi bir nedenle boş dönerse araç işlemlerinin özetini döndür
       const executedToolMessages = conversation.filter(m => m.role === 'tool');
       const fallbackSummary = executedToolMessages.length > 0
-        ? `Gerçekleştirilen ${executedToolMessages.length} araç işlemi tamamlandı. Bulgular ve sistem durumu güncellendi.`
-        : 'Görev adımları tamamlandı.';
+        ? `${executedToolMessages.length} araç sonucu kaydedildi ancak nihai yanıt alınamadı. Görevin tamamlandığı doğrulanmadı; araç sonuçlarını inceleyin.`
+        : 'Nihai yanıt alınamadı. Görevin tamamlandığı doğrulanmadı.';
       auditAssistantClaims(fallbackSummary, globalGroundingLedger);
       conversation.push({ role: 'assistant', content: fallbackSummary });
       emit({ type: 'text', text: fallbackSummary });

@@ -23,6 +23,10 @@ Telegram: bot.ts ─────────────────────
 
 CLI ve masaüstü aynı iş mantığını çağırır; Electron renderer doğrudan Node.js ajan çekirdeğini çalıştırmaz, preload/IPC üzerinden ana süreçle iletişim kurar. Onay ve iptal davranışları arayüze göre uygulanır. Dış araçlar ve sağlayıcılar ayrı süreçlere veya ağ hizmetlerine erişebilir; “yerel ajan” tüm işlemlerin çevrimdışı olduğu anlamına gelmez.
 
+Her ajan çağrısı grounding/export borcu, dosya okuma kapsamı ve yapışkan şema niyetlerini ayrı tutar. Tam eşleşen kısa sosyal ifadeler hafif sohbet yolunu kullanır; bilinmeyen kısa isteklerde araçlar korunur. Diferansiyel okuma referansı yalnız önceki kaynak görünür bağlamda kaldığında ve gerçek çıktı boyutunu azalttığında kullanılır. Bütçe sonu sentez alınamazsa tamamlanma iddia edilmez; bağımsız denetçi hatası Ultracode onayına dönüştürülmez.
+
+Proje belleği ve goal/todo durumu için [workspace-state.ts](../src/workspace-state.ts) çalışma alanı containment ve mevcut symlink/junction kontrollerini uygular. Todo değişiklikleri kilit altında atomik dosya değişimiyle saklanır. Bu kontroller eşzamanlı kötü niyetli dosya sistemi değişimine karşı atomik sandbox oluşturmaz. İnceleme kararları, odaklı regresyon testleri ve sınırlı offline token/RAM ölçümü [core-review.md](core-review.md) içindedir.
+
 Tarayıcı katmanı Playwright Core üzerinden Chrome/Chromium kullanır. Masaüstü kontrolü Windows yardımcı betikleri ve yerel işletim sistemi API'lerine bağlıdır. Araç politikaları ile doğrulamalar işletim sistemi sandbox'ı veya tam güvenlik sınırı sayılmaz; kabuk komutları ve modelin yaptığı değişiklikler gerçek kullanıcı yetkileriyle etki edebilir.
 
 ## Paketleme kararları

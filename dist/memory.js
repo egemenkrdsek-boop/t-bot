@@ -1,8 +1,9 @@
 import { readFile, writeFile, mkdir, rename, unlink, copyFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from './lock.js';
+import { workspaceStatePath } from './workspace-state.js';
 const VALID_CATEGORIES = new Set([
     'architecture',
     'convention',
@@ -67,7 +68,10 @@ function getSynonyms(token) {
     return SYNONYM_MAP.get(norm) ?? SYNONYM_MAP.get(token.toLowerCase());
 }
 function getProjectMemoryPath(workspace) {
-    return join(resolve(workspace), '.tbot', 'memory.json');
+    // The backup and lock are also writable state, so check their final entries.
+    for (const suffix of ['.lock', '.bak'])
+        workspaceStatePath(workspace, `.tbot/memory.json${suffix}`);
+    return workspaceStatePath(workspace, '.tbot/memory.json');
 }
 function getGlobalMemoryPath() {
     const base = process.env.APPDATA || (process.platform === 'win32'
@@ -428,10 +432,9 @@ export async function forgetFact(workspace, key, scope) {
     return removed;
 }
 async function loadProjectConstitution(workspace) {
-    const root = resolve(workspace);
     for (const relPath of CONSTITUTION_FILES) {
         try {
-            const fullPath = join(root, relPath);
+            const fullPath = workspaceStatePath(workspace, relPath);
             const raw = await readFile(fullPath, 'utf8');
             const trimmed = raw.trim();
             if (trimmed) {

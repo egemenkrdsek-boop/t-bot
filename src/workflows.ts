@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { runAgent } from './agent.js';
 import { withFileLock } from './lock.js';
+import { workspaceStatePath } from './workspace-state.js';
 import { reclaimMemory } from './memory-guard.js';
 import { estimateMessagesTokens, globalTokenTracker } from './token-optimizer.js';
 import type { AgentInput, Message, ToolDefinition } from './types.js';
@@ -25,8 +26,8 @@ export interface RunGoalOptions {
   maxAutonomousSteps?: number;
 }
 
-const goalPath = (workspace: string) => join(workspace, '.tbot', 'goal.json');
-const goalLockPath = (workspace: string) => join(workspace, '.tbot', 'goal.lock');
+const goalPath = (workspace: string) => workspaceStatePath(workspace, '.tbot/goal.json');
+const goalLockPath = (workspace: string) => workspaceStatePath(workspace, '.tbot/goal.lock');
 
 async function withGoalLock<T>(workspace: string, action: () => Promise<T>): Promise<T> {
   try {
@@ -329,11 +330,12 @@ export interface TodoItem {
 }
 
 const todosCache = new Map<string, TodoItem[]>();
-const todosPath = (workspace: string) => join(workspace, '.tbot', 'todos.json');
+const todosPath = (workspace: string) => workspaceStatePath(workspace, '.tbot/todos.json');
 
 export async function getTodos(workspace: string): Promise<TodoItem[]> {
+  const file = todosPath(workspace);
   try {
-    const raw = await readFile(todosPath(workspace), 'utf8');
+    const raw = await readFile(file, 'utf8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       todosCache.set(workspace, parsed);
@@ -346,12 +348,15 @@ export async function getTodos(workspace: string): Promise<TodoItem[]> {
 }
 
 export async function saveTodos(workspace: string, todos: TodoItem[]): Promise<void> {
-  todosCache.set(workspace, todos);
+  const file = todosPath(workspace);
+  await mkdir(join(workspace, '.tbot'), { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
   try {
-    await mkdir(join(workspace, '.tbot'), { recursive: true });
-    await writeFile(todosPath(workspace), JSON.stringify(todos, null, 2), 'utf8');
-  } catch {
-    // Disk yazma hatası göz ardı edilir
+    await writeFile(temporary, JSON.stringify(todos, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await rename(temporary, file);
+    todosCache.set(workspace, todos);
+  } finally {
+    await unlink(temporary).catch(() => undefined);
   }
 }
 
@@ -414,6 +419,7 @@ export async function executeWorkflowTool(
   workspaceRoot: string
 ): Promise<string> {
   if (name === 'todo_manage') {
+    return withFileLock(workspaceStatePath(workspaceRoot, '.tbot/todos.lock'), async () => {
     const action = String(args.action || 'list').toLowerCase();
     let currentTodos = await getTodos(workspaceRoot);
 
@@ -484,6 +490,7 @@ export async function executeWorkflowTool(
         return `${i + 1}. ${icon} ${t.text} (${t.status})`;
       })
       .join('\n');
+    });
   }
 
   if (name === 'goal_manage') {

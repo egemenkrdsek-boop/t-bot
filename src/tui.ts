@@ -41,8 +41,8 @@ function renderMiniSavingsBar(percent: number, cells = 5): string {
  * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export function renderHudBar(config: HudConfig): string {
-  const model = config.model || 'Model';
-  const effort = config.effort || 'Normal';
+  const model = safe(config.model || 'Model');
+  const effort = safe(config.effort || 'Normal');
 
   const report = globalTokenTracker.getReport();
   const savingsPct = report.savingsPercent || 0;
@@ -52,7 +52,7 @@ export function renderHudBar(config: HudConfig): string {
 
   const gStatus = globalGroundingLedger.getStatus();
   const groundingStr = gStatus.warnings.length === 0
-    ? theme.success('Doğrulama: Doğrulandı')
+    ? theme.success('Doğrulama: Uyarı Yok')
     : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
 
   const mem = getMemoryStats();
@@ -61,7 +61,7 @@ export function renderHudBar(config: HudConfig): string {
 
   const botStatus = getTelegramBotStatus();
   const botPart = botStatus.running
-    ? theme.success(`Bot: ${botStatus.username ? `@${botStatus.username}` : 'Aktif'}`)
+    ? theme.success(`Bot: ${botStatus.username ? `@${safe(botStatus.username)}` : 'Aktif'}`)
     : (config.mcpCount && config.mcpCount > 0
         ? theme.softLavender(`MCP: ${config.mcpCount}`)
         : theme.dim('Bot: Pasif'));
@@ -148,7 +148,9 @@ function extractToolTarget(args: unknown): string {
   let obj: Record<string, unknown> = {};
   if (typeof args === 'string') {
     try {
-      obj = JSON.parse(args);
+      const parsed: unknown = JSON.parse(args);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
+      obj = parsed as Record<string, unknown>;
     } catch {
       const clean = args.trim().replace(/\r?\n.*/s, '');
       return clean.length > 60 ? `${clean.slice(0, 57)}...` : clean;
@@ -225,7 +227,7 @@ function extractResultSummary(
     if (diffMatch) {
       const plus = diffMatch[1]!;
       const minus = diffMatch[2]!;
-      const astBadge = theme.success(`+${plus} / -${minus} satır · AST Doğrulandı ${symbols.check}`);
+      const astBadge = theme.success(`+${plus} / -${minus} satır · Dosya Güncellendi ${symbols.check}`);
       const cleanLine = (trimmed.split('\n')[0] || '').replace(/\s*\(\+\d+\s*\/\s*-\d+[^)]*\)/i, '').trim();
       return {
         isError: false,
@@ -239,7 +241,7 @@ function extractResultSummary(
       trimmed.match(/(\d+)\s*(?:lines?|satır)\b/i);
     if (lineCountMatch) {
       const lineCount = lineCountMatch[1]!;
-      const astBadge = theme.success(`+${lineCount} / -0 satır · AST Doğrulandı ${symbols.check}`);
+      const astBadge = theme.success(`+${lineCount} / -0 satır · Dosya Güncellendi ${symbols.check}`);
       const cleanLine = (trimmed.split('\n')[0] || '').trim();
       return {
         isError: false,
@@ -252,7 +254,7 @@ function extractResultSummary(
     return {
       isError: false,
       summary: firstLine.length > 50 ? `${firstLine.slice(0, 47)}...` : firstLine,
-      astBadge: theme.success(`AST Doğrulandı ${symbols.check}`),
+      astBadge: theme.success(`Dosya Güncellendi ${symbols.check}`),
     };
   }
 
@@ -320,6 +322,7 @@ const safe = (text: string): string => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9
 export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
   const write = options.write ?? ((t: string) => { process.stdout.write(t); });
   let streaming = false;
+  let thinking = false;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
   let thinkingStartedAt = 0;
   let spinnerFrame = 0;
@@ -341,11 +344,12 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
     const telemetry = `${theme.crystalCyan(`▣ ${mem.heapUsedMB}MB`)} ${theme.brightMint(`%${tokenReport.savingsPercent ?? 0}`)}`;
     const stopHint = theme.amber('[ESC / F12 / ⏹ Durdur]');
     const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${wave} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)} ${theme.dim('·')} ${telemetry} ${theme.dim('·')} ${stopHint}`;
-    const maxCols = Math.max(40, (process.stdout.columns || 100) - 2);
+    const maxCols = Math.max(1, (process.stdout.columns || 100) - 2);
     return truncateAnsi(rawLine, maxCols);
   };
 
   const stopThinking = (): void => {
+    thinking = false;
     if (spinnerTimer) {
       clearInterval(spinnerTimer);
       spinnerTimer = undefined;
@@ -357,10 +361,10 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
   };
 
   const stopSpinner = stopThinking;
-  const isThinking = (): boolean => spinnerTimer !== undefined;
+  const isThinking = (): boolean => thinking;
 
   const updateSpinnerLabel = (label: string): void => {
-    currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
+    currentSpinnerLabel = safe(label).replace(/\r?\n/g, ' ').trim();
     if (options.interactive && spinnerTimer) {
       const line = renderSpinnerLine();
       process.stdout.write(`\x1b[?2026h\r\x1b[2K${line}\x1b[?2026l`);
@@ -377,8 +381,13 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
   };
 
   const startThinking = (label = 'Düşünülüyor…'): void => {
-    currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
+    currentSpinnerLabel = safe(label).replace(/\r?\n/g, ' ').trim();
+    thinking = true;
     if (!options.interactive) return;
+    if (process.env.TBOT_NO_ANIMATION !== undefined || process.env.TERM === 'dumb') {
+      write(`${theme.muted(currentSpinnerLabel)}\n`);
+      return;
+    }
     if (spinnerTimer) {
       // Eğer spinner zaten çalışıyorsa zıplatmadan yerinde güncelle
       updateSpinnerLabel(label);
@@ -461,8 +470,8 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
         finishStream();
         stepCount++;
         toolStartTime = Date.now();
-        const toolTitle = formatToolTitle(event.call.name);
-        const targetInfo = extractToolTarget(event.call.arguments);
+        const toolTitle = safe(formatToolTitle(event.call.name));
+        const targetInfo = safe(extractToolTarget(event.call.arguments));
         const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.crystalCyan(targetInfo)}` : '';
         write(`\n  ${theme.muted('╭─')} ${theme.brightMint('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
         startThinking(`${toolTitle} Çalıştırılıyor`);
@@ -472,8 +481,10 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
       case 'tool_end': {
         stopThinking();
         const elapsed = formatDuration(Date.now() - toolStartTime);
-        const toolTitle = formatToolTitle(event.call.name);
-        const { isError, summary, astBadge } = extractResultSummary(event.result, event.call.name);
+        const toolTitle = safe(formatToolTitle(event.call.name));
+        const result = extractResultSummary(event.result, event.call.name);
+        const { isError, astBadge } = result;
+        const summary = safe(result.summary);
         if (isError) {
           write(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}\n`);
         } else {
@@ -668,7 +679,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   });
 
   const onKeyData = (data: Buffer | string): void => {
-    if (isSuspended || !eventPrinter.isThinking()) return;
+    if (isSuspended) return;
     if (!controller || controller.signal.aborted) return;
     const str = typeof data === 'string' ? data : data.toString();
     // Tek başına ESC (\x1b) veya F12 (\x1b[24~)
@@ -705,6 +716,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
     });
     rl.on('close', () => {
       closed = true;
+      if (!isSuspended) controller?.abort();
       if (interactive) process.stdout.write('\x1b[?25h');
       if (waiting) {
         const resolve = waiting;
@@ -734,6 +746,8 @@ export async function startTui(options: TuiOptions): Promise<void> {
   };
 
   const approve = async (request: ApprovalRequest): Promise<boolean> => {
+    // Input entered before a permission prompt must never approve the next tool.
+    lines.length = 0;
     eventPrinter.stopThinking();
     eventPrinter.finishStream();
     write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
@@ -767,18 +781,18 @@ export async function startTui(options: TuiOptions): Promise<void> {
     }
   };
 
-  if (interactive) {
-    const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
-    await animateLogo(width, () => exiting, 55);
-    write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
-    write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
-    if (options.modeStatus) write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
-    write(`\n  ${renderHudBar(getHudContext())}\n`);
-    write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
-    write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
-  }
-
   try {
+    if (interactive) {
+      const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
+      await animateLogo(width, () => exiting, 55);
+      write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
+      write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
+      if (options.modeStatus) write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
+      write(`\n  ${renderHudBar(getHudContext())}\n`);
+      write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
+      write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
+    }
+
     while (!exiting) {
       const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
       const promptStr = interactive

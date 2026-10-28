@@ -37,7 +37,7 @@ export declare function minifyToolSchema(tool: ToolDefinition): ToolDefinition;
  * Prunes conditional heavy tool definitions with Prompt-Cache-safe sticky activation
  * and deep schema minification.
  */
-export declare function pruneToolDefinitions(tools: ToolDefinition[], userQuery: string, activeSkills?: string[], history?: Message[]): {
+export declare function pruneToolDefinitions(tools: ToolDefinition[], userQuery: string, activeSkills?: string[], history?: Message[], intentGroups?: Set<string>): {
     tools: ToolDefinition[];
     savedTokens: number;
     prunedCount: number;

@@ -44,6 +44,7 @@ export function printUsage() {
 export function parseCli(argv) {
     const options = { command: 'chat', args: [] };
     const positional = [];
+    let literalCommand = false;
     const keys = {
         '-p': 'provider', '--provider': 'provider', '-m': 'model', '--model': 'model',
         '-w': 'workspace', '--workspace': 'workspace', '-r': 'resume', '--resume': 'resume',
@@ -51,6 +52,7 @@ export function parseCli(argv) {
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--') {
+            literalCommand = positional.length === 0;
             positional.push(...argv.slice(i + 1));
             break;
         }
@@ -95,7 +97,7 @@ export function parseCli(argv) {
             positional.push(arg);
     }
     const commands = ['config', 'providers', 'doctor', 'sessions'];
-    if (options.command === 'chat' && commands.includes(positional[0])) {
+    if (options.command === 'chat' && !literalCommand && commands.includes(positional[0])) {
         options.command = positional.shift();
     }
     options.args = positional;

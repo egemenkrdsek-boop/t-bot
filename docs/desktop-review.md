@@ -1,128 +1,32 @@
-# Desktop review — 2026-10-28
+# Desktop incelemesi — 28 Ekim 2026
 
-Scope: all desktop source files, including Electron main process, preload bridge,
-renderer document/controller/styles, and memory-trimmer. Reviewed their contracts
-with config, sessions, agent inputs, workflow storage, model discovery, and MCP
-configuration. No E2E automation was added or run.
+Kapsam: `src/desktop/**`, `tests/desktop.test.cjs`. Electron main, isolated preload, vanilla JS renderer, CSS, IPC, tur/onay/MCP/kapanış yaşam döngüsü ve bellek temizleyicisi incelendi. Kullanıcının mevcut dosyaları ve diğer işçilerin değişiklikleri korundu. E2E çalıştırılmadı.
 
-## Corrections
+## Kararlar ve düzeltmeler
 
-- Removed the developer-specific workspace from startup. The renderer asks main
-  for its workspace; installed launches start in the user's home. Workspace
-  changes reset the selected conversation, and a new session no longer inserts
-  a synthetic user message.
-- Reserved a turn before asynchronous config/provider/session work, rejected
-  overlapping starts, and extended cancellation to asynchronous startup. Pending
-  approvals settle on cancellation and completion. Composer/workspace/new-session
-  controls remain locked until the actual turn promise settles; session switches
-  cannot interrupt the displayed conversation mid-turn.
-- Passed image attachments through IPC into the shared agent input contract
-  implemented by the runtime owner. Decode PNG/JPEG/WebP/GIF inputs, normalize to
-  PNG, resize to a 1200-pixel longest edge, cap three attachments, 4 MB source
-  files, 16-megapixel decoded size and 2 MB base64 per image, release object URLs,
-  validate base64 payloads again in main, and prevent
-  submission while image decoding is pending.
-- Escape assistant HTML before formatting markdown. No raw HTML or markdown link
-  URLs become active renderer elements. Replaced inline event attributes with
-  delegated listeners and added a restrictive CSP, renderer sandbox, blocked
-  navigation/popups, denied Chromium permission prompts, and checked IPC sender
-  webContents and main frame centrally.
-- Settings writes preserve the loaded config object's revision identity, merge
-  existing effort entries, use the provider:model effort key, and accept only the
-  settings fields the desktop actually edits. API keys are cleared from the form
-  after saving/closing. Removed the browser mock that silently stored keys in
-  localStorage. Missing preload now produces an explicit failure screen.
-- Centralized displayed provider/model catalogs on backend discovery and offline
-  fallback instead of maintaining a separate renderer list. Keep configured
-  custom model IDs selectable when discovery omits them. Reject stale model
-  dropdown responses after a provider switch.
-- Made pin-window work, corrected shell.openPath return handling, fixed keyboard
-  navigation in the command search, supported IME composition, added button
-  names/focus rings, keyboard-operable cards/todos/sessions, modal focus containment
-  and restoration, and sidebar controls that remain reachable after collapsing.
-- Actual application quit now aborts startup/active work, resolves pending
-  approvals, stops background processes, closes the browser and desktop daemon,
-  and closes live MCP connections. A dedicated lifecycle helper coalesces repeat
-  quit events and applies a five-second deadline; hiding to tray does not trigger
-  cleanup. New turns are rejected once shutdown starts.
-- Actual total Electron working-set measurements replace the main-process-only
-  RAM display. Removed invented initial RAM/savings/grounding values, invented
-  memory-trim results, assumed connection validation, and the fake active MCP
-  count (disabled default configurations no longer count). MCP status explicitly
-  describes enabled configuration rather than proven connectivity.
-- Removed the Ultracode toggle and stepper: they did not drive a desktop runtime
-  mode. Goal submission now uses the same awaited, cancellable, session-aware
-  message path and shared runGoal runner (up to four autonomous steps). Enabled
-  MCP connections are opened for the turn, passed into the agent and closed in
-  finally after both success and failure; unavailable servers emit safe status
-  messages without disabling ordinary local tools. File drops resolve real paths
-  through preload webUtils.getPathForFile, replacing removed Electron File.path.
+- Mevcut frameworksüz arayüz korundu. Konuşma metni platformun sans yazı tipine ve 14px/1.7 satır aralığına taşındı; kod ve teknik hedefler monospace kaldı. Araç kartları kompakt; başarılı sonuçlar başlangıçta kapalı, gerçek hatalar açık. Önceden akordeon yalnızca sınıf/ok değiştiriyordu; şimdi gövde görünürlüğü ve `aria-expanded` birlikte değişiyor.
+- Araç çıktısındaki herhangi bir `error`, `hata`, `fail` sözcüğü hata sayılmıyor. Çekirdeğin `Tool error:`/`Araç Hatası:` zarfları ve `shell` sonucunun son `Exit code:` durumu kullanılıyor. Başarılı kaynak okumasında `new Error(...)` bulunması yanlış alarm üretmiyor; sıfır dışı shell çıkışı hata gösteriyor. Yarım kalan araçların “Çalışıyor” rozeti tur bitince “Durduruldu” oluyor.
+- Birden fazla paralel araç onayı renderer'daki tek `currentApproval` değerini eziyor, aynı ID'ye sahip kartlar oluşturuyor ve önceki onayı erişilemez bırakabiliyordu. İstekler sıraya alındı. Her karar kendi request ID'sine gider; tur için sürekli izin seçimi sıradaki istekleri de açıkça onaylar. 120 saniyelik süre dolumu main→preload→renderer bildirimiyle kartı sonlandırır ve sıradakini gösterir.
+- IPC onayı ve YOLO yetkilendirmesi yalnızca gerçek boolean `true` ile kabul ediliyor. `approved: "false"` gibi truthy değerler izin sayılmıyor. Onay resolver'ı gönderimden önce kaydedilir; renderer yoksa veya gönderim başarısızsa istek hemen reddedilir.
+- Oturum geçmişi yüklenirken gönderim ve yeni gezinme kilitlenir; yeni oturumun asenkron oluşturulması da aynı rezervasyonu kullanır. Eski oturum listesi, iş akışı veya model kataloğu yanıtları daha yeni bir seçimi/çalışma alanını ezemez. Aktif oturum IPC üzerinden silinemez. Silinen açık oturumun kimliği temizlenir. Başarısız/iptal edilen turun dönen session ID'si korunur; kullanıcı iptali gereksiz hata kartı üretmez.
+- Renderer süreci çökerse tur iptal edilir ve bekleyen onaylar reddedilir. MCP `close()` işleminin süresiz takılması tur kilidini tutamaz: her bağlantının kapanışı 5 saniye ile sınırlandı. Gerçek uygulama kapanışının mevcut tek-seferlik/deadline cleanup akışı korundu.
+- RAM temizliği için eşzamanlı tray/IPC talepleri tek in-flight promise'i paylaşır. Kullanıcı tarafından yazılabilir dizindeki kalıcı .NET DLL'ini `Assembly.LoadFrom` ile yükleme kaldırıldı; Windows yardımcı tipi süreç içinde sabit kaynak koddan oluşturulur. PowerShell işlemi gizli ve 5 saniyelik sınırlıdır. Fiziksel çalışma kümesi boşaltmak kalıcı heap azalması değildir; gösterge ölçülen çalışma kümesini raporlar.
+- Otomatik basınç temizliği 15 saniyelik hafif ölçümde pencere gizliyken de çalışır. Yalnızca sistem boş RAM ≤0.25GB ve uygulama çalışma kümesi ≥128MB olduğunda veya toplam Electron çalışma kümesi ≥768MB olduğunda GC/working-set trim tetiklenir. Manuel temizleme dahil son denemenin giriş zamanından itibaren 120 saniye cooldown uygulanır; başarısız deneme de cooldown tüketir ve eşzamanlı trim başlatılamaz. Aktif session/history değiştirilmez; session sıkıştırması çekirdeğin tur-sonu yoluna bırakılır. Kapanış sırasında yeni kontrol başlatılmaz; mevcut will-quit interval temizliği korunur.
+- Logo idle animation döngüsü eklenmedi; mevcut statik canvas, 50ms kümelenmiş stream render, görünür pencereye 15sn telemetri yayını ve CSS reduced-motion politikası korundu. Düşünme süresi araç geçişlerinde sıfırlanmaz; tek timer bütün tur boyunca devam eder. Ekran görüntüsü önizlemesi klavye ile açılabilir.
 
-## Cost and interface decisions
+## Kanıt
 
-Kept Electron with vanilla JavaScript/CSS and the existing module boundaries.
-Applied neutral surfaces, smaller static branding, readable dark-theme secondary
-text, fewer decorative claims, and a narrower sidebar. Eliminated the permanent
-60 FPS canvas loop, blurred overlays, decorative idle animation, and automatic
-PowerShell/working-set trimming after every turn. Streaming markdown redraws are
-coalesced to 50 ms and flushed at message boundaries. Thinking time updates once
-per second; completed tool cards are removed from the active-card map. CSS honors
-prefers-reduced-motion; JavaScript uses a static thinking marker in that mode.
+`node --test tests/desktop.test.cjs`: **22/22 geçti**. Testler gerçek modül kaynaklarını VM içinde çalıştırır; provider, IPC ve DOM sınırları küçük stub'larla izole edilir. Kanıtlanan davranışlar: markdown/URL güvenliği, toplam RAM ve ölçülen sıfır, IPC sender/subframe kontrolü, asenkron tur rezervasyonu ve iptali, ek doğrulaması, config revision kimliği, MCP araç aktarımı/kapanışı, CSP, kapanış deadline'ı, araç hata sınıflandırması, akordeon görünürlüğü/ARIA, yavaş oturum yükleme rezervasyonu, eski çalışma alanı yanıtının atılması, timer sürekliliği, strict boolean onayı ve truthy YOLO bypass regresyonu, gönderim öncesi onay kaydı, aktif oturum silme koruması, trim taleplerinin birleşmesi, paralel onay sırası ve takılan MCP kapanışı, gizli pencere basınç eşiği, iki dakikalık/manual-shared cooldown ve tek in-flight basınç temizliği.
 
-Manual memory trim remains available. Windows EmptyWorkingSet changes resident
-working-set accounting and can cause subsequent page faults; it is not evidence
-that heap allocations were released. Removed the arbitrary 128 MB V8 heap cap, which could exhaust during image/provider
-copies. Bounded image inputs and reduced idle work provide the cost controls.
-No arbitrary RAM/performance target is
-claimed from source review or these checks.
+`node --check src/desktop/renderer/app.js`: geçti. Repository genelindeki son typecheck/build ve paketleme root koordinasyonunda yapılır.
 
-## Verification
+## Sınırlar
 
-- `node --test tests/desktop.test.cjs`: 10 passing focused checks covering
-  hostile markdown, measured RAM values, IPC frame ownership, overlapping startup
-  and cancellation, malformed attachments, config revision identity/effort
-  preservation, MCP tool hydration/cleanup on success and failure, and CSP/inline-event
-  restrictions, actual-quit versus tray-hide lifecycle behavior, and a hanging
-  cleanup deadline. These use isolated JavaScript
-  contexts and mocked IPC; they do not launch Electron or drive its UI.
-- `node --check src/desktop/renderer/app.js` and
-  `node --check src/desktop/preload.cjs`: passed.
-- `npm run typecheck`: passed again after the runtime image contract and
-  concurrent computer-tool integration were complete.
-- `git diff --check -- src/desktop`: passed (Git only reported the repository's
-  configured future LF-to-CRLF conversion notices).
+Bu testler Electron/Win32 kurulumunun, gerçek grafik donanımının, dış model sağlayıcısının veya gerçek MCP sunucusunun çalıştığını kanıtlamaz. Kullanıcı E2E'yi yasakladı; prompt, araç veya harici sağlayıcı içeren UI akışı çalıştırılmadı. RAM/token tasarrufunda rakiplere göre yüzde iddiası ölçülmedi ve bu incelemeden çıkarılamaz. MCP kapanışı deadline'ı UI kilidini serbest bırakır; bozuk üçüncü taraf taşıyıcının gerçekten sonlandığını garanti etmez. Tool-result sözleşmesi string olduğundan hata durumu çekirdeğin belgelenen önekleri ve shell kapanış satırıyla sınırlıdır; gelecekte yapısal durum alanı eklenirse renderer onu tercih etmelidir. Büyük geçmişin tam DOM olarak yüklenmesi sürmektedir; sanallaştırma için ayrıca ölçüm gerekir.
 
-Root coordinates final production build, packaging, and release artifact checks.
 
-## Limits and follow-up considerations
+## Kurulu 2.0.2 açılış gözlemi
 
-- No graphical/installed-app visual QA, screen-reader QA, live provider request,
-  real Windows trim measurement, or packaged-app execution was performed by this
-  reviewer. The checks above do not prove those behaviors or an absolute RAM cap.
-- Markdown intentionally supports a small safe subset; markdown links render as
-  text. Images are first-frame/static PNG after normalization.
-- Session history remains fully rendered; extremely long conversations can still
-  grow renderer DOM/memory. No virtualization dependency or speculative rewrite
-  was introduced. Existing tool results are scroll-bounded visually, not truncated
-  in underlying stored history.
-- Desktop goal launch now uses the shared bounded autonomous goal runner.
-  Ultracode orchestration remains CLI-owned, and no desktop toggle claims to
-  activate it.
-- Custom provider endpoint management and MCP connection setup remain CLI-owned;
-  desktop exposes current provider/model settings and enabled MCP configuration.
-- The existing memory-trimmer native helper and optional headless verification
-  mode were reviewed but not exercised or rewritten. Automatic post-turn working-set
-  trimming is removed; only explicit user actions and explicit verification use it.
-- Image dimensions are checked after browser decoding; this is not a guarantee
-  against transient decode memory pressure from unusually compressed image files.
-- SessionStore intentionally strips image payloads on disk: resumed conversations
-  contain saved text/tool history and require reattaching images for visual context.
-- MCP command-only definitions are not adapted into shell strings. Use an existing
-  supported provider or a configured stdio URL; malformed/unsupported connections
-  report a safe status and ordinary agent tools continue.
-- Quit cleanup uses existing shared shutdown APIs. The browser shutdown API
-  waits for any in-progress browser launch. If that launch outlasts the five-second
-  quit deadline, a newly launched external browser could escape graceful cleanup;
-  a browser-owner launch cancellation/force-shutdown API is required to eliminate
-  that race. This review does not claim that a deadline can force a stuck external
-  transport to release its process.
+Yerel kurulu `T Bot.exe` Windows Computer Use (`@oai/sky`) ile açıldı ve yalnızca açılış/yerleşim içsel olarak incelendi. 1222×821 pencere görüntüsünde sol oturum listesi, orta karşılama ve mesaj alanı, sağ görev paneli ve üst pencere kontrolleri yerleşti; engelleyici modal, hata ekranı veya boş renderer gözlenmedi. Mesaj gönderilmedi; sağlayıcı, ajan aracı veya uygulama içi browser/computer akışı başlatılmadı. Bu bir E2E testi değildir.
+
+Tek açılış anlık ölçümünde arayüzün toplam Electron çalışma kümesi göstergesi **426.4 MB** idi. Bu tek değer soğuk açılış ölçümüdür; kararlı durum veya rakiple bellek kıyası değildir. Kişisel oturum başlıkları bulunduğundan ekran görüntüsü dosyası kaydedilmedi. Uzun model adıyla alt HUD sağ ucu ve dar mesaj alanındaki uzun placeholder metni sıkışabiliyor; ana kontroller erişilebilir kaldı. Bu kozmetik sınır nedeniyle kurulum sonrası kaynak değişikliği yapılmadı.

@@ -73,7 +73,7 @@ async function configure(config: AppConfig, onboarding = false, presetProvider =
       apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
     }
   }
-  const models = await discoverModels(id, apiKey);
+  const models = await discoverModels(id, apiKey, undefined, selectedConfig.baseUrl);
   const options = models.map(model => ({ label: model.label, value: model.id }));
   if (modelOnly && id === config.provider && config.model && !options.some(model => model.value === config.model)) options.unshift({ label: `${config.model} (Mevcut)`, value: config.model });
   if (!options.length) throw new Error(`${spec.label} için model listesi alınamadı. Yerel sunucunun açık ve modelin yüklü olduğunu kontrol edin veya başka bir sağlayıcı seçin.`);
@@ -93,10 +93,10 @@ function showEvent(event: AgentEvent): void {
   else if (event.type === 'status') console.error(`\n${safe(event.message)}`);
 }
 
-async function approveOnce(request: ApprovalRequest): Promise<boolean> {
+async function approveOnce(request: ApprovalRequest, signal?: AbortSignal): Promise<boolean> {
   if (!stdin.isTTY || !stdout.isTTY) { console.error(`Onay gerekli, terminal yok: ${safe(request.description)}`); return false; }
   const rl = createInterface({ input: stdin, output: stdout });
-  try { return /^(e|evet|y|yes)$/i.test((await rl.question(`\n${safe(request.description)}\n${safe(JSON.stringify(request.arguments))}\nİzin Verilsin mi? [E/H] `)).trim()); }
+  try { return /^(e|evet|y|yes)$/i.test((await rl.question(`\n${safe(request.description)}\n${safe(JSON.stringify(request.arguments))}\nİzin Verilsin mi? [E/H] `, { signal })).trim()); }
   finally { rl.close(); }
 }
 
@@ -259,9 +259,10 @@ export async function main(argv: string[]): Promise<void> {
 
   let yolo = options.yolo === true || getWorkspacePermission(config, workspace) === 'allow';
 
-  const checkApproval = (tuiApprove?: (req: ApprovalRequest) => Promise<boolean>) => (request: ApprovalRequest): Promise<boolean> => {
+  const checkApproval = (tuiApprove?: (req: ApprovalRequest) => Promise<boolean>, signal?: AbortSignal) => (request: ApprovalRequest): Promise<boolean> => {
+    if (signal?.aborted) return Promise.resolve(false);
     if (yolo || getWorkspacePermission(config, workspace) === 'allow') return Promise.resolve(true);
-    return tuiApprove ? tuiApprove(request) : approveOnce(request);
+    return tuiApprove ? tuiApprove(request) : approveOnce(request, signal);
   };
 
   const ensureBotBridge = async (customToken?: string, suspendUi?: <T>(action: () => Promise<T>) => Promise<T>): Promise<{ ok: boolean; message: string }> => {
@@ -293,6 +294,8 @@ export async function main(argv: string[]): Promise<void> {
     }
   };
 
+  if (!options.message && (!stdin.isTTY || !stdout.isTTY)) throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
+
   if (options.bot) {
     try {
       const token = await getCustomSecret('telegram_bot_token');
@@ -321,6 +324,7 @@ export async function main(argv: string[]): Promise<void> {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
     registerGuiKillSwitch((reason) => {
       showEvent({ type: 'error', error: reason });
       controller.abort();
@@ -336,7 +340,7 @@ export async function main(argv: string[]): Promise<void> {
         mcpTools,
         imageProvider: await imageConfig(),
         onEvent: withAuth(event => { showEvent(event); if (event.type === 'error') process.exitCode = 1; }),
-        approve: checkApproval(),
+        approve: checkApproval(undefined, controller.signal),
         signal: controller.signal
       });
       await store.save(session);
@@ -344,20 +348,19 @@ export async function main(argv: string[]): Promise<void> {
     } finally {
       registerGuiKillSwitch(null);
       process.off('SIGINT', cancel);
+      process.off('SIGTERM', cancel);
       await cleanupAllResources();
     }
     return;
   }
 
-  if (!stdin.isTTY || !stdout.isTTY) throw new Error('Etkileşimli mod için terminal gerekli; istek metnini argüman olarak verin.');
-
-  startAutoMemoryGuard(() => session);
-  const { startTui } = await import('./tui.js');
   try {
+    startAutoMemoryGuard(() => session);
+    const { startTui } = await import('./tui.js');
     await startTui({
       workspace,
-      provider,
-      model: config.model,
+      get provider() { return provider; },
+      get model() { return config.model; },
       history: session.messages,
       yolo,
       modeStatus,
@@ -477,7 +480,8 @@ export async function main(argv: string[]): Promise<void> {
             if (!action || action === 'keep') return;
             if (action === 'disable') { workerProvider = undefined; workerModel = ''; emit({ type: 'status', message: 'Alt ajanlar kapatıldı.' }); return; }
           }
-          const models = await discoverModels(config.provider, (await resolveProviderConfig(config, workspace)).apiKey, signal);
+          const discoveryConfig = await resolveProviderConfig(config, workspace);
+          const models = await discoverModels(config.provider, discoveryConfig.apiKey, signal, discoveryConfig.baseUrl);
           if (signal.aborted) return;
           const selected = await suspendUi(() => selectOption('Alt Ajan Modeli Seçin', models.map(m => ({ label: m.label, value: m.id }))));
           if (!selected) { emit({ type: 'status', message: 'Alt ajan model seçimi iptal edildi veya model yok.' }); return; }

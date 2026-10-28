@@ -17,7 +17,7 @@ export function fallbackModels(provider) {
     return (FALLBACK[provider] ?? []).map(id => ({ id, label: id }));
 }
 /** Read the official model catalog without exposing the key in URLs or errors. */
-export async function discoverModels(provider, apiKey, signal) {
+export async function discoverModels(provider, apiKey, signal, baseUrl) {
     signal?.throwIfAborted();
     const fallback = fallbackModels(provider);
     const urls = {
@@ -28,8 +28,21 @@ export async function discoverModels(provider, apiKey, signal) {
         ollama: 'http://localhost:11434/v1/models',
         lmstudio: 'http://localhost:1234/v1/models',
     };
-    const url = urls[provider];
-    if (!url || (!apiKey && !['openrouter', 'ollama', 'lmstudio'].includes(provider)))
+    let url = urls[provider];
+    if (baseUrl?.trim() && ['custom', 'ollama', 'lmstudio'].includes(provider)) {
+        try {
+            const parsed = new URL(baseUrl.trim());
+            const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+            if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) || parsed.username || parsed.password || parsed.search || parsed.hash)
+                return fallback;
+            parsed.pathname = `${parsed.pathname.replace(/\/$/, '')}/models`;
+            url = parsed.toString();
+        }
+        catch {
+            return fallback;
+        }
+    }
+    if (!url || (!apiKey && !['openrouter', 'ollama', 'lmstudio', 'custom'].includes(provider)))
         return fallback;
     try {
         const headers = { accept: 'application/json' };
@@ -39,7 +52,7 @@ export async function discoverModels(provider, apiKey, signal) {
         }
         else if (provider === 'gemini')
             headers['x-goog-api-key'] = apiKey;
-        else if (apiKey && !['ollama', 'lmstudio'].includes(provider))
+        else if (apiKey)
             headers.authorization = `Bearer ${apiKey}`;
         const response = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), redirect: 'error' });
         if (!response.ok)

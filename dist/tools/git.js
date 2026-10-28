@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { access, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { shellEnvironment } from './shell.js';
 export const gitToolDefinitions = [
     {
         name: 'git_status',
@@ -82,14 +84,36 @@ export const gitToolDefinitions = [
         },
     },
 ];
-function runGit(cwd, args, signal) {
+/** Never let Windows search the untrusted child cwd for git.exe. */
+export async function resolveGitExecutable(workspace, source = process.env) {
+    const root = await realpath(workspace);
+    const pathValue = Object.entries(source).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '';
+    for (const raw of pathValue.split(delimiter)) {
+        const dir = raw.replace(/^"(.*)"$/, '$1');
+        if (!isAbsolute(dir))
+            continue;
+        try {
+            const candidate = await realpath(join(dir, process.platform === 'win32' ? 'git.exe' : 'git'));
+            const rel = relative(root, candidate);
+            if (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
+                continue;
+            if (!(await stat(candidate)).isFile())
+                continue;
+            await access(candidate, constants.X_OK);
+            return candidate;
+        }
+        catch { /* Try the next absolute installation directory. */ }
+    }
+    throw new Error('A Git installation outside the workspace must be available on an absolute PATH.');
+}
+function runGit(executable, cwd, args, signal) {
     signal?.throwIfAborted();
-    const env = { ...process.env };
+    const env = shellEnvironment();
     for (const key of Object.keys(env))
         if (key.toUpperCase().startsWith('GIT_'))
             delete env[key];
     return new Promise((resolvePromise, reject) => {
-        execFile('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=false', ...args], {
+        execFile(executable, ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=false', ...args], {
             cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true, signal,
             env: { ...env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', GIT_EXTERNAL_DIFF: '', GIT_CONFIG_NOSYSTEM: '1' },
         }, (error, stdout, stderr) => {
@@ -103,23 +127,26 @@ function runGit(cwd, args, signal) {
 }
 export async function handleGitTool(name, args, context) {
     const workspace = await realpath(resolve(context.workspace));
-    const root = await realpath((await runGit(workspace, ['rev-parse', '--show-toplevel'], context.signal)).trim());
+    context.signal?.throwIfAborted();
+    const executable = await resolveGitExecutable(workspace);
+    const run = (args) => runGit(executable, workspace, args, context.signal);
+    const root = await realpath((await run(['rev-parse', '--show-toplevel'])).trim());
     const inside = relative(root, workspace);
     if (isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`))
         throw new Error('Workspace is outside the Git repository');
     if (name === 'git_status') {
-        return runGit(workspace, ['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '--', '.'], context.signal);
+        return run(['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '--', '.']);
     }
     if (name === 'git_diff') {
         if (args.staged !== undefined && typeof args.staged !== 'boolean')
             throw new Error('staged must be a boolean');
-        return runGit(workspace, ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', ...(args.staged ? ['--cached'] : []), '--', '.'], context.signal);
+        return run(['diff', '--no-ext-diff', '--no-textconv', '--no-renames', ...(args.staged ? ['--cached'] : []), '--', '.']);
     }
     if (name === 'git_log') {
         const limit = args.limit === undefined ? 20 : args.limit;
         if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50)
             throw new Error('limit must be an integer between 1 and 50');
-        return runGit(workspace, ['log', `--max-count=${limit}`, '--format=%h %ad %s', '--date=short', '--', '.'], context.signal);
+        return run(['log', `--max-count=${limit}`, '--format=%h %ad %s', '--date=short', '--', '.']);
     }
     if (name === 'git_add') {
         const rawPaths = Array.isArray(args.paths) ? args.paths : ['.'];
@@ -129,7 +156,7 @@ export async function handleGitTool(name, args, context) {
                 throw new Error('paths elements must be non-empty strings');
             paths.push(p.trim());
         }
-        const output = await runGit(workspace, ['add', '--', ...paths], context.signal);
+        const output = await run(['add', '--', ...paths]);
         return output.trim() === '(no output)' || !output.trim() ? 'Files staged successfully.' : output;
     }
     if (name === 'git_commit') {
@@ -138,14 +165,14 @@ export async function handleGitTool(name, args, context) {
         if (args.all !== undefined && typeof args.all !== 'boolean')
             throw new Error('all must be a boolean');
         const commitArgs = ['commit', ...(args.all ? ['-a'] : []), '-m', args.message.trim()];
-        return runGit(workspace, commitArgs, context.signal);
+        return run(commitArgs);
     }
     if (name === 'git_branch') {
         const branchName = typeof args.name === 'string' ? args.name.trim() : '';
         if (args.checkout !== undefined && typeof args.checkout !== 'boolean')
             throw new Error('checkout must be a boolean');
         if (!branchName) {
-            return runGit(workspace, ['branch', '--list', '-v'], context.signal);
+            return run(['branch', '--list', '-v']);
         }
         // Prevent unsafe branch argument injection
         if (/[\s~^:?*\[\\]/.test(branchName) || branchName.startsWith('-'))
@@ -153,18 +180,18 @@ export async function handleGitTool(name, args, context) {
         if (args.checkout) {
             let branchExists = false;
             try {
-                await runGit(workspace, ['rev-parse', '--verify', `refs/heads/${branchName}`], context.signal);
+                await run(['rev-parse', '--verify', `refs/heads/${branchName}`]);
                 branchExists = true;
             }
             catch {
                 branchExists = false;
             }
             if (branchExists) {
-                return runGit(workspace, ['checkout', branchName], context.signal);
+                return run(['checkout', branchName]);
             }
-            return runGit(workspace, ['checkout', '-b', branchName], context.signal);
+            return run(['checkout', '-b', branchName]);
         }
-        return runGit(workspace, ['branch', branchName], context.signal);
+        return run(['branch', branchName]);
     }
     if (name === 'git_push') {
         const remote = typeof args.remote === 'string' && args.remote.trim() ? args.remote.trim() : 'origin';
@@ -177,7 +204,7 @@ export async function handleGitTool(name, args, context) {
                 throw new Error('Invalid branch name');
             pushArgs.push(branch);
         }
-        return runGit(workspace, pushArgs, context.signal);
+        return run(pushArgs);
     }
     throw new Error(`Unknown Git tool: ${name}`);
 }

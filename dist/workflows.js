@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { runAgent } from './agent.js';
 import { withFileLock } from './lock.js';
+import { workspaceStatePath } from './workspace-state.js';
 import { reclaimMemory } from './memory-guard.js';
 import { estimateMessagesTokens, globalTokenTracker } from './token-optimizer.js';
-const goalPath = (workspace) => join(workspace, '.tbot', 'goal.json');
-const goalLockPath = (workspace) => join(workspace, '.tbot', 'goal.lock');
+const goalPath = (workspace) => workspaceStatePath(workspace, '.tbot/goal.json');
+const goalLockPath = (workspace) => workspaceStatePath(workspace, '.tbot/goal.lock');
 async function withGoalLock(workspace, action) {
     try {
         return await withFileLock(goalLockPath(workspace), action, 30_000);
@@ -283,10 +284,11 @@ export function executePlan(input, plan, runner = runAgent) {
     });
 }
 const todosCache = new Map();
-const todosPath = (workspace) => join(workspace, '.tbot', 'todos.json');
+const todosPath = (workspace) => workspaceStatePath(workspace, '.tbot/todos.json');
 export async function getTodos(workspace) {
+    const file = todosPath(workspace);
     try {
-        const raw = await readFile(todosPath(workspace), 'utf8');
+        const raw = await readFile(file, 'utf8');
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
             todosCache.set(workspace, parsed);
@@ -299,13 +301,16 @@ export async function getTodos(workspace) {
     return todosCache.get(workspace) || [];
 }
 export async function saveTodos(workspace, todos) {
-    todosCache.set(workspace, todos);
+    const file = todosPath(workspace);
+    await mkdir(join(workspace, '.tbot'), { recursive: true });
+    const temporary = `${file}.${randomUUID()}.tmp`;
     try {
-        await mkdir(join(workspace, '.tbot'), { recursive: true });
-        await writeFile(todosPath(workspace), JSON.stringify(todos, null, 2), 'utf8');
+        await writeFile(temporary, JSON.stringify(todos, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        await rename(temporary, file);
+        todosCache.set(workspace, todos);
     }
-    catch {
-        // Disk yazma hatası göz ardı edilir
+    finally {
+        await unlink(temporary).catch(() => undefined);
     }
 }
 /**
@@ -360,79 +365,81 @@ export function getActiveFocusSummary(workspaceRoot) {
 }
 export async function executeWorkflowTool(name, args, workspaceRoot) {
     if (name === 'todo_manage') {
-        const action = String(args.action || 'list').toLowerCase();
-        let currentTodos = await getTodos(workspaceRoot);
-        if (action === 'set') {
-            const rawItems = args.items;
-            const itemsList = Array.isArray(rawItems)
-                ? rawItems.map(String)
-                : typeof rawItems === 'string'
-                    ? rawItems.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
-                    : [];
-            currentTodos = itemsList.map((text, idx) => ({
-                id: `todo_${Date.now()}_${idx}`,
-                text,
-                status: args.status || 'pending',
-            }));
-            await saveTodos(workspaceRoot, currentTodos);
-        }
-        else if (action === 'add') {
-            const rawItems = args.items;
-            const itemsList = Array.isArray(rawItems)
-                ? rawItems.map(String)
-                : typeof rawItems === 'string'
-                    ? [rawItems.trim()]
-                    : [];
-            for (let i = 0; i < itemsList.length; i++) {
-                const text = itemsList[i];
-                if (text) {
-                    currentTodos.push({
-                        id: `todo_${Date.now()}_${i}`,
-                        text,
-                        status: args.status || 'pending',
-                    });
+        return withFileLock(workspaceStatePath(workspaceRoot, '.tbot/todos.lock'), async () => {
+            const action = String(args.action || 'list').toLowerCase();
+            let currentTodos = await getTodos(workspaceRoot);
+            if (action === 'set') {
+                const rawItems = args.items;
+                const itemsList = Array.isArray(rawItems)
+                    ? rawItems.map(String)
+                    : typeof rawItems === 'string'
+                        ? rawItems.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+                        : [];
+                currentTodos = itemsList.map((text, idx) => ({
+                    id: `todo_${Date.now()}_${idx}`,
+                    text,
+                    status: args.status || 'pending',
+                }));
+                await saveTodos(workspaceRoot, currentTodos);
+            }
+            else if (action === 'add') {
+                const rawItems = args.items;
+                const itemsList = Array.isArray(rawItems)
+                    ? rawItems.map(String)
+                    : typeof rawItems === 'string'
+                        ? [rawItems.trim()]
+                        : [];
+                for (let i = 0; i < itemsList.length; i++) {
+                    const text = itemsList[i];
+                    if (text) {
+                        currentTodos.push({
+                            id: `todo_${Date.now()}_${i}`,
+                            text,
+                            status: args.status || 'pending',
+                        });
+                    }
+                }
+                await saveTodos(workspaceRoot, currentTodos);
+            }
+            else if (action === 'update') {
+                const rawIndex = Number(args.index);
+                if (Number.isFinite(rawIndex)) {
+                    const idx = rawIndex > 0 ? rawIndex - 1 : rawIndex;
+                    if (idx >= 0 && idx < currentTodos.length) {
+                        if (args.status && ['pending', 'in_progress', 'completed'].includes(String(args.status))) {
+                            currentTodos[idx].status = args.status;
+                        }
+                        if (args.text && typeof args.text === 'string') {
+                            currentTodos[idx].text = args.text.trim();
+                        }
+                        await saveTodos(workspaceRoot, currentTodos);
+                    }
+                    else {
+                        return `Hata: Belirtilen görev indeksi (${rawIndex}) bulunamadı. Toplam ${currentTodos.length} madde mevcut.`;
+                    }
                 }
             }
-            await saveTodos(workspaceRoot, currentTodos);
-        }
-        else if (action === 'update') {
-            const rawIndex = Number(args.index);
-            if (Number.isFinite(rawIndex)) {
-                const idx = rawIndex > 0 ? rawIndex - 1 : rawIndex;
-                if (idx >= 0 && idx < currentTodos.length) {
-                    if (args.status && ['pending', 'in_progress', 'completed'].includes(String(args.status))) {
-                        currentTodos[idx].status = args.status;
-                    }
-                    if (args.text && typeof args.text === 'string') {
-                        currentTodos[idx].text = args.text.trim();
-                    }
-                    await saveTodos(workspaceRoot, currentTodos);
-                }
-                else {
-                    return `Hata: Belirtilen görev indeksi (${rawIndex}) bulunamadı. Toplam ${currentTodos.length} madde mevcut.`;
-                }
+            else if (action === 'clear') {
+                currentTodos = [];
+                await saveTodos(workspaceRoot, currentTodos);
+                return 'Görev pusulası başarıyla temizlendi.';
             }
-        }
-        else if (action === 'clear') {
-            currentTodos = [];
-            await saveTodos(workspaceRoot, currentTodos);
-            return 'Görev pusulası başarıyla temizlendi.';
-        }
-        else if (action === 'list') {
-            // currentTodos already fetched
-        }
-        else {
-            return `Bilinmeyen action: "${action}". Geçerli eylemler: set, add, update, clear, list.`;
-        }
-        if (currentTodos.length === 0) {
-            return 'Görev listesi boş.';
-        }
-        return currentTodos
-            .map((t, i) => {
-            const icon = t.status === 'completed' ? '[✓]' : t.status === 'in_progress' ? '[◉]' : '[ ]';
-            return `${i + 1}. ${icon} ${t.text} (${t.status})`;
-        })
-            .join('\n');
+            else if (action === 'list') {
+                // currentTodos already fetched
+            }
+            else {
+                return `Bilinmeyen action: "${action}". Geçerli eylemler: set, add, update, clear, list.`;
+            }
+            if (currentTodos.length === 0) {
+                return 'Görev listesi boş.';
+            }
+            return currentTodos
+                .map((t, i) => {
+                const icon = t.status === 'completed' ? '[✓]' : t.status === 'in_progress' ? '[◉]' : '[ ]';
+                return `${i + 1}. ${icon} ${t.text} (${t.status})`;
+            })
+                .join('\n');
+        });
     }
     if (name === 'goal_manage') {
         const action = String(args.action || 'status').toLowerCase();

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
-import { mkdtemp, readFile, rm, open } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, open, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, isAbsolute, dirname, basename, sep } from 'node:path';
 import { executeDesktopRequest } from '../src/tools/desktop-request.js';
 import { handleImageTool } from '../src/tools/image.js';
 import { handleFileTool } from '../src/tools/files.js';
@@ -96,7 +96,11 @@ test('valid inline image generation still saves the returned bytes inside worksp
       imageProvider: { provider: 'openai', apiKey: 'test' },
     });
     const output = result.replace('Generated image saved: ', '');
-    assert.ok(output.startsWith(join(dir, 'generated-images')));
+    const imageDirectory = await realpath(join(dir, 'generated-images'));
+    const relativeOutput = relative(imageDirectory, await realpath(output));
+    assert.ok(relativeOutput && !isAbsolute(relativeOutput) && relativeOutput !== '..' && !relativeOutput.startsWith(`..${sep}`));
+    assert.equal(dirname(relativeOutput), '.', 'output must be a direct child of generated-images');
+    assert.match(basename(relativeOutput), /^image-[a-f0-9-]{36}\.png$/i);
     assert.deepEqual(await readFile(output), png);
   } finally { fetch.mock.restore(); await rm(dir, { recursive: true, force: true }); }
 });

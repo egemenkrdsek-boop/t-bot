@@ -109,18 +109,28 @@ export function computeUnifiedLineDiff(prevContent, newContent, contextLines = 2
         groups.push(curGroup);
     }
     const hunks = [];
+    // Source positions immediately before each operation. Insert/delete-only
+    // hunks need both cursors even when one side has no indexed operation.
+    const oldPositions = [];
+    const newPositions = [];
+    let oldPosition = prefix;
+    let newPosition = prefix;
+    for (const op of ops) {
+        oldPositions.push(oldPosition);
+        newPositions.push(newPosition);
+        if (op.type !== 'insert')
+            oldPosition++;
+        if (op.type !== 'delete')
+            newPosition++;
+    }
     for (const group of groups) {
         const hunkLines = [];
-        let oldStart = -1;
-        let newStart = -1;
         let oldCount = 0;
         let newCount = 0;
         const prefixContextCount = group.startOp === 0 ? Math.min(contextLines, prefix) : 0;
+        const oldStart = oldPositions[group.startOp] + 1 - prefixContextCount;
+        const newStart = newPositions[group.startOp] + 1 - prefixContextCount;
         for (let p = prefix - prefixContextCount; p < prefix; p++) {
-            if (oldStart === -1)
-                oldStart = p + 1;
-            if (newStart === -1)
-                newStart = p + 1;
             oldCount++;
             newCount++;
             hunkLines.push(` ${oldLines[p]}`);
@@ -128,31 +138,15 @@ export function computeUnifiedLineDiff(prevContent, newContent, contextLines = 2
         for (let opIdx = group.startOp; opIdx <= group.endOp; opIdx++) {
             const op = ops[opIdx];
             if (op.type === 'common') {
-                if (oldStart === -1)
-                    oldStart = op.oldIndex + 1;
-                if (newStart === -1)
-                    newStart = op.newIndex + 1;
                 oldCount++;
                 newCount++;
                 hunkLines.push(` ${op.line}`);
             }
             else if (op.type === 'delete') {
-                if (oldStart === -1)
-                    oldStart = op.oldIndex + 1;
-                if (newStart === -1) {
-                    const fallbackNew = ops.find(o => o.newIndex !== -1)?.newIndex ?? prefix;
-                    newStart = fallbackNew + 1;
-                }
                 oldCount++;
                 hunkLines.push(`-${op.line}`);
             }
             else if (op.type === 'insert') {
-                if (newStart === -1)
-                    newStart = op.newIndex + 1;
-                if (oldStart === -1) {
-                    const fallbackOld = ops.find(o => o.oldIndex !== -1)?.oldIndex ?? prefix;
-                    oldStart = fallbackOld + 1;
-                }
                 newCount++;
                 hunkLines.push(`+${op.line}`);
             }
@@ -165,11 +159,7 @@ export function computeUnifiedLineDiff(prevContent, newContent, contextLines = 2
                 hunkLines.push(` ${oldLines[s]}`);
             }
         }
-        if (oldStart === -1)
-            oldStart = 1;
-        if (newStart === -1)
-            newStart = 1;
-        const header = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+        const header = `@@ -${oldCount ? oldStart : oldStart - 1},${oldCount} +${newCount ? newStart : newStart - 1},${newCount} @@`;
         hunks.push(`${header}\n${hunkLines.join('\n')}`);
     }
     return hunks.join('\n');
@@ -229,12 +219,10 @@ export class ContextReadCache {
                     const originalTokens = estimateTokens(formattedSlice);
                     const cachedTokens = estimateTokens(output);
                     const savedTokens = Math.max(0, originalTokens - cachedTokens);
-                    globalTokenTracker.recordContextCacheSaving(savedTokens);
-                    return {
-                        cached: true,
-                        output,
-                        savedTokens,
-                    };
+                    if (savedTokens > 0) {
+                        globalTokenTracker.recordContextCacheSaving(savedTokens);
+                        return { cached: true, output, savedTokens };
+                    }
                 }
                 // A cache reference is not a physical read. Only actual contents refresh
                 // coverage, so compression can never leave an indefinitely reused stub.
@@ -257,11 +245,10 @@ export class ContextReadCache {
                 const diffOutput = computeUnifiedLineDiff(existing.lastContent, fullContent, 2);
                 if (diffOutput && diffOutput.length < formattedSlice.length * 0.65) {
                     const fullTokens = estimateTokens(formattedSlice);
-                    const diffTokens = estimateTokens(diffOutput);
+                    const output = `[DİFERANSİYEL DIFF ÖNBELLEĞİ: ${relPath} — Dosya önceki okumaya göre güncellendi. Değişen satır blokları:]\n${diffOutput}`;
+                    const diffTokens = estimateTokens(output);
                     const savedTokens = Math.max(0, fullTokens - diffTokens);
                     if (savedTokens > 0) {
-                        const savingRatio = Math.max(1, Math.min(95, Math.round((savedTokens / fullTokens) * 100)));
-                        const output = `[DİFERANSİYEL DIFF ÖNBELLEĞİ: Dosya önceki okumaya göre güncellendi. Yalnızca değişen satır blokları gösteriliyor (~%${savingRatio} token tasarrufu):]\n${diffOutput}`;
                         existing.hash = hash;
                         existing.lines = lines;
                         existing.totalLines = totalLines;

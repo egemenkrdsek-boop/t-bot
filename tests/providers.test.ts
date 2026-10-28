@@ -2,7 +2,28 @@ import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { createProvider } from '../src/providers.js';
 import { createOpenAIResponsesProvider } from '../src/openai-responses.js';
+import { discoverModels } from '../src/models.js';
 import type { Provider, ProviderEvent } from '../src/types.js';
+
+test('custom model discovery uses the configured safe endpoint and never redirects credentials', async () => {
+  const requests: { url: string; options: RequestInit | undefined }[] = [];
+  const fetch = mock.method(globalThis, 'fetch', async (url: string | URL | Request, options?: RequestInit) => {
+    requests.push({ url: String(url), options });
+    return Response.json({ data: [{ id: 'local-model' }] });
+  });
+  try {
+    assert.deepEqual(await discoverModels('custom', 'local-key', undefined, 'http://localhost:9000/v1/'), [{ id: 'local-model', label: 'local-model' }]);
+    assert.equal(requests[0].url, 'http://localhost:9000/v1/models');
+    assert.equal(requests[0].options?.redirect, 'error');
+    assert.equal((requests[0].options?.headers as Record<string, string>).authorization, 'Bearer local-key');
+    for (const unsafe of ['http://remote.example/v1', 'https://user:pass@example.com/v1', 'https://example.com/v1?key=secret', 'file:///tmp/models']) {
+      assert.deepEqual(await discoverModels('custom', 'secret', undefined, unsafe), []);
+    }
+    assert.equal(requests.length, 1);
+    await discoverModels('openai', 'official-key', undefined, 'https://override.example/v1');
+    assert.equal(requests[1].url, 'https://api.openai.com/v1/models');
+  } finally { fetch.mock.restore(); }
+});
 
 function response(frames: unknown[]): Response {
   return new Response(frames.map(frame => `data: ${typeof frame === 'string' ? frame : JSON.stringify(frame)}\n\n`).join(''), {

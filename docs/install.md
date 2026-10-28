@@ -33,6 +33,8 @@ Windows betiği npm global prefix'ini kullanıcı PATH'ine ekler. Linux/macOS be
 
 İlk kullanım: `tbot config`, ardından `tbot`. Güncellemek için aynı kurulum komutunu tekrar çalıştırın. Kaldırmak için `npm uninstall -g t-bot-cli` kullanın. Kullanıcı yapılandırması kaldırılmaz.
 
+Telegram için `TELEGRAM_BOT_TOKEN` ve tercihen `TELEGRAM_ALLOWED_CHATS` yapılandırıp `tbot --bot` çalıştırın. Allowlist boşsa yerel terminalin gösterdiği `/pair <32-karakter hex kod>` komutunu yetkilendireceğiniz chat'e gönderin. Kod 10 dakika ve tüm chatler toplamında 10 denemeyle sınırlıdır, tek kullanımlıktır; yeni kod için ağ geçidini yerelden yeniden başlatın. Yapılandırılmış allowlist varken eşleştirme yoktur. Grup chat'i yetkilendirmek gruptaki üyelerin tamamına chat yetkisi verir.
+
 ## Kaynaktan masaüstü ve yerel kurulum
 
 ```powershell
@@ -42,9 +44,9 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-`npm ci` kaynak paketini de derler. `npm run dist:win`, TypeScript çıktılarını ve renderer HTML/CSS/JS/preload dosyalarını oluşturur, ardından tek yapılandırma kaynağı `electron-builder.yml` ile NSIS paketi üretir. Çıktı `release/T-Bot-Setup-<version>.exe` olur. Yükleyici Windows x64 içindir; imzalama sertifikası yapılandırılmadıysa imzasızdır ve Windows uyarı gösterebilir.
+`npm ci` kaynak paketini de derler. `npm run dist:win`, TypeScript çıktılarını ve renderer HTML/CSS/JS/preload dosyalarını oluşturur, ardından tek yapılandırma kaynağı `electron-builder.yml` ile NSIS paketi üretir. Çıktı `release/T-Bot-Setup-<version>.exe` ve yükleyici/uygulama SHA256 değerlerini içeren `release/build-manifest.json` olur. Yükleyici Windows x64 içindir; imzalama sertifikası yapılandırılmadıysa imzasızdır ve Windows uyarı gösterebilir.
 
-Yerel kurulum betiği varsayılan olarak `%LOCALAPPDATA%\Programs\T Bot` konumuna kurar. Gerekirse `-SetupPath <exe>` ve `-InstallDirectory <dizin>` verin. Betik yalnızca hedef kurulumdaki çalışan T Bot süreçlerini kapatır; yükleyici hatasında veya sürüm uyuşmazlığında durur. Uygulamayı otomatik açmaz. Windows Ayarlar > Uygulamalar üzerinden kaldırabilirsiniz.
+Yerel kurulum betiği varsayılan olarak `%LOCALAPPDATA%\Programs\T Bot` konumuna kurar. Gerekirse `-SetupPath <exe>`, `-ManifestPath <json>` ve `-InstallDirectory <dizin>` verin. Manifest varsayılan olarak yükleyicinin yanında aranır; eski, manifestsiz yükleyiciyi bu betikle kurmadan önce yeniden derleyin. Betik süreçleri kapatmadan önce yükleyicinin SHA256 değerini doğrular, yalnızca hedef kurulumdaki çalışan T Bot süreçlerini kapatır; yükleyici hatasında, sürüm veya kurulan `resources/app.asar` SHA256 uyuşmazlığında durur. Uygulamayı otomatik açmaz. Manifest bütünlük denetimidir; imza veya bağımsız güven kaynağı değildir. Windows Ayarlar > Uygulamalar üzerinden kaldırabilirsiniz.
 
 Geliştirme: `npm run desktop`. Electron indirmesini önceki CLI kurulumunda atladıysanız, `ELECTRON_SKIP_BINARY_DOWNLOAD` ortam değişkenini kaldırıp `node node_modules/electron/install.js` çalıştırın.
 

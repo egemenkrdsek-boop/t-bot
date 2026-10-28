@@ -9,7 +9,7 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
   thoughtSignature?: string;
 }
-export interface ImageAttachment { mimeType: 'image/png'; data: string; }
+export interface ImageAttachment { mimeType: 'image/png' | 'image/jpeg'; data: string; }
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;

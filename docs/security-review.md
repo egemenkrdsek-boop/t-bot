@@ -1,6 +1,30 @@
 # Güvenlik incelemesi — 28 Ekim 2026
 
-Bu belge üretim olgunlaştırma çalışmasındaki kaynak kod incelemesini ve odaklı birim testlerini kaydeder. Tamamlanmış bir Codex Security taraması, sızma testi veya güvenlik garantisi değildir. Yerel uygulama, gerçek sağlayıcı hesapları, Telegram, MCP sunucuları ve işletim sistemi otomasyonu uçtan uca çalıştırılmadı.
+Bu belge kaynak kod incelemesini ve odaklı doğrulamaları kaydeder. Aşağıdaki eski inceleme kayıtlarına ek olarak 28 Ekim 2026'da tek Standard Codex Security taraması tamamlandı; kapsamı kısmi, bulguları düzeltme öncesi gözlemlerdir. Sızma testi veya güvenlik garantisi değildir. Gerçek sağlayıcı hesapları, Telegram, MCP sunucuları ve işletim sistemi otomasyonu uçtan uca çalıştırılmadı.
+
+## Standard tarama ve sonraki düzeltmeler
+
+Tarama kimliği: `ca84ab09-5d6b-4fd7-b3a5-e674d369e128`. Preflight `ready`; bağımsız baseline, mimari ve araç sınırı incelemesi kullanıldı. Kanonik `report.md`, `scan-manifest.json`, `findings.json`, `coverage.json` ve `threatmodel.md` yerel Codex Security dizinindedir:
+
+`C:\Users\Egemen\.codex\state\plugins\codex-security\scans\T-Bot\e72740f5f0f73bc40f65f13d3821c155719c2fa8_20261028T082910Z_vayxyqqi`
+
+Kanonik sonuç **1 high + 2 medium**, kapsam **partial** olarak mühürlendi. Başlangıç revision'ı `e72740f5f0f73bc40f65f13d3821c155719c2fa8`; eşzamanlı yetkili değişiklikler nedeniyle checkout değişikliği uyarısı korunur. Bu sonuç mevcut düzeltilmiş ağacın yeniden taraması değildir. Token ölçümü araç tarafından `unavailable` döndü.
+
+| Önceki açık | Mevcut düzeltme | Odaklı kanıt |
+| --- | --- | --- |
+| Windows'ta onaysız Git okumaları workspace içindeki `git.exe`yi çalıştırabiliyordu (high, CWE-427). | Git yalnızca mutlak PATH dizinlerinden çözülür; gerçek executable workspace dışında olmalıdır. İlk `rev-parse` dahil bütün işlemler aynı mutlak yolu kullanır; çocuk ortamına ortak sır filtresi uygulanır. | Güvenilir Node binary'sinin geçici workspace'e `git.exe` olarak kopyalanıp yalnız `--version` çalıştırılması eski cwd seçimini doğruladı. Düzeltilmiş Git status/diff/log gerçek kurulu Git ile çalışır. Relative/boş PATH ve workspace'e dönen junction adayları reddedilir. |
+| `skill_create` gelecekteki global/proje talimatlarını onaysız kaydediyordu (medium, CWE-862). | Ortak dağıtıcı onay ister; kapsamın gelecekteki etkisi açıklanır. Özel skill metni güvenilmeyen guidance olarak etiketlenir, izin veremez. | Project/global reddi handler'a ulaşmaz; onaylı project/global oluşturma ve yeniden yükleme korunur. |
+| Proje state/skill yolları `.tbot` junction/symlink üzerinden workspace dışına gidiyordu (medium, CWE-59). | Memory/workflow ve skill okuma/yazma yolları ortak `workspaceStatePath` denetiminden geçer. Skill yazıları özel temp dosya + rename ile atomik değiştirilir. | `.tbot` ve `skills` junction okumaları/yazıları reddedilir; auto-distill da aynı kontrolü kullanır. Dış dosyaya hardlink olan skill güncellenirken dış sentinel değişmez. Kök workspace alias'ı meşru kalır. |
+
+Tek fresh yama incelemesinde iki ek sınır görüldü ve düzeltildi: skill'in mevcut hardlink üzerinden dış dosyayı değiştirmesi atomik replace ile kapatıldı; Telegram'ın onay argümanlarını 500 karakterde kesmesi kaldırıldı. Artık tam argüman JSON'u mesaj parçalarında gösterilir; 24.000 karakteri aşan istek onay beklemeden reddedilir. Bu ikinci Telegram bulgusu mühürlü üç bulguya sonradan eklenmedi; burada ayrı düzeltme kaydıdır.
+
+Bot/PowerShell tam statik tamamlamasında ayrıca kalıcı altı haneli pairing kodunun sınırsız denenebildiği görüldü. Yeni kod 128 bit rastgele, tek kullanımlık, 10 dakika geçerli ve bütün chatler için toplam 10 deneme bütçelidir. Süre/bütçe dolunca yerel bridge yeniden başlatılır. Uzaktan yeni kod üretilemez. Telegram teslimat hızı, gerçek eşleştirme ve hesaplar çalıştırılmadı.
+
+Son odaklı doğrulama: `node --import tsx --test tests/security.test.ts tests/runtime-tools.test.ts` **23/23**, `npx tsc --noEmit` başarılı. Bunlar yerel fonksiyon/birim kontrolleridir; Git fixture testi yalnız geçici depoda init/status/diff/log ve test commit'i kullanır, ürün deposunda commit/push yapmaz. Başlangıçtaki `runtime-tools.test.ts` canonical-path düzeltmesi korundu. Son toplu suite/build/paket sonucu için `docs/verification.md` esas alınır.
+
+Tam okunan ek yüzeyler: `src/bot.ts`, `src/telegram-security.ts` ve `scripts/computer.ps1` (gömülü C# Win32/UIA dahil). PowerShell DLL cache `APPDATA/TBot/bin` altından yüklenir; bağımsız saldırgan yazma yetkisi veya daha yüksek ayrıcalıkla çalışma kanıtlanmadığından ayrı açık olarak raporlanmadı. Güçlendirme seçeneği: paketlenmiş önceden derlenmiş DLL ve uygulamaya sabitlenmiş digest'i daemon başlangıcında doğrulamak. Aynı kullanıcı tarafından değiştirilebilir cache bütünüyle güvenilir sayılmaz; her çağrıda yeniden derleme ile CPU maliyeti artırılmadı.
+
+Kalan somut sınırlar: gerçek OS sandbox yoktur; aynı kullanıcıyla eşzamanlı path değiştirme ve filesystem reparse varyantları için atomik yetki sınırı kurulmaz. Git kurulumu workspace içinde veya yalnız relative PATH'teyse güvenli biçimde hata verir; kurulu Git mutlak PATH üzerinden workspace dışında bulunmalıdır. Telegram grup yetkisi chat üyelerinin tamamını kapsar. Vercel otomatik paketlenen dosyaların birebir digest/önizleme onay bağı ve son READY durumu bu taramada doğrulanmadı. Bağımlılıklar, üretilmiş binary/dokümanlar ve kalan bütün ürün yüzeyleri eksiksiz denetlenmedi.
 
 ## Kapatılan sınırlar
 
@@ -41,7 +65,7 @@ Odaklı/sampled inceleme: `src/tools/index.ts` araç politikası, alias normaliz
 - Kabuk **OS sandbox içinde çalışmaz**. Çalışma dizini workspace olsa da komutlar kullanıcının bütün izinleriyle dosyalara, ağa ve süreçlere erişebilir. Onay veya YOLO ayarı bu erişimi belirler. Ortam filtreleme, sır dosyalarının aynı OS kullanıcısı tarafından okunmasını engellemez; sır kullanması gereken CLI'lar artık anahtarın açıkça sağlanmasını gerektirir.
 - GUI/browser araçları yerel geliştirme siteleri ve gerçek masaüstü eylemleri için tasarlanmıştır. Bunlara genel web aracının ağ kısıtı uygulanmaz; ortak dağıtıcı GUI için varsayılan olarak onay ister. `TBOT_REQUIRE_GUI_APPROVAL=false` ayarı bu kontrolü açıkça kapatır. URL metni kontrolü, yönlendirme ve alt kaynaklar için ağ güvenlik duvarı sayılmaz.
 - Dosya araçları workspace dışına çıkmayı ve görülen symlink'leri reddeder. Kontroller ile kullanım atomik değildir; aynı kullanıcıyla eşzamanlı yol değiştiren bir süreç veya Windows reparse-point varyantları için OS düzeyinde izolasyon sağlanmaz. Windows kopyalama fallback'i de atomik rename garantisi vermez.
-- Telegram allowlist'i **chat** bazındadır. Yetkili grup chat'inde bütün üyeler bu yetkiye dahildir. Grup üyelerinin ayrı kimlik doğrulaması yoktur. İlk eşleştirme kodu yerel günlükte gösterilir; deneme sayısı için kalıcı hız sınırı yoktur. Metin `/onay` mevcut bekleyen isteği onaylar; nonce bağlama inline düğmelere uygulanır.
+- Telegram allowlist'i **chat** bazındadır. Yetkili grup chat'inde bütün üyeler bu yetkiye dahildir. Grup üyelerinin ayrı kimlik doğrulaması yoktur. İlk eşleştirme kodu yerel günlükte gösterilir; yeni challenge 10 dakika ve toplam 10 denemeyle sınırlıdır. Metin `/onay` mevcut bekleyen isteği onaylar; nonce bağlama inline düğmelere uygulanır.
 - Sabit sağlayıcıların anahtarları kullanıcı tarafından verilen başka uç noktalara gönderilmez; özel/yerel sağlayıcı yapılandırması güvenilir kullanıcı ayarıdır. Sağlayıcı HTTP çağrıları yönlendirmeleri reddeder. Canlı API doğrulaması yapılmadı.
 - Windows sır saklama DPAPI ve kullanıcıya kısıtlı ACL kullanır; şifreleme başarısızlığında açık metne geri düşmez. Windows dışı saklama 0600 dosyadır ve şifreli değildir. Oturum sır maskelemesi sezgiseldir; bilinmeyen sır biçimlerini yakalama garantisi yoktur.
 - MCP stdio yapılandırması yerel program başlatma yetkisidir. HTTP MCP sağlayıcılarında sabit origin ve redirect reddi görülmüştür. MCP araçları ortak dağıtıcıda onay gerektirir ve çıktıları güvenilmeyen içerik olarak işaretlenir; üçüncü taraf araçların davranışı burada doğrulanmadı.

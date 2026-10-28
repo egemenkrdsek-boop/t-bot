@@ -1,5 +1,5 @@
 // Pre-compiled BPE approximation regex moved outside estimateTokens for zero re-compilation overhead
-const tokenRegex = /'s|'t|'re|'ve|'m|'ll|'d|\p{Lu}\p{Ll}+|\p{Lu}+(?!\p{Ll})|\p{Ll}+|\p{N}+|===|!==|==|!=|<=|>=|=>|->|\+\+|--|&&|\|\||\+=|-=|\*=|\/=|::|[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']|\r\n|\r|\n|\s+|\P{M}\p{M}+|[^\s\p{L}\p{N}]/gu;
+const tokenRegex = /'s|'t|'re|'ve|'m|'ll|'d|\p{Lu}\p{Ll}+|\p{Lu}+(?!\p{Ll})|\p{Ll}+|\p{L}+|\p{N}+|===|!==|==|!=|<=|>=|=>|->|\+\+|--|&&|\|\||\+=|-=|\*=|\/=|::|[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']|\r\n|\r|\n|\s+|\P{M}\p{M}+|[^\s\p{L}\p{N}]/gu;
 const MAX_STRING_CACHE_SIZE = 600;
 export const stringTokenCache = new Map();
 export const messageTokenCache = new WeakMap();
@@ -343,7 +343,7 @@ export function minifyToolSchema(tool) {
  * Prunes conditional heavy tool definitions with Prompt-Cache-safe sticky activation
  * and deep schema minification.
  */
-export function pruneToolDefinitions(tools, userQuery, activeSkills = [], history = []) {
+export function pruneToolDefinitions(tools, userQuery, activeSkills = [], history = [], intentGroups = activeIntentGroups) {
     const originalTokens = tools.reduce((acc, t) => acc + estimateSingleToolTokens(t), 0);
     const recentHistoryTexts = history.slice(-4).map(m => m.content || '').join(' ');
     const combinedContext = `${userQuery} ${recentHistoryTexts}`.toLowerCase();
@@ -351,27 +351,27 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
     // Check intent groups from current query, recent messages, and active skills
     for (const [group, keywords] of Object.entries(INTENT_GROUP_KEYWORDS)) {
         if (keywords.some(kw => combinedContext.includes(kw))) {
-            activeIntentGroups.add(group);
+            intentGroups.add(group);
         }
     }
     for (const skill of skillsSet) {
         if (skill.includes('browser') || skill.includes('web') || skill.includes('playwright')) {
-            activeIntentGroups.add('browser');
+            intentGroups.add('browser');
         }
         if (skill.includes('computer') || skill.includes('desktop')) {
-            activeIntentGroups.add('computer');
+            intentGroups.add('computer');
         }
         if (skill.includes('image')) {
-            activeIntentGroups.add('image');
+            intentGroups.add('image');
         }
         if (skill.includes('git') || skill.includes('pr') || skill.includes('review')) {
-            activeIntentGroups.add('git');
+            intentGroups.add('git');
         }
         if (skill.includes('mcp') || skill.includes('github') || skill.includes('supabase')) {
-            activeIntentGroups.add('mcp');
+            intentGroups.add('mcp');
         }
         if (skill.includes('skill')) {
-            activeIntentGroups.add('skill');
+            intentGroups.add('skill');
         }
     }
     // Also activate groups for any tool already called in conversation history
@@ -380,7 +380,7 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
             for (const tc of msg.toolCalls) {
                 const grp = classifyToolIntentGroup(tc.name);
                 if (grp && grp !== 'core') {
-                    activeIntentGroups.add(grp);
+                    intentGroups.add(grp);
                 }
             }
         }
@@ -392,7 +392,7 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
                 ? tool.name.split('__')[1]?.toLowerCase()
                 : tool.name.split('_')[1]?.toLowerCase();
             if (serviceName && serviceName !== 'catalog' && serviceName !== 'call' && combinedContext.includes(serviceName)) {
-                activeIntentGroups.add('mcp');
+                intentGroups.add('mcp');
             }
         }
     }
@@ -405,7 +405,7 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
             continue;
         }
         if (group !== null) {
-            if (activeIntentGroups.has(group)) {
+            if (intentGroups.has(group)) {
                 keptTools.push(minifyToolSchema(tool));
             }
             continue;

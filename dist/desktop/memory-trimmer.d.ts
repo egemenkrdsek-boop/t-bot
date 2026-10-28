@@ -23,3 +23,7 @@ export declare function getDesktopMemoryStats(mainWindow?: BrowserWindow): Deskt
  * and invokes V8 GC to minimize physical working set memory.
  */
 export declare function trimDesktopMemory(mainWindow?: BrowserWindow, force?: boolean): Promise<DesktopTrimResult>;
+/** Hidden windows still reclaim under critical pressure, without changing session state.
+ * Share the manual trim timestamp so repeated failures cannot spawn helper storms.
+ */
+export declare function trimDesktopMemoryUnderPressure(mainWindow?: BrowserWindow, stats?: DesktopMemoryStats): Promise<DesktopTrimResult | undefined>;

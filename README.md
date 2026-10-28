@@ -1,6 +1,6 @@
 ![T Bot Logosu](assets/tabit.webp)
 
-# T Bot 2.0.1
+# T Bot 2.0.2
 
 T Bot; terminalden veya Windows masaüstü uygulamasından kullanılan yerel bir yapay zekâ ajanıdır. Kod ve dosya araçları, sağlayıcı bağlantıları, Windows masaüstü kontrolü, Playwright tarayıcısı ve Telegram ağ geçidi içerir. Gemini, OpenAI, Anthropic, OpenRouter ve uyumlu yerel model sunucularıyla yapılandırılabilir.
 
@@ -42,7 +42,7 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-Bu akış Electron ve NSIS derleme araçlarını indirir. `release/T-Bot-Setup-2.0.1.exe` üretir; kurulum betiği sürümü `package.json` üzerinden alır, yükleyicinin çıkış kodunu ve kurulan uygulamanın sürümünü denetler. Mevcut uygulamayı kapatır; açık çalışmalarınızı kaydedin. Geliştirme için `npm run desktop` kullanın. CLI kurulumu Electron indirmesini atladıysa önce `node node_modules/electron/install.js` çalıştırın.
+Bu akış Electron ve NSIS derleme araçlarını indirir. `release/T-Bot-Setup-2.0.2.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler; böylece aynı sürüm numaralı eski bir kurulum başarı sayılmaz. Manifest ve yükleyiciyi birlikte saklayın. Mevcut uygulamayı kapatır; açık çalışmalarınızı kaydedin. Geliştirme için `npm run desktop` kullanın. CLI kurulumu Electron indirmesini atladıysa önce `node node_modules/electron/install.js` çalıştırın.
 
 ## Başlangıç
 
@@ -71,6 +71,8 @@ tbot --bot
 ```
 
 Ağ geçidi yerel makineden long polling yapar; makine ve T Bot açık kalmalıdır. Bot tokenınızı paylaşmayın. Araç onayları ve yetkilendirme ayarlarını ihtiyacınıza göre inceleyin. `--yolo` otomatik onay verdiği için yalnızca güvendiğiniz görevlerde kullanın.
+
+İzin verilen chat listesi boşsa ilk bağlantı için yerel terminalde `/pair <32-karakter hex kod>` gösterilir. Bu tek kullanımlık kod 10 dakika geçerlidir ve tüm chatler için toplam 10 denemeye izin verir. Kodu yalnızca yetkilendireceğiniz chat'e gönderin. Süre veya deneme sınırı dolarsa ağ geçidini yerelden durdurup yeniden başlatın; uzaktan yeni kod üretilemez. Allowlist önceden yapılandırılmışsa eşleştirme açılmaz. Yetkili grup chat'indeki üyeler ortak chat yetkisini paylaşır.
 
 ## Doğruluk ve performans sınırları
 

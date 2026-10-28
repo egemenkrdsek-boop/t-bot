@@ -1,7 +1,5 @@
-import os, { homedir } from 'node:os';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { app, BrowserWindow } from 'electron';
 
 export interface DesktopMemoryStats {
@@ -22,6 +20,7 @@ export interface DesktopTrimResult {
 
 let lastFreedMB = 0;
 let lastTrimAt = 0;
+let activeTrim: Promise<DesktopTrimResult> | null = null;
 const TRIM_COOLDOWN_MS = 10_000;
 
 /**
@@ -81,10 +80,29 @@ export function getDesktopMemoryStats(mainWindow?: BrowserWindow): DesktopMemory
  * Executes Win32 EmptyWorkingSet on all Electron processes (Main, Renderer, GPU, Utility)
  * and invokes V8 GC to minimize physical working set memory.
  */
-export async function trimDesktopMemory(
+export function trimDesktopMemory(
   mainWindow?: BrowserWindow,
   force = true
 ): Promise<DesktopTrimResult> {
+  if (activeTrim) return activeTrim;
+  activeTrim = performDesktopMemoryTrim(mainWindow, force).finally(() => { activeTrim = null; });
+  return activeTrim;
+}
+
+/** Hidden windows still reclaim under critical pressure, without changing session state.
+ * Share the manual trim timestamp so repeated failures cannot spawn helper storms.
+ */
+export async function trimDesktopMemoryUnderPressure(
+  mainWindow?: BrowserWindow,
+  stats = getDesktopMemoryStats(mainWindow),
+): Promise<DesktopTrimResult | undefined> {
+  const criticalSystemPressure = stats.systemFreeGB <= 0.25 && stats.totalWorkingSetMB >= 128;
+  const excessiveAppMemory = stats.totalWorkingSetMB >= 768;
+  if ((!criticalSystemPressure && !excessiveAppMemory) || activeTrim || Date.now() - lastTrimAt < 120_000) return;
+  return trimDesktopMemory(mainWindow, false);
+}
+
+async function performDesktopMemoryTrim(mainWindow: BrowserWindow | undefined, force: boolean): Promise<DesktopTrimResult> {
   const now = Date.now();
   if (!force && now - lastTrimAt < TRIM_COOLDOWN_MS) {
     const current = getDesktopMemoryStats(mainWindow);
@@ -162,18 +180,10 @@ async function trimWindowsDesktopPids(mainWindow?: BrowserWindow): Promise<void>
   const pidList = Array.from(pids).join(',');
   if (!pidList) return;
 
-  const dllPath = join(process.env.APPDATA || homedir(), 'TBot', 'bin', 'tbot-desktop-wstrim-v1.dll');
-  await mkdir(dirname(dllPath), { recursive: true, mode: 0o700 }).catch(() => undefined);
-
   return new Promise<void>((resolve) => {
     try {
-      const escapedDllPath = dllPath.replace(/'/g, "''");
       const script = `
-$dll = '${escapedDllPath}'
-if (Test-Path -LiteralPath $dll) {
-  [void][Reflection.Assembly]::LoadFrom($dll)
-} else {
-  $def = @'
+$def = @'
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -192,9 +202,7 @@ public static class DesktopMemTrimmer {
     }
 }
 '@
-  Add-Type -TypeDefinition $def -Language CSharp -OutputAssembly $dll
-  [void][Reflection.Assembly]::LoadFrom($dll)
-}
+Add-Type -TypeDefinition $def -Language CSharp
 [DesktopMemTrimmer]::Clean(@(${pidList}))
 `;
 

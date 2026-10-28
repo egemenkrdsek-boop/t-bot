@@ -9,7 +9,7 @@ export interface ToolCall {
     thoughtSignature?: string;
 }
 export interface ImageAttachment {
-    mimeType: 'image/png';
+    mimeType: 'image/png' | 'image/jpeg';
     data: string;
 }
 export interface Message {

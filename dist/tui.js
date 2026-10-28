@@ -19,8 +19,8 @@ function renderMiniSavingsBar(percent, cells = 5) {
  * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export function renderHudBar(config) {
-    const model = config.model || 'Model';
-    const effort = config.effort || 'Normal';
+    const model = safe(config.model || 'Model');
+    const effort = safe(config.effort || 'Normal');
     const report = globalTokenTracker.getReport();
     const savingsPct = report.savingsPercent || 0;
     const savedTokens = report.totalSavedTokens > 0 ? report.totalSavedTokens.toLocaleString() : '0';
@@ -28,14 +28,14 @@ export function renderHudBar(config) {
     const savingsStr = `${theme.brightMint(`Tasarruf: %${savingsPct}`)} ${miniBar} ${theme.dim(`(${savedTokens} Tok)`)}`;
     const gStatus = globalGroundingLedger.getStatus();
     const groundingStr = gStatus.warnings.length === 0
-        ? theme.success('Doğrulama: Doğrulandı')
+        ? theme.success('Doğrulama: Uyarı Yok')
         : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
     const mem = getMemoryStats();
     const ramStatusDot = mem.pressure === 'high' ? theme.danger('▲') : (mem.pressure === 'moderate' ? theme.amber('■') : theme.success('●'));
     const ramStr = `${theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB`)} ${ramStatusDot} ${theme.dim(`(Sistem: %${mem.systemUsedPercent})`)}`;
     const botStatus = getTelegramBotStatus();
     const botPart = botStatus.running
-        ? theme.success(`Bot: ${botStatus.username ? `@${botStatus.username}` : 'Aktif'}`)
+        ? theme.success(`Bot: ${botStatus.username ? `@${safe(botStatus.username)}` : 'Aktif'}`)
         : (config.mcpCount && config.mcpCount > 0
             ? theme.softLavender(`MCP: ${config.mcpCount}`)
             : theme.dim('Bot: Pasif'));
@@ -104,7 +104,10 @@ function extractToolTarget(args) {
     let obj = {};
     if (typeof args === 'string') {
         try {
-            obj = JSON.parse(args);
+            const parsed = JSON.parse(args);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                return '';
+            obj = parsed;
         }
         catch {
             const clean = args.trim().replace(/\r?\n.*/s, '');
@@ -170,7 +173,7 @@ function extractResultSummary(result, toolName) {
         if (diffMatch) {
             const plus = diffMatch[1];
             const minus = diffMatch[2];
-            const astBadge = theme.success(`+${plus} / -${minus} satır · AST Doğrulandı ${symbols.check}`);
+            const astBadge = theme.success(`+${plus} / -${minus} satır · Dosya Güncellendi ${symbols.check}`);
             const cleanLine = (trimmed.split('\n')[0] || '').replace(/\s*\(\+\d+\s*\/\s*-\d+[^)]*\)/i, '').trim();
             return {
                 isError: false,
@@ -182,7 +185,7 @@ function extractResultSummary(result, toolName) {
             trimmed.match(/(\d+)\s*(?:lines?|satır)\b/i);
         if (lineCountMatch) {
             const lineCount = lineCountMatch[1];
-            const astBadge = theme.success(`+${lineCount} / -0 satır · AST Doğrulandı ${symbols.check}`);
+            const astBadge = theme.success(`+${lineCount} / -0 satır · Dosya Güncellendi ${symbols.check}`);
             const cleanLine = (trimmed.split('\n')[0] || '').trim();
             return {
                 isError: false,
@@ -194,7 +197,7 @@ function extractResultSummary(result, toolName) {
         return {
             isError: false,
             summary: firstLine.length > 50 ? `${firstLine.slice(0, 47)}...` : firstLine,
-            astBadge: theme.success(`AST Doğrulandı ${symbols.check}`),
+            astBadge: theme.success(`Dosya Güncellendi ${symbols.check}`),
         };
     }
     const lines = trimmed.split('\n').filter(l => l.trim().length > 0);
@@ -258,6 +261,7 @@ const safe = (text) => text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 export function createEventPrinter(options) {
     const write = options.write ?? ((t) => { process.stdout.write(t); });
     let streaming = false;
+    let thinking = false;
     let spinnerTimer;
     let thinkingStartedAt = 0;
     let spinnerFrame = 0;
@@ -277,10 +281,11 @@ export function createEventPrinter(options) {
         const telemetry = `${theme.crystalCyan(`▣ ${mem.heapUsedMB}MB`)} ${theme.brightMint(`%${tokenReport.savingsPercent ?? 0}`)}`;
         const stopHint = theme.amber('[ESC / F12 / ⏹ Durdur]');
         const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame])} ${wave} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)} ${theme.dim('·')} ${telemetry} ${theme.dim('·')} ${stopHint}`;
-        const maxCols = Math.max(40, (process.stdout.columns || 100) - 2);
+        const maxCols = Math.max(1, (process.stdout.columns || 100) - 2);
         return truncateAnsi(rawLine, maxCols);
     };
     const stopThinking = () => {
+        thinking = false;
         if (spinnerTimer) {
             clearInterval(spinnerTimer);
             spinnerTimer = undefined;
@@ -291,9 +296,9 @@ export function createEventPrinter(options) {
         }
     };
     const stopSpinner = stopThinking;
-    const isThinking = () => spinnerTimer !== undefined;
+    const isThinking = () => thinking;
     const updateSpinnerLabel = (label) => {
-        currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
+        currentSpinnerLabel = safe(label).replace(/\r?\n/g, ' ').trim();
         if (options.interactive && spinnerTimer) {
             const line = renderSpinnerLine();
             process.stdout.write(`\x1b[?2026h\r\x1b[2K${line}\x1b[?2026l`);
@@ -309,9 +314,14 @@ export function createEventPrinter(options) {
         }
     };
     const startThinking = (label = 'Düşünülüyor…') => {
-        currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
+        currentSpinnerLabel = safe(label).replace(/\r?\n/g, ' ').trim();
+        thinking = true;
         if (!options.interactive)
             return;
+        if (process.env.TBOT_NO_ANIMATION !== undefined || process.env.TERM === 'dumb') {
+            write(`${theme.muted(currentSpinnerLabel)}\n`);
+            return;
+        }
         if (spinnerTimer) {
             // Eğer spinner zaten çalışıyorsa zıplatmadan yerinde güncelle
             updateSpinnerLabel(label);
@@ -397,8 +407,8 @@ export function createEventPrinter(options) {
                 finishStream();
                 stepCount++;
                 toolStartTime = Date.now();
-                const toolTitle = formatToolTitle(event.call.name);
-                const targetInfo = extractToolTarget(event.call.arguments);
+                const toolTitle = safe(formatToolTitle(event.call.name));
+                const targetInfo = safe(extractToolTarget(event.call.arguments));
                 const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.crystalCyan(targetInfo)}` : '';
                 write(`\n  ${theme.muted('╭─')} ${theme.brightMint('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
                 startThinking(`${toolTitle} Çalıştırılıyor`);
@@ -407,8 +417,10 @@ export function createEventPrinter(options) {
             case 'tool_end': {
                 stopThinking();
                 const elapsed = formatDuration(Date.now() - toolStartTime);
-                const toolTitle = formatToolTitle(event.call.name);
-                const { isError, summary, astBadge } = extractResultSummary(event.result, event.call.name);
+                const toolTitle = safe(formatToolTitle(event.call.name));
+                const result = extractResultSummary(event.result, event.call.name);
+                const { isError, astBadge } = result;
+                const summary = safe(result.summary);
                 if (isError) {
                     write(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}\n`);
                 }
@@ -581,7 +593,7 @@ export async function startTui(options) {
         }
     });
     const onKeyData = (data) => {
-        if (isSuspended || !eventPrinter.isThinking())
+        if (isSuspended)
             return;
         if (!controller || controller.signal.aborted)
             return;
@@ -619,6 +631,8 @@ export async function startTui(options) {
         });
         rl.on('close', () => {
             closed = true;
+            if (!isSuspended)
+                controller?.abort();
             if (interactive)
                 process.stdout.write('\x1b[?25h');
             if (waiting) {
@@ -655,6 +669,8 @@ export async function startTui(options) {
         return new Promise(resolve => { waiting = resolve; });
     };
     const approve = async (request) => {
+        // Input entered before a permission prompt must never approve the next tool.
+        lines.length = 0;
         eventPrinter.stopThinking();
         eventPrinter.finishStream();
         write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
@@ -688,18 +704,18 @@ export async function startTui(options) {
             attach();
         }
     };
-    if (interactive) {
-        const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
-        await animateLogo(width, () => exiting, 55);
-        write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
-        write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
-        if (options.modeStatus)
-            write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
-        write(`\n  ${renderHudBar(getHudContext())}\n`);
-        write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
-        write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
-    }
     try {
+        if (interactive) {
+            const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
+            await animateLogo(width, () => exiting, 55);
+            write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
+            write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
+            if (options.modeStatus)
+                write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
+            write(`\n  ${renderHudBar(getHudContext())}\n`);
+            write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
+            write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
+        }
         while (!exiting) {
             const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
             const promptStr = interactive

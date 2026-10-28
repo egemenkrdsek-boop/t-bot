@@ -21,7 +21,7 @@ export function fallbackModels(provider: string): ModelOption[] {
 }
 
 /** Read the official model catalog without exposing the key in URLs or errors. */
-export async function discoverModels(provider: string, apiKey?: string, signal?: AbortSignal): Promise<ModelOption[]> {
+export async function discoverModels(provider: string, apiKey?: string, signal?: AbortSignal, baseUrl?: string): Promise<ModelOption[]> {
   signal?.throwIfAborted();
   const fallback = fallbackModels(provider);
   const urls: Record<string, string> = {
@@ -32,13 +32,22 @@ export async function discoverModels(provider: string, apiKey?: string, signal?:
     ollama: 'http://localhost:11434/v1/models',
     lmstudio: 'http://localhost:1234/v1/models',
   };
-  const url = urls[provider];
-  if (!url || (!apiKey && !['openrouter', 'ollama', 'lmstudio'].includes(provider))) return fallback;
+  let url = urls[provider];
+  if (baseUrl?.trim() && ['custom', 'ollama', 'lmstudio'].includes(provider)) {
+    try {
+      const parsed = new URL(baseUrl.trim());
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+      if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) || parsed.username || parsed.password || parsed.search || parsed.hash) return fallback;
+      parsed.pathname = `${parsed.pathname.replace(/\/$/, '')}/models`;
+      url = parsed.toString();
+    } catch { return fallback; }
+  }
+  if (!url || (!apiKey && !['openrouter', 'ollama', 'lmstudio', 'custom'].includes(provider))) return fallback;
   try {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (provider === 'anthropic') { headers['x-api-key'] = apiKey!; headers['anthropic-version'] = '2023-06-01'; }
     else if (provider === 'gemini') headers['x-goog-api-key'] = apiKey!;
-    else if (apiKey && !['ollama', 'lmstudio'].includes(provider)) headers.authorization = `Bearer ${apiKey}`;
+    else if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     const response = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), redirect: 'error' });
     if (!response.ok) return fallback;
     const data: unknown = await response.json();

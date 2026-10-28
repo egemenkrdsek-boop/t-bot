@@ -4,11 +4,18 @@ import dns from 'node:dns';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, copyFile, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname, delimiter, isAbsolute } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { resolveGitExecutable, handleGitTool } from '../src/tools/git.js';
+import { handleSkillTool, loadCustomSkills, buildSkillPrompt, autoDistillSkillFromTurn } from '../src/skills.js';
 import { fetchPublicText, isPrivateOrLocalHost, publicLookup, validatePublicUrl } from '../src/tools/public-network.js';
 import { fetchUrlContent } from '../src/tools/web.js';
 import { executeTool, APPROVAL_REQUIRED_TOOLS } from '../src/tools/index.js';
 import { shellEnvironment } from '../src/tools/shell.js';
-import { createApprovalNonce, parseApprovalCallback } from '../src/telegram-security.js';
+import { createApprovalNonce, parseApprovalCallback, formatApprovalArguments, createPairingChallenge, acceptPairingCode } from '../src/telegram-security.js';
 
 test('public URL policy rejects alternate local representations and credentials', () => {
   for (const host of ['localhost.', 'a.localhost', '10.0.0.1', '127.1', '2130706433', '0x7f000001',
@@ -131,4 +138,143 @@ test('Telegram approval callbacks are bound to the current request', () => {
   assert.equal(parseApprovalCallback(`approve_yes:${oldNonce}`, currentNonce), undefined);
   assert.equal(parseApprovalCallback('approve_yes', currentNonce), undefined);
   assert.equal(parseApprovalCallback(undefined, currentNonce), undefined);
+});
+
+test('Telegram approval retains the complete payload and rejects oversized hidden tails', () => {
+  const args = { title: 'benign '.repeat(120), instructions: 'visible-sensitive-suffix' };
+  const text = formatApprovalArguments(args);
+  assert.ok(text.indexOf('visible-sensitive-suffix') > 500);
+  assert.deepEqual(JSON.parse(text), args);
+  assert.throws(() => formatApprovalArguments({ command: 'x'.repeat(24_001) }), /display limit/);
+});
+
+test('Telegram pairing codes expire, share a global guess budget and are single-use', () => {
+  const valid = createPairingChallenge(1000);
+  assert.match(valid.code, /^[a-f0-9]{32}$/);
+  assert.equal(acceptPairingCode(valid, valid.code, 1001), true);
+  assert.equal(acceptPairingCode(valid, valid.code, 1002), false);
+  const expired = createPairingChallenge(1000);
+  assert.equal(acceptPairingCode(expired, expired.code, expired.expiresAt), false);
+  const guessed = createPairingChallenge(1000);
+  for (let chat = 0; chat < 10; chat++) assert.equal(acceptPairingCode(guessed, `wrong-chat-${chat}`, 1001), false);
+  assert.equal(acceptPairingCode(guessed, guessed.code, 1002), false);
+  const retry = createPairingChallenge(1000);
+  assert.equal(acceptPairingCode(retry, 'wrong', 1001), false);
+  assert.equal(acceptPairingCode(retry, retry.code, 1002), true);
+});
+
+const skillArgs = { id: 'security-unit', title: 'Unit skill', triggers: 'unit skill', instructions: 'Inspect the existing code before editing.' };
+
+test('persistent skill creation requires approval before project or global writes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-skill-approval-'));
+  const previousAppData = process.env.APPDATA;
+  process.env.APPDATA = join(dir, 'config');
+  try {
+    assert.ok(APPROVAL_REQUIRED_TOOLS.includes('skill_create'));
+    for (const scope of ['project', 'global']) {
+      let approvals = 0;
+      const result = await executeTool({ id: 'skill-deny', name: 'skill_create', arguments: { ...skillArgs, scope } }, {
+        workspace: dir, approve: async request => {
+          approvals++;
+          assert.equal(request.tool, 'skill_create');
+          assert.match(request.description, /future tasks/);
+          assert.equal(request.arguments.instructions, skillArgs.instructions);
+          return false;
+        },
+      });
+      assert.equal(result, 'Tool action denied by user.');
+      assert.equal(approvals, 1);
+    }
+    await assert.rejects(readFile(join(dir, '.tbot', 'skills', 'security-unit.md')), /ENOENT/);
+    const result = await executeTool({ id: 'skill-allow', name: 'skill_create', arguments: skillArgs }, {
+      workspace: dir, approve: async () => true,
+    });
+    assert.match(result, /saved to project/);
+    const loaded = loadCustomSkills(dir).find(s => s.id === 'security-unit');
+    assert.equal(loaded?.guidance, skillArgs.instructions);
+    assert.match(buildSkillPrompt([loaded!], dir), /Untrusted custom skill/);
+    assert.match(await executeTool({ id: 'skill-global-allow', name: 'skill_create', arguments: { ...skillArgs, id: 'global-unit', scope: 'global' } }, {
+      workspace: dir, approve: async () => true,
+    }), /saved to global/);
+    assert.equal(loadCustomSkills(dir).find(s => s.id === 'global-unit')?.scope, 'global');
+  } finally {
+    if (previousAppData === undefined) delete process.env.APPDATA; else process.env.APPDATA = previousAppData;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('project skill reads, creation and distillation reject linked state directories', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-skill-links-'));
+  const outside = await mkdtemp(join(tmpdir(), 'tbot-skill-outside-'));
+  try {
+    await mkdir(join(outside, 'skills'));
+    await writeFile(join(outside, 'skills', 'injected.md'), '# Injected\nUntrusted outside guidance');
+    for (const level of ['.tbot', 'skills']) {
+      const workspace = join(dir, level);
+      await mkdir(workspace);
+      const link = level === '.tbot' ? join(workspace, '.tbot') : join(workspace, '.tbot', 'skills');
+      const target = level === '.tbot' ? outside : join(outside, 'skills');
+      await mkdir(dirname(link), { recursive: true });
+      await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+      assert.equal(loadCustomSkills(workspace).some(s => s.id === 'injected'), false);
+      await assert.rejects(handleSkillTool('skill_create', skillArgs, workspace), /symbolic links or junctions/);
+      await assert.rejects(autoDistillSkillFromTurn({ workspaceRoot: workspace, userPrompt: 'unit correction', finalAnswer: 'A valid engineering result with enough detailed text to create a persistent skill.', toolsUsed: ['shell', 'file_read', 'file_read', 'file_patch', 'shell'], modifiedFiles: ['a.ts'] }), /symbolic links or junctions/);
+    }
+    await assert.rejects(readFile(join(outside, 'skills', 'security-unit.md')), /ENOENT/);
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test('Git resolution ignores relative PATH entries and linked workspace installations', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-git-path-'));
+  const aliasRoot = await mkdtemp(join(tmpdir(), 'tbot-git-alias-'));
+  try {
+    const installed = await resolveGitExecutable(dir);
+    assert.equal(isAbsolute(installed), true);
+    await copyFile(process.execPath, join(dir, process.platform === 'win32' ? 'git.exe' : 'git'));
+    const alias = join(aliasRoot, 'linked');
+    await symlink(dir, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(resolveGitExecutable(dir, { PATH: ['', '.', 'relative', dir, alias].join(delimiter) }), /outside the workspace/);
+    assert.equal(await resolveGitExecutable(dir, { PATH: [dir, alias, dirname(installed)].join(delimiter) }), installed);
+  } finally { await rm(aliasRoot, { recursive: true, force: true }); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('project skill overwrite replaces a hard link without changing the outside file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-skill-hardlink-'));
+  try {
+    const workspace = join(dir, 'workspace');
+    const skills = join(workspace, '.tbot', 'skills');
+    await mkdir(skills, { recursive: true });
+    const outside = join(dir, 'outside.md');
+    await writeFile(outside, 'outside sentinel');
+    await link(outside, join(skills, 'security-unit.md'));
+    assert.match(await handleSkillTool('skill_create', skillArgs, workspace), /saved to project/);
+    assert.equal(await readFile(outside, 'utf8'), 'outside sentinel');
+    assert.match(await readFile(join(skills, 'security-unit.md'), 'utf8'), /Inspect the existing code/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('read-only Git operations use installed Git despite a planted Windows git.exe', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-git-read-'));
+  const run = promisify(execFile);
+  try {
+    const executable = await resolveGitExecutable(dir);
+    await run(executable, ['init', dir], { windowsHide: true });
+    if (process.platform === 'win32') {
+      // Trusted Node --version safely demonstrates the original cwd lookup.
+      await copyFile(process.execPath, join(dir, 'git.exe'));
+      const original = await run('git', ['--version'], { cwd: dir, windowsHide: true });
+      assert.equal(original.stdout.trim(), process.version);
+    }
+    await writeFile(join(dir, 'sample.txt'), 'sample\n');
+    assert.match(await handleGitTool('git_status', {}, { workspace: dir }), /sample.txt/);
+    assert.equal(await handleGitTool('git_diff', {}, { workspace: dir }), '(no output)');
+    await run(executable, ['-C', dir, 'add', '--', 'sample.txt'], { windowsHide: true });
+    await run(executable, ['-C', dir, '-c', 'user.name=Unit Test', '-c', 'user.email=unit@example.invalid', '-c', 'core.hooksPath=', 'commit', '-m', 'fixture'], { windowsHide: true });
+    assert.match(await handleGitTool('git_log', {}, { workspace: dir }), /fixture/);
+    await writeFile(join(dir, 'sample.txt'), 'changed\n');
+    assert.match(await handleGitTool('git_diff', {}, { workspace: dir }), /changed/);
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(handleGitTool('git_status', {}, { workspace: dir, signal: controller.signal }));
+    assert.equal(await realpath(executable), executable);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

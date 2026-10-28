@@ -61,13 +61,14 @@ export function printUsage(): void {
 export function parseCli(argv: string[]): CliOptions {
   const options: CliOptions = { command: 'chat', args: [] };
   const positional: string[] = [];
+  let literalCommand = false;
   const keys: Record<string, 'provider' | 'model' | 'workspace' | 'resume'> = {
     '-p': 'provider', '--provider': 'provider', '-m': 'model', '--model': 'model',
     '-w': 'workspace', '--workspace': 'workspace', '-r': 'resume', '--resume': 'resume',
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--') { positional.push(...argv.slice(i + 1)); break; }
+    if (arg === '--') { literalCommand = positional.length === 0; positional.push(...argv.slice(i + 1)); break; }
     if (arg === '--ultracode') { options.ultracode = true; continue; }
     if (arg === '--yolo') { options.yolo = true; continue; }
     if (arg === '--bot') { options.bot = true; continue; }
@@ -88,7 +89,7 @@ export function parseCli(argv: string[]): CliOptions {
     else positional.push(arg);
   }
   const commands = ['config', 'providers', 'doctor', 'sessions'] as const;
-  if (options.command === 'chat' && commands.includes(positional[0] as typeof commands[number])) {
+  if (options.command === 'chat' && !literalCommand && commands.includes(positional[0] as typeof commands[number])) {
     options.command = positional.shift() as typeof commands[number];
   }
   options.args = positional;

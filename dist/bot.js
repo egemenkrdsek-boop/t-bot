@@ -1,6 +1,5 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { getCustomSecret, getApiKey } from './secrets.js';
 import { loadConfig, saveConfig, resolveProviderConfig, configDirectory } from './config.js';
 import { createProvider } from './providers.js';
@@ -13,7 +12,7 @@ import { runUltracode } from './ultracode.js';
 import { startGoal, runGoal, getGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal } from './workflows.js';
 import { SessionStore } from './sessions.js';
 import { handleComputerTool } from './tools/computer.js';
-import { createApprovalNonce, parseApprovalCallback } from './telegram-security.js';
+import { createApprovalNonce, parseApprovalCallback, formatApprovalArguments, createPairingChallenge, acceptPairingCode } from './telegram-security.js';
 // Module-level bridge state
 let isRunning = false;
 let currentBotUsername;
@@ -22,7 +21,7 @@ let currentOptions = null;
 let activeApproval = null;
 let handledCount = 0;
 let isAgentBusy = false;
-let pairingCode = null;
+let pairingChallenge = null;
 /**
  * Escapes characters that have special meaning in Telegram Markdown v1.
  */
@@ -262,12 +261,18 @@ async function requestRemoteToolApproval(request, chatId, token, getYolo) {
         activeApproval.resolve(false);
         activeApproval = null;
     }
-    const argsSnippet = JSON.stringify(request.arguments, null, 2);
-    const truncatedArgs = argsSnippet.length > 500 ? `${argsSnippet.slice(0, 500)}...` : argsSnippet;
+    let argsSnippet;
+    try {
+        argsSnippet = formatApprovalArguments(request.arguments);
+    }
+    catch {
+        await sendTelegramMessage(token, chatId, '[REDDEDİLDİ] Onay içeriği gösterim sınırını aşıyor. İşlemi daha küçük adımlara ayırın.');
+        return false;
+    }
     const promptText = `*[ONAY GEREKİYOR] Araç Onayı:* \`${request.tool}\`
 ${request.description ? `*Açıklama:* ${request.description}\n` : ''}*Argümanlar:*
 \`\`\`json
-${truncatedArgs}
+${argsSnippet}
 \`\`\`
 
 Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki butonları kullanın (60sn)`;
@@ -428,11 +433,11 @@ async function handleIncomingMessage(msg, token, signal, options) {
     if (!text)
         return;
     const allowed = syncEnvAllowedChats(options.config);
-    // Admin eşleştirme kontrolü (Yetkisiz ele geçirmeyi önlemek için 6 haneli pairingCode zorunludur)
+    // Short-lived local challenge; guesses share a global budget across all chats.
     if (allowed.length === 0) {
-        const pairMatch = text.match(/^\/pair(?:\s+|=)?(\d{6})/i);
-        if (pairMatch && pairingCode && pairMatch[1] === pairingCode) {
-            pairingCode = null;
+        const pairMatch = text.match(/^\/pair(?:\s+|=)(\S+)$/i);
+        if (pairMatch && pairingChallenge && acceptPairingCode(pairingChallenge, pairMatch[1])) {
+            pairingChallenge = null;
             await persistAllowedChatId(options.config, chatId, options.onLog);
             const welcome = `*[BİLGİ] Eşleştirme Başarılı!*\n\nChat ID (\`${chatId}\`) ana yönetici olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
             await sendTelegramMessage(token, chatId, welcome);
@@ -440,7 +445,7 @@ async function handleIncomingMessage(msg, token, signal, options) {
             return;
         }
         else {
-            await sendTelegramMessage(token, chatId, "🔒 Bu bot henüz eşleştirilmemiştir. Eşleştirmek için terminal ekranındaki '/pair <KOD>' komutunu gönderin.");
+            await sendTelegramMessage(token, chatId, "🔒 Bu bot henüz eşleştirilmemiştir. Terminaldeki '/pair <KOD>' komutunu gönderin. Kod 10 dakika ve toplam 10 deneme için geçerlidir; süre veya deneme sınırı dolduysa köprüyü yerel olarak yeniden başlatın.");
             return;
         }
     }
@@ -760,11 +765,11 @@ export async function startTelegramBotBridge(options) {
     }
     const allowed = syncEnvAllowedChats(options.config);
     if (allowed.length === 0) {
-        pairingCode = crypto.randomInt(100000, 999999).toString();
-        options.onLog?.(`[Telegram Güvenlik] Yönetici eşleştirmesi için Telegram'dan bota şu komutu gönderin: /pair ${pairingCode}`);
+        pairingChallenge = createPairingChallenge();
+        options.onLog?.(`[Telegram Güvenlik] Yönetici eşleştirmesi için Telegram'dan bota şu komutu gönderin (10 dakika / toplam 10 deneme): /pair ${pairingChallenge.code}`);
     }
     else {
-        pairingCode = null;
+        pairingChallenge = null;
     }
     // Retrieve token securely stored via Windows DPAPI or environment variable
     const token = (await getCustomSecret('telegram_bot_token')) || process.env.TELEGRAM_BOT_TOKEN;
@@ -818,7 +823,7 @@ export function stopTelegramBotBridge() {
     }
     currentOptions = null;
     currentBotUsername = undefined;
-    pairingCode = null;
+    pairingChallenge = null;
 }
 /**
  * Returns the current runtime status of the Telegram Bot Gateway Bridge.
