@@ -41,7 +41,7 @@
 - The command palette no longer steals focus on every `/` keystroke, so argument-bearing commands can be typed.
 - Accent and secondary text meet AA contrast; motion stays on opacity/transform and `prefers-reduced-motion` disables it.
 - Screenshot previews use a workspace-scoped path protocol instead of accumulating base64 images in the main process.
-- Desktop visual refresh is completed in Emre's workstream; this section will be updated with the final surface changes when that slice lands.
+- Desktop surface refresh (U0–U14) is complete: interrupted turns persist their partial messages and tool results, the command palette no longer steals focus, accent and secondary text meet AA contrast, screenshots use a workspace-scoped preview protocol, markdown tables/lists/links render, narrow-window and reduced-motion behaviour are aligned, and the desktop suite passes 54/54.
 
 ### Installation and distribution
 
@@ -53,8 +53,9 @@
 
 ### Verification limits
 
-- Unit/component tests and static checks only; no E2E, live provider, real browser/computer or real Telegram task was run.
-- Final test, build, package and install numbers are recorded in `docs/verification.md` by the release owner; this changelog does not claim unpublished results.
+- Unit/component tests, static checks, build/package/install checks and targeted live runs were completed. Full E2E automation, a full browser/computer task and a Telegram end-to-end task were not run.
+- Live runs are limited to GLM (effort low) in a scratch workspace and to the 8 scenarios listed in `docs/verification.md`. They are not a competitor benchmark or a broad model matrix.
+- Test, build, package and install numbers are recorded in `docs/verification.md`. Rollback was verified by fixtures and code review only; a real failed global write was not exercised.
 - No competitor benchmark, "world #1" or percentage-savings claim is made. Token values remain local estimates.
 
 ## 4.1.0

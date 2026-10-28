@@ -211,7 +211,10 @@ test('process_stop keeps a running status when the kill fails', async () => {
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.stdin = new Writable({ write: (_chunk: any, _encoding: any, done: () => void) => done() });
-    child.kill = () => true;
+    // The fallback kill must also fail so the test is platform-independent:
+    // Linux reaches child.kill('SIGKILL') after process.kill(-pid) throws,
+    // while Windows uses the taskkill close=1 path above.
+    child.kill = () => false;
     if (String(command).endsWith('taskkill.exe')) {
       queueMicrotask(() => child.emit('close', 1));
     } else {

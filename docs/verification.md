@@ -271,26 +271,26 @@ Bu sonuçlar gerçek GUI gecikmesini, model kalitesini, rakiplere göre token ta
 | Global CLI kurulumu | `t-bot-cli-4.1.0.tgz` `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 4.1.0` |
 | Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar |
 
-## 5.0.0 "Sinyal" kaynak ve doğrulama kaydı (TASLAK)
+## 5.0.0 "Sinyal" kaynak ve doğrulama kaydı
 
-Bu bölüm 5.0.0 teslimi için açılmıştır. Şefin ilettiği güncel 5.0.0 statik/test kanıtları aşağıdadır. `dist:win`, global CLI, masaüstü kurulumu, temiz prefix kurulumu, rollback ve 12 canlı senaryo henüz işlenmemiştir; bu satırlar şef/Selin tarafından doldurulacak ve o zamana kadar tamamlanmış sayılmaz.
+29 Ekim 2026'da Windows yerel çalışma alanında 5.0.0 teslimi için aşağıdaki kontroller tamamlandı. 5.0.0 ürün kodu commit'i **fa49ce8**'dir; `release`/`feat/5.0.0` dalında bunun üzerine yalnız test/docs takip commit'leri bulunabilir. `main` **f126fbee** olarak değişmeden bırakıldı ve `main`e push yapılmadı.
 
 | Kontrol | Sonuç |
 | --- | --- |
+| Sürüm ve commit | `package.json`/`package-lock.json` kök sürümü **5.0.0**; ürün kodu commit'i **fa49ce8**; `release`/`feat/5.0.0` üzerinde yalnız test/docs takip commit'leri olabilir; `main` = **f126fbee** (değişmedi, push yok) |
 | `npm audit --json` | 383 bağımlılık (98 prod, 286 dev); bilinen açık: 0 (info/low/moderate/high/critical hepsi 0). Yalnızca o anki kayıt defteri bilgisidir; kaynak güvenlik denetimi değildir |
-| Kurulum betiği fixture'ları (`tests/install.test.cjs`) | 12/12 başarılı; sahte npm/git ile build failure, pin uyuşmazlığı, geçersiz SHA yolları. Gerçek global kurulum değildir |
+| Kurulum betiği fixture'ları (`tests/install.test.cjs`) | 12/12 başarılı; sahte npm/git ile build failure, pin uyuşmazlığı, geçersiz SHA yolları. Gerçek global hata senaryosu değildir |
 | `npm run typecheck` | Temiz (5.0.0) |
-| `npm run check:layers` | 84 TypeScript dosyası; katman yönü ihlali yok (5.0.0) |
-| `npm test` | **275 test / 275 pass / 0 fail / 0 skip**; serial (`--test-concurrency=1`) |
-| `npm run build` + renderer/preload `node --check` | Şef tarafından doldurulacak |
-| `npm pack --ignore-scripts` | Şef tarafından doldurulacak; `dist/**/*.map` paket dışı olmalı |
-| `npm run dist:win` + manifest | Şef tarafından doldurulacak |
-| Global CLI 5.0.0 kurulumu ve `tbot --version` | Şef tarafından doldurulacak |
-| Masaüstü 5.0.0 yerel kurulumu ve ProductVersion | Şef tarafından doldurulacak |
-| `release` dalından tek komut kurulum (temiz prefix) | Selin/şef tarafından doldurulacak; `main`e push yapılmaz |
-| 12 canlı kullanım senaryosu (hata oranı, tur, süre, RAM) | Selin tarafından doldurulacak |
-| Kurulum rollback (hata/sürüm uyuşmazlığı) | Şef tarafından doldurulacak; gerçek global prefix'te deneme |
+| `npm run check:layers` | 84 TypeScript dosyası; katman yönü ihlali yok |
+| `npm test` | **282 test / 282 pass / 0 fail / 0 skip**; serial (`--test-concurrency=1`), **41,7 sn** |
+| `npm run build` + `node --check` | Başarılı; `dist/index.js --version` → `T Bot 5.0.0`; `dist/tools/search-worker.js` üretildi; renderer/preload syntax kontrolü geçti |
+| `npm pack --dry-run --json` | **212 dosya**; packed **731.066 byte**, unpacked **2.232.353 byte**; **0 adet `.map`**; search worker ve `docs/assets/desktop-overview.png` paket içinde |
+| `npm run dist:win` + manifest | `release/T-Bot-Setup-5.0.0.exe` **128.615.135 byte**; SHA256 `ae229c388567c10955e70de6294fd5bd49cf774180e08ab9a7c5eeee53a08557`; `app.asar` SHA256 `1e96894e11de12fa4a0990a5b4d9ac4898ae1b234c648bfb9576cf941240054c` |
+| Masaüstü 5.0.0 yerel kurulumu | `deploy-local.ps1` başarılı; ProductVersion **5.0.0.0**; yükleyici ve kurulu `app.asar` hashleri manifestle eşleşti; uygulama açıldı, pencere başlığı **T Bot 5.0.0** |
+| Global CLI 5.0.0 kurulumu | Tarball `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 5.0.0`; `tbot --help` başarılı |
+| `release` dalından temiz prefix kurulumu | Kurulum betiği **exit 0**; izole prefix'te `T Bot 5.0.0`; geçici PATH kaydı temizlendi |
+| Canlı final senaryoları (GLM, effort low, scratch) | S1 **3,9 sn**; S2 **14,7 sn** (gate=0, meta yok); S3 resmi koşu **96,8 sn**, failure-tail düzeltmesi sonrası hedefli tekrar **45 sn** ve **2/2 test geçti**; S4 **22,5 sn**; S5 **48,8 sn** (`process_stop` OK, gate=0); XA **10,9 sn**; XB **9,0 sn** (`ok`, exit 0); XC **48,8 sn** (gate=0) |
+| RAM gözlemi | CLI 114–305 MB; masaüstü boşta ~430 MB. Tek anlık gözlemdir, performans kıyaslaması değildir |
+| Kurulum rollback | **Gerçek global hata senaryosu çalıştırılmadı.** Kanıt: `tests/install.test.cjs` 12/12 ve kod incelemesi. Otomatik geri yüklemenin canlı global prefix kanıtı yoktur |
 
-Şefin ilettiği ek bağlam (final kayıtla kesinleşecek): `npm run build` başarılı, `dist/index.js --version` → `T Bot 5.0.0`, `dist/tools/search-worker.js` üretildi; `npm pack --dry-run` 209 dosya, 0 `.map`, packed 630.401 byte.
-
-Sınırlar: yukarıdaki tablo doldurulmadan 5.0 için "tamamlandı", "dünya #1" veya rakiplere göre yüzde tasarruf iddiası yapılmaz. E2E, canlı sağlayıcı ve gerçek GUI/Telegram akışı birim testi yerine geçmez. `npm audit` sonucu belirli bir ana aittir; gelecekte açık bulunmayacağı garantisi değildir.
+Sınırlar: Canlı koşular GLM (effort low) ve scratch workspace ile sınırlıdır; planlanan 12 senaryonun tamamı değil, yukarıda listelenen 8 koşu çalıştırıldı. S3'ün 45 saniyelik sonucu resmi koşunun otomatik yeniden çalıştırması değil, failure-tail düzeltmesi sonrası hedefli tekrardır; 96,8 sn'lik resmi süre korunur. E2E otomasyonu çalıştırılmadı; canlı koşular ürünü gerçekten kullanan hedefli turlardır ve birim testi yerine geçmez. Rollback yalnız fixture ve kod incelemesiyle doğrulanmıştır; gerçek bir global yazma hatasında geri yükleme davranışı canlı olarak kanıtlanmamıştır. RAM değerleri tek gözlemdir. `npm audit` sonucu belirli bir ana aittir; gelecekte açık bulunmayacağı garantisi değildir. "Dünya #1" veya rakiplere göre yüzde tasarruf iddiası yapılmaz.
