@@ -136,8 +136,8 @@ export function getMemoryStats(): MemoryStats {
 /**
  * Reclaims memory when under pressure ('moderate' | 'high') or when force is true:
  * 0. Prunes completed shell processes and their buffers.
- * 1. Compacts older large tool outputs (>1500 chars) in session messages (preserving last 4),
- *    and clears old image attachments (preserving only the latest message's image).
+ * 1. Releases old image attachments while retaining the latest three image messages and current user image.
+ *    Transcript text stays authoritative; provider context selection owns temporary history reduction.
  * 2. Closes idle browser instance if active.
  * 3. Triggers V8 garbage collector if available (global.gc).
  * 4. Trims Windows physical working set if force is true or beforeStats.pressure === 'high'.
@@ -158,7 +158,7 @@ export async function reclaimMemory(
       // Ignore background process prune errors
     }
 
-    // 1. In-place compaction of session messages
+    // 1. Release old images only. Never truncate authoritative text before its next checkpoint.
     if (session && Array.isArray(session.messages)) {
       const messages = session.messages;
       const total = messages.length;
@@ -177,16 +177,7 @@ export async function reclaimMemory(
         const msg = messages[i];
         let modified = false;
 
-        // Truncate older tool outputs (>1500 chars) excluding the last 4 messages
-        if (i < total - 4) {
-          if ((msg.role === 'tool' || msg.toolCallId) && typeof msg.content === 'string' && msg.content.length > 1500) {
-            const half = 700;
-            msg.content = `${msg.content.slice(0, half)}\n[Older tool output truncated; inspect again if needed.]\n${msg.content.slice(-half)}`;
-            modified = true;
-          }
-        }
-
-        // Remove images from older messages (keep only the very last message's images)
+        // Image persistence is intentionally excluded by SessionStore; current input remains available.
         if (!preservedImages.has(i)) {
           if (msg.images && msg.images.length > 0) {
             delete msg.images;

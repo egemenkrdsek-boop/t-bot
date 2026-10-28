@@ -1,6 +1,6 @@
 ![T Bot Logosu](assets/tabit.webp)
 
-# T Bot 2.2.0
+# T Bot 2.2.1
 
 T Bot; terminalden veya Windows masaüstü uygulamasından kullanılan yerel bir yapay zekâ ajanıdır. Kod ve dosya araçları, sağlayıcı bağlantıları, Windows masaüstü kontrolü, Playwright tarayıcısı ve Telegram ağ geçidi içerir. Gemini, OpenAI, Anthropic, OpenRouter ve uyumlu yerel model sunucularıyla yapılandırılabilir.
 
@@ -36,7 +36,7 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-Bu akış Electron ve NSIS derleme araçlarını indirir. `release/T-Bot-Setup-2.2.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler; böylece aynı sürüm numaralı eski bir kurulum başarı sayılmaz. Manifest ve yükleyiciyi birlikte saklayın. Mevcut uygulamayı kapatır; açık çalışmalarınızı kaydedin. Geliştirme için `npm run desktop` kullanın. CLI kurulumu Electron indirmesini atladıysa önce `node node_modules/electron/install.js` çalıştırın.
+Bu akış Electron ve NSIS derleme araçlarını indirir. `release/T-Bot-Setup-2.2.1.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler; böylece aynı sürüm numaralı eski bir kurulum başarı sayılmaz. Manifest ve yükleyiciyi birlikte saklayın. Mevcut uygulamayı kapatır; açık çalışmalarınızı kaydedin. Geliştirme için `npm run desktop` kullanın. CLI kurulumu Electron indirmesini atladıysa önce `node node_modules/electron/install.js` çalıştırın.
 
 ## Başlangıç
 
@@ -74,6 +74,6 @@ Diferansiyel dosya okuma, bağlam sıkıştırma ve araç şeması seçimi tekra
 
 Dosya erişimi ve sözdizimi kontrolleri bazı hataları erken yakalayabilir. Bunlar model yanılgılarını, çalışma zamanı hatalarını veya yanlış kodu ortadan kaldırmaz; gerçek derleme/test sonuçlarıyla birlikte değerlendirin. TypeScript/JavaScript ve JSON denetimleri tüm diller için doğrulama garantisi sağlamaz. Bellek izleme de tüm bellek sızıntılarını önleme garantisi vermez.
 
-2.1.0 ile eklenen ve 2.2.0 içinde korunan, sabit commitlerden uyarlanmış iki MIT bileşeni vardır: OpenCode'un Unicode düzenleme eşleştirme/satır sonu koruma yordamları ve Hermes Agent'ın token bütçesine göre bağlam penceresi planlaması. T Bot bu bileşenleri kendi dosya araçlarına ve ajanına bağlar; tüm upstream çalışma zamanını, bağımlılıklarını veya fork geçmişini içerdiğini iddia etmez. Kesin kaynaklar, uyarlama farkları ve tam lisans metinleri [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasındadır. Kaynak kodunun eksiksiz köken denetimi yapılmış sayılmaz; 2.2.0 test/paket/yayın durumu [doğrulama kaydında](docs/verification.md) tutulur.
+2.1.0 ile eklenen ve 2.2.1 içinde korunan, sabit commitlerden uyarlanmış iki MIT bileşeni vardır: OpenCode'un Unicode düzenleme eşleştirme/satır sonu koruma yordamları ve Hermes Agent'ın token bütçesine göre bağlam penceresi planlaması. T Bot bu bileşenleri kendi dosya araçlarına ve ajanına bağlar; tüm upstream çalışma zamanını, bağımlılıklarını veya fork geçmişini içerdiğini iddia etmez. Kesin kaynaklar, uyarlama farkları ve tam lisans metinleri [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasındadır. Kaynak kodunun eksiksiz köken denetimi yapılmış sayılmaz; 2.2.1 test/paket/yayın durumu [doğrulama kaydında](docs/verification.md) tutulur.
 
 Ayrıntılar: [Mimari](docs/architecture.md), [Kurulum](docs/install.md), [Doğrulama kapsamı](docs/verification.md), [MIT lisansı](LICENSE).

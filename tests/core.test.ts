@@ -331,16 +331,17 @@ test('explicit tool failure and running background job are not successful eviden
   assert.equal(auditAssistantClaims('All tests passed.', ledger).verified, false);
 });
 
-test('critical memory pressure compacts old tool outputs', async t => {
+test('critical memory pressure preserves authoritative old tool outputs', async t => {
   const original = process.memoryUsage();
   t.mock.method(process, 'memoryUsage', () => ({ ...original, heapUsed: 300 * 1024 * 1024 }));
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
   Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
   try {
-    const messages: Message[] = [{ role: 'tool', content: 'a'.repeat(3000) }, ...Array.from({ length: 4 }, () => ({ role: 'user' as const, content: 'recent' }))];
+    const originalText = 'a'.repeat(1500) + 'MIDDLE_DIAGNOSTIC' + 'b'.repeat(1500);
+    const messages: Message[] = [{ role: 'tool', content: originalText }, ...Array.from({ length: 4 }, () => ({ role: 'user' as const, content: 'recent' }))];
     const result = await reclaimMemory({ id: 'unit', workspace: '', createdAt: '', updatedAt: '', messages });
-    assert.equal(result.compactedCount, 1);
-    assert.ok(messages[0].content.length < 3000);
+    assert.equal(result.compactedCount, 0);
+    assert.equal(messages[0].content, originalText);
   } finally { Object.defineProperty(process, 'platform', platform); }
 });
 

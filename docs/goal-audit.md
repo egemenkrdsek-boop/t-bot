@@ -115,3 +115,13 @@ Ana ajan sonradan 2.2.0 final kaynak doğrulamasını bildirdi: **164/164 test, 
 - Sabit upstream'e exact SHA ile pinlenebilen kaynak installer'ı ve izole-prefix Ubuntu/macOS CI işi hazır. Gerçek uzak source-install sonuçları bu kayıt anında henüz yok; ilk tablonun platform kabul boşluğu yapılandırma eklemekle kapanmış sayılmaz.
 
 2.2.0 setup/kurulum/main push/CI/release bu kayıt anında henüz tamamlanmamıştır; final teslim kanıtı ayrıca gelir. 164 fixture başarıları bütün dış akışların güvenilirliğini, model talimat takibini, kalite kaybının yokluğunu veya dünya #1 hedefini kanıtlamaz. İlk geniş hedefler aktif ve kapsam dahilindedir. Ayrıntılı kaynak/materyal sınırlar [verification.md](verification.md) içinde kayıtlıdır.
+
+### Sonraki 2.2.0 gerçek platform kurulum ve yayın deltasının kaydı
+
+Yukarıdaki paket öncesi pending kaydından sonra ana ajan `f126fbee9d622bc9affb10f50e2bd0f72d391d2b` main/tag CI çalışmalarının iki depoda da başarılı olduğunu bildirdi: Windows/Ubuntu build ile Ubuntu/macOS gerçek pinned kaynak kurulumu. Windows'ta aynı commitin yerel kaynak installer'ı çıkış kodu 0 ve sürüm/yardım kontrolünü geçti. **İlk tablonun #57 maddesinin dar platform kaynak-kurulum kabulü 2.2.0 için artık completed kanıtına sahiptir**; tablodaki eski incomplete kaydı 2.1.0 snapshot'ının tarihsel durumudur. Bu sonuç yeni sürüm, her Linux dağıtımı/cihazı veya canlı model/browser görevleri için evrensel garanti değildir.
+
+İki non-draft v2.2.0 release'in üç dosyası, başarılı release workflow'ları, HTTP checksum/manifest ile asset digest eşleşmesi ve yerel 2.2.0 metadata/açılış/manifest hash kontrolü [verification.md](verification.md) arşivine eklendi. Yerel paket CI paketinden ayrı build'dir. Böylece #55/#56/#62'nin bu sürüme ait dağıtım kanıtları da büyüdü; bunlar genel kalite/sıralama/token/tam güvenilirlik hedeflerini tamamlamaz. v2.2.0 etiketi yeni kaynaklara taşınmaz.
+
+### 2.2.1 kaynak aşaması
+
+Yeni patch metadata sürümü 2.2.1; RAM guard ham geçmiş kaybı ve Telegram save/clear hata sunumu için kaynak düzeltmeleri yürütülüyor. Bu kayıt anında yeni final tam suite, build, kurulum veya yayın sonucu yoktur. Eski 62 madde ve geniş hedeflerin kapsamı korunur; dar bir bugfix bütün kalite ya da bilgi kaybının sıfırlanması şartını tamamlanmış saydırmaz. Sonraki tamamlanma kanıtı ayrıca eklenmelidir.
