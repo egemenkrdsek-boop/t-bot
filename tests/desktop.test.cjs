@@ -16,8 +16,8 @@ function renderer(bridge = {}, elements = {}, documentMethods = {}) {
   };
   vm.createContext(context);
   vm.runInContext(source('renderer/app.js').replace('  // DOM Yüklendiğinde Başlat',
-    '  window.test = { parseMarkdown, updateTelemetry, state, isToolError, setToolExpanded, switchSession, submitUserMessage, loadSessionsList, startThinking, stopThinking, updateModelDropdown, openConfigModal, renderApprovalRequest, respondApproval };\n  // DOM Yüklendiğinde Başlat'), context);
-  return context.window.test;
+    '  window.test = { parseMarkdown, updateTelemetry, state, isToolError, setToolExpanded, switchSession, submitUserMessage, loadSessionsList, startThinking, stopThinking, updateModelDropdown, openConfigModal, renderApprovalRequest, respondApproval, applyAppVersion };\n  // DOM Yüklendiğinde Başlat'), context);
+  return { ...context.window.test, document: context.document };
 }
 
 test('assistant markdown treats HTML and dangerous URLs as inert text', () => {
@@ -445,4 +445,45 @@ test('automatic Windows trim helpers launch absolute PowerShell with no executab
     assert.equal(calls[0].args[1], '-NonInteractive');
     assert.ok(calls[0].args.includes('-Command'));
   }
+});
+
+
+test('initial config response keeps trusted package version outside persisted config', async () => {
+  const config = { provider: 'openai', model: 'test' };
+  let saved;
+  const h = ipcHarness({ app: { getVersion: () => '2.1.0' }, loadConfig: async () => config, saveConfig: async value => { saved = value; } });
+  const initial = await h.handlers.get('config:get')(h.event, { appVersion: '999.0.0' });
+  assert.equal(initial.appVersion, '2.1.0');
+  assert.equal(initial.config, config);
+  assert.equal(config.appVersion, undefined);
+  await h.handlers.get('config:save')(h.event, { appVersion: '999.0.0', config: { appVersion: '888.0.0' }, model: 'next' });
+  assert.equal(saved, config);
+  assert.equal(saved.model, 'next');
+  assert.equal(saved.appVersion, undefined);
+  assert.equal(saved.config, undefined);
+  assert.equal((await h.handlers.get('config:get')(h.event)).appVersion, '2.1.0');
+});
+
+test('desktop versions share package metadata and malformed or missing values have a clear fallback', () => {
+  const elements = [{}, {}];
+  const ui = renderer({}, {}, { querySelectorAll: () => elements });
+  ui.applyAppVersion('2.1.0');
+  assert.equal(ui.state.appVersion, '2.1.0');
+  for (const element of elements) assert.equal(element.textContent, '2.1.0');
+  assert.equal(ui.document.title, 'T Bot 2.1.0 — Yerel Kodlama Asistanı');
+  ui.applyAppVersion('2.1.0-rc.1+build.42');
+  assert.equal(elements[0].textContent, '2.1.0-rc.1+build.42');
+  for (const invalid of [undefined, null, {}, '<img src=x onerror=alert(1)>', '2.1.0<script>', '9'.repeat(100)]) {
+    ui.applyAppVersion(invalid);
+    assert.equal(ui.state.appVersion, '');
+    assert.equal(ui.document.title, 'T Bot — Yerel Kodlama Asistanı');
+    for (const element of elements) {
+      assert.equal(element.textContent, '—');
+      assert.equal(element.title, 'Sürüm bilgisi alınamadı');
+      assert.equal(element.innerHTML, undefined);
+    }
+  }
+  const html = source('renderer/index.html');
+  assert.equal((html.match(/data-app-version/g) || []).length, 2);
+  assert.doesNotMatch(html, /T Bot 2\.0|version">2\.0/);
 });

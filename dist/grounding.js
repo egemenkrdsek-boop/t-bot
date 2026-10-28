@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import { validateCodeAstAndGrounding, getPendingCrossFileExports, clearPendingCrossFileExports, } from './ast-validator.js';
 /**
  * Normalizes a file path to a canonical form.
@@ -74,6 +75,8 @@ export class GroundingLedger {
     turnCommandsRun = [];
     turnGitCommits = 0;
     turnGuiAndBrowserActions = [];
+    fileRevisions = new Map();
+    fileHashes = new Map();
     constructor(workspace) {
         this.workspace = workspace;
     }
@@ -82,6 +85,8 @@ export class GroundingLedger {
      */
     beginTurn() {
         this.inspectedFiles.clear();
+        this.fileRevisions.clear();
+        this.fileHashes.clear();
         this.turnModifiedFiles.clear();
         this.turnCommandsRun = [];
         this.turnGitCommits = 0;
@@ -128,10 +133,28 @@ export class GroundingLedger {
     /**
      * Mark a file as inspected (only via real inspection tools such as file_read or file_outline).
      */
-    markFileInspected(filePath, workspace) {
+    markFileInspected(filePath, workspace, content) {
         const norm = normalizePath(filePath, workspace ?? this.workspace);
         if (norm) {
             this.inspectedFiles.add(norm);
+            if (content !== undefined)
+                this.fileHashes.set(norm, createHash('sha256').update(content).digest('hex'));
+        }
+    }
+    forgetFileSnapshot(filePath, workspace) {
+        const norm = normalizePath(filePath, workspace ?? this.workspace);
+        this.fileRevisions.delete(norm);
+        this.fileHashes.delete(norm);
+    }
+    recordFileRevision(filePath, revision, workspace) {
+        this.fileRevisions.set(normalizePath(filePath, workspace ?? this.workspace), revision);
+    }
+    /** Content hashes cover complete reads; metadata also protects partial/offset reads. */
+    assertFileSnapshot(filePath, revision, content, workspace) {
+        const norm = normalizePath(filePath, workspace ?? this.workspace);
+        const hash = this.fileHashes.get(norm);
+        if (this.fileRevisions.get(norm) !== revision || (hash !== undefined && hash !== createHash('sha256').update(content).digest('hex'))) {
+            throw new Error('File changed since inspection or has no current snapshot; use file_read or file_outline before editing');
         }
     }
     /**
@@ -173,6 +196,8 @@ export class GroundingLedger {
      */
     clear() {
         this.inspectedFiles.clear();
+        this.fileRevisions.clear();
+        this.fileHashes.clear();
         this.modifiedFiles.clear();
         this.turnModifiedFiles.clear();
         this.commandsRun = [];

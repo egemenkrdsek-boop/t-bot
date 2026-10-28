@@ -142,7 +142,7 @@ function createMainWindow() {
       <html lang="tr">
       <head>
         <meta charset="UTF-8">
-        <title>T Bot 2.0</title>
+        <title>T Bot</title>
         <style>
           body { margin:0; background:#F8FAF7; color:#111A14; font-family:system-ui,-apple-system,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; flex-direction:column; gap:16px; user-select:none; }
           .spinner { width:36px; height:36px; border:3px solid #DCE6D9; border-top-color:#4D9A0F; border-radius:50%; animation:spin 0.9s linear infinite; }
@@ -180,7 +180,7 @@ function createTray() {
             trayIcon = nativeImage.createEmpty();
         }
         tray = new Tray(trayIcon);
-        tray.setToolTip('T Bot 2.0 Desktop');
+        tray.setToolTip(`T Bot ${app.getVersion()} Desktop`);
         const contextMenu = Menu.buildFromTemplate([
             {
                 label: 'T Bot\'u Göster / Gizle',
@@ -267,7 +267,7 @@ function registerIpcHandlers() {
     });
     // Config handlers
     handle('config:get', async () => {
-        return await loadConfig();
+        return { config: await loadConfig(), appVersion: app.getVersion() };
     });
     handle('config:save', async (_event, partialConfig) => {
         const current = await loadConfig();

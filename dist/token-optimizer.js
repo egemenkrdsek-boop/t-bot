@@ -1,3 +1,4 @@
+import { planContextWindow } from './context-window.js';
 // Pre-compiled BPE approximation regex moved outside estimateTokens for zero re-compilation overhead
 const tokenRegex = /'s|'t|'re|'ve|'m|'ll|'d|\p{Lu}\p{Ll}+|\p{Lu}+(?!\p{Ll})|\p{Ll}+|\p{L}+|\p{N}+|===|!==|==|!=|<=|>=|=>|->|\+\+|--|&&|\|\||\+=|-=|\*=|\/=|::|[{}()[\].,;:<>+\-=*\/\\|!@#$%^&~?`"']|\r\n|\r|\n|\s+|\P{M}\p{M}+|[^\s\p{L}\p{N}]/gu;
 const MAX_STRING_CACHE_SIZE = 600;
@@ -527,7 +528,6 @@ export function smartTruncateToolOutput(toolName, output, maxChars = 8000) {
     const savedTokens = Math.max(0, initialTokens - estimateTokens(truncated));
     return { text: truncated, savedTokens };
 }
-const MAX_TOOL_RESULT_CHARS = 12_000;
 /**
  * Deterministically summarizes older tool outputs into structural evidence (file paths, signatures, errors, lines).
  * This is a lossy summary; source should be read again when exact details matter.
@@ -568,150 +568,11 @@ function getCachedEvidenceSummary(msg) {
     compressedToolOutputCache.set(msg, { content: msg.content, summary });
     return summary;
 }
-/**
- * Epoch-based conversation history compression with WeakMap memoization on older tool messages
- * so the Prompt Cache prefix stays stable across turns.
- */
+/** Token-budget windowing adapted from Hermes; the session transcript is never mutated. */
 export function compressConversationHistory(messages, maxTokenBudget = 28_000) {
     const initialTokens = estimateMessagesTokens(messages);
-    if (messages.length === 0)
-        return { messages: [], savedTokens: 0 };
-    const batches = [];
-    let currentBatch = null;
-    for (let i = 0; i < messages.length; i++) {
-        const m = messages[i];
-        if (m.role === 'assistant' && m.toolCalls?.length) {
-            currentBatch = { assistantIndex: i, toolIndices: [] };
-            batches.push(currentBatch);
-        }
-        else if (m.role === 'tool') {
-            if (!currentBatch) {
-                currentBatch = { assistantIndex: -1, toolIndices: [] };
-                batches.push(currentBatch);
-            }
-            currentBatch.toolIndices.push(i);
-        }
-    }
-    const toolBatchMap = new Map();
-    batches.forEach((batch, bIdx) => {
-        for (const toolIdx of batch.toolIndices) {
-            toolBatchMap.set(toolIdx, bIdx);
-        }
-    });
-    // messages dizisini sondan başa doğru tara ve gerçekten images?.length barındıran son 3 mesajın indekslerini kaydet.
-    // Ayrıca son kullanıcı mesajında görsel varsa onu da her zaman koru.
-    const keptImageIndices = new Set();
-    let imageCount = 0;
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m && m.images && m.images.length > 0) {
-            if (imageCount < 3) {
-                keptImageIndices.add(i);
-                imageCount++;
-            }
-        }
-    }
-    // Son kullanıcı mesajında görsel varsa onu da her zaman koru:
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
-        if (m && m.role === 'user') {
-            if (m.images && m.images.length > 0) {
-                keptImageIndices.add(i);
-            }
-            break;
-        }
-    }
-    let compressed = messages.map((m, idx) => {
-        const msg = { ...m };
-        if (!keptImageIndices.has(idx) && msg.images?.length) {
-            msg.images = undefined;
-        }
-        if (msg.role === 'tool') {
-            const bIdx = toolBatchMap.get(idx) ?? -1;
-            const isRecentBatch = bIdx >= batches.length - 3;
-            if (isRecentBatch) {
-                if (msg.content.length > MAX_TOOL_RESULT_CHARS) {
-                    msg.content = smartTruncateToolOutput('tool', msg.content, MAX_TOOL_RESULT_CHARS).text;
-                }
-            }
-            else {
-                msg.content = getCachedEvidenceSummary(m);
-            }
-        }
-        return msg;
-    });
-    let currentTokens = estimateMessagesTokens(compressed);
-    if (currentTokens > maxTokenBudget * 0.85 && batches.length > 1) {
-        for (let bIdx = Math.max(0, batches.length - 3); bIdx < batches.length - 1; bIdx++) {
-            const batch = batches[bIdx];
-            if (!batch)
-                continue;
-            for (const toolIdx of batch.toolIndices) {
-                if (compressed[toolIdx] && compressed[toolIdx].role === 'tool') {
-                    compressed[toolIdx].content = getCachedEvidenceSummary(messages[toolIdx]);
-                }
-            }
-            currentTokens = estimateMessagesTokens(compressed);
-            if (currentTokens <= maxTokenBudget * 0.85) {
-                break;
-            }
-        }
-    }
-    if (currentTokens > maxTokenBudget) {
-        const firstUserMsg = compressed.find(m => m.role === 'user');
-        const initialUserGoal = firstUserMsg ? firstUserMsg.content.slice(0, 600) : '';
-        const turns = [];
-        const systemMsgs = [];
-        for (const msg of compressed) {
-            if (msg.role === 'system') {
-                systemMsgs.push(msg);
-            }
-            else if (msg.role === 'user') {
-                turns.push([msg]);
-            }
-            else {
-                if (turns.length) {
-                    turns[turns.length - 1].push(msg);
-                }
-                else {
-                    turns.push([msg]);
-                }
-            }
-        }
-        const selectedTurns = [];
-        let budgetRemaining = maxTokenBudget - estimateMessagesTokens(systemMsgs) - (initialUserGoal ? 150 : 0);
-        for (let i = turns.length - 1; i >= 0; i--) {
-            const turnTokens = estimateMessagesTokens(turns[i]);
-            if (turnTokens <= budgetRemaining) {
-                selectedTurns.unshift(turns[i]);
-                budgetRemaining -= turnTokens;
-            }
-            else {
-                if (selectedTurns.length > 0) {
-                    break;
-                }
-                else {
-                    selectedTurns.unshift(turns[i]);
-                    break;
-                }
-            }
-        }
-        const reconstructed = [...systemMsgs];
-        if (selectedTurns.length < turns.length && initialUserGoal) {
-            reconstructed.push({
-                role: 'user',
-                content: `[Önceki Konuşma Özeti - Orijinal Kullanıcı Hedefi]: ${initialUserGoal}\n(Eski konuşma turları token bütçesi (${maxTokenBudget}) koruması için sıkıştırıldı)`,
-            });
-        }
-        reconstructed.push(...selectedTurns.flat());
-        compressed = reconstructed;
-    }
-    const finalTokens = estimateMessagesTokens(compressed);
-    const savedTokens = Math.max(0, initialTokens - finalTokens);
-    return {
-        messages: compressed,
-        savedTokens,
-    };
+    const window = planContextWindow(messages, maxTokenBudget, estimateMessagesTokens, getCachedEvidenceSummary);
+    return { ...window, savedTokens: Math.max(0, initialTokens - window.estimatedTokens) };
 }
 export class TokenSessionTracker {
     totalRawTokens = 0;

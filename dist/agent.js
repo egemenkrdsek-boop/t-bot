@@ -306,6 +306,23 @@ async function runAgentInContext(input, options) {
         let didGroundingRetry = false;
         let wasTruncatedByBudget = false;
         const intentGroups = new Set();
+        let reportedWindowing = false;
+        let reportedContextOverflow = false;
+        const prepareContext = (history, tools, extra) => {
+            // A local optimization target, not a provider context-window limit. Reserve prompt/schema costs.
+            const fixedTokens = estimateMessagesTokens([system, ...extra], undefined, tools);
+            const window = compressConversationHistory(history, Math.max(0, 28_000 - fixedTokens));
+            globalContextCache.retainVisibleReads(window.messages);
+            if (window.omittedMessages && !reportedWindowing) {
+                emit({ type: 'status', message: `Bağlam pencerelendi: ${window.omittedMessages} eski mesaj bu isteğe taşınmadı; araç grupları bölünmedi ve kullanıcı talimatları korundu. Tam geçmiş oturumda saklanıyor; eksik kaynaklar yeniden okunmalıdır.` });
+                reportedWindowing = true;
+            }
+            if (window.overflow && !reportedContextOverflow) {
+                emit({ type: 'status', message: `Bağlam yumuşak optimizasyon hedefini (28.000 tahmini token) aşıyor: ${window.estimatedTokens + fixedTokens}. Bölünemeyen kullanıcı/araç/native öğeleri kesilmedi; sağlayıcının gerçek sınırı farklı olabilir.` });
+                reportedContextOverflow = true;
+            }
+            return window;
+        };
         for (let round = 0; round < maxRounds; round++) {
             if (input.signal?.aborted) {
                 emit({ type: 'status', message: 'İptal Edildi.' });
@@ -326,13 +343,13 @@ async function runAgentInContext(input, options) {
             const messagesToCompress = session.messages
                 .filter(m => m.role !== 'system')
                 .map(m => (m.role === 'user' && m.content === input.message && stripped !== input.message ? { ...m, content: userContent } : m));
-            const compressed = compressConversationHistory(messagesToCompress, 28_000);
-            globalContextCache.retainVisibleReads(compressed.messages);
             const focusSummary = isFast ? '' : getActiveFocusSummary(workspace);
+            const focusMessages = focusSummary ? [{ role: 'system', content: `[AKTİF ODAK & GÖREV PUSULASI]\n${focusSummary}` }] : [];
+            const compressed = prepareContext(messagesToCompress, activeTools, focusMessages);
             const messages = [
                 system,
                 ...compressed.messages,
-                ...(focusSummary ? [{ role: 'system', content: `[AKTİF ODAK & GÖREV PUSULASI]\n${focusSummary}` }] : []),
+                ...focusMessages,
             ];
             let content = '';
             let calls = [];
@@ -624,16 +641,16 @@ async function runAgentInContext(input, options) {
             const messagesToCompress = session.messages
                 .filter(m => m.role !== 'system')
                 .map(m => (m.role === 'user' && m.content === input.message && stripped !== input.message ? { ...m, content: userContent } : m));
-            const compressed = compressConversationHistory(messagesToCompress, 28_000);
             const focusSummary = getActiveFocusSummary(workspace);
+            const synthesisMessages = [
+                ...(focusSummary ? [{ role: 'system', content: `[AKTİF ODAK & GÖREV PUSULASI]\n${focusSummary}` }] : []),
+                { role: 'system', content: 'Araç kullanım aşaması tamamlandı. Şimdiye kadar topladığın tüm bulguları ve gerçekleştirdiğin işlemleri birleştirerek kullanıcıya kapsamlı ve net nihai yanıtı ver.' },
+            ];
+            const compressed = prepareContext(messagesToCompress, [], synthesisMessages);
             const messages = [
                 system,
                 ...compressed.messages,
-                ...(focusSummary ? [{ role: 'system', content: `[AKTİF ODAK & GÖREV PUSULASI]\n${focusSummary}` }] : []),
-                {
-                    role: 'system',
-                    content: 'Araç kullanım aşaması tamamlandı. Şimdiye kadar topladığın tüm bulguları ve gerçekleştirdiğin işlemleri birleştirerek kullanıcıya kapsamlı ve net nihai yanıtı ver.',
-                },
+                ...synthesisMessages,
             ];
             let synthFull = '';
             try {

@@ -32,7 +32,7 @@ Testler bağımsız birim/regresyon kontrolleridir; kullanıcı talebiyle uçtan
 
 Sözdizimi ve dosya kontrolleri tüm dilleri, bağımlılık sözleşmelerini veya model iddialarını doğrulamaz. Token tasarrufu hesapları sağlayıcı faturasıyla eşdeğer değildir. Bağımsız benchmark veya “dünya #1” kanıtı bulunmaz. Depo geçmişi ve lisanslar incelenmiştir; eksiksiz kaynak benzerliği/köken denetimi yapılmamıştır. Önceki tamamlanmamış güvenlik taraması başarı kanıtı sayılmaz.
 
-## Güncel inceleme — 2.0.2 (2026-10-28)
+## Çalışma kaydı — 2.0.2 (2026-10-28)
 
 Bu bölüm yeni çalışma ağacına aittir. Sürüm, hata ve güvenlik düzeltmeleri için 2.0.2'ye yükseltildi; bağımlılıkların kilitli sürüm ve integrity kayıtları değiştirilmedi. Kurulumun aynı sürüm numaralı eski içeriği başarı saymasını engellemek için `dist:win` yükleyici ve `app.asar` SHA256 manifesti üretir; yerel kurulum betiği her ikisini doğrular. Manifest imza yerine geçmez.
 
@@ -99,3 +99,27 @@ Bu doğrulama Linux/macOS üzerinde gerçek uzak kurulum başarısı iddiası de
 Ana ajan son güvenlik yaması dahil çalışma ağacında `npm test` çalıştırdı: **92/92 başarılı, 0 hata, 0 atlanan test; 3097,4 ms**. Önceki 86 teste kurulum yardımcıları için 4, Windows güvenlik yardımcısı için 1 ve masaüstü bellek trimi için 1 regresyon kontrolü eklendi. `npm run typecheck`, yeni Node derleme yardımcısıyla gerçek TypeScript derleyicisini çalıştıran `npm run build` ve derlenmiş renderer/preload `node --check` kontrolleri başarılı oldu. Testler E2E senaryosu değildir.
 
 Bu son güvenlik yamasını içeren setup'ın yeniden üretilmesi ve yerel masaüstü kurulumu bu kayıt anında henüz tamamlanmamıştır; yukarıdaki önceki setup/kurulum başarıları bu son paketin kanıtı sayılmaz. Son setup, hash, kurulum, main push, etiket ve release/CI durumu ana ajanın final teslim kaydında bildirilir. `e509f53` veya sonraki commit için uzak CI sonucu burada varsayılmaz.
+
+## Yeni kaynak sürümü — 2.1.0
+
+2.1.0, OpenCode ve Hermes Agent'tan belirli MIT bileşenlerinin sabit upstream commitlerden uyarlanması için açıldı. Package ve lock kök sürümü 2.1.0'dır; bağımlılık sürümleri bu metadata değişikliğinde yükseltilmedi. OpenCode edit-match ve Hermes context-window portları kaynak ağacına eklendi ve aşağıdaki son kaynak doğrulaması tamamlandı. Yukarıdaki 2.0.2 sonuçları 2.1.0'ın doğrulaması sayılmaz. Port kaynakları ve zorunlu lisans metinleri [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) dosyasında kaydedilir.
+
+Dar metadata/bildirim kontrolü package/lock sürüm uyumunu, önceki commit ile tüm resolved dependency kayıtlarının aynı kalmasını ve iki upstream copyright satırıyla tam MIT metinlerinin notices içinde bulunmasını doğruladı. Bunlar uygulama davranışını veya yeni portların regresyon güvenliğini tek başına doğrulamaz.
+
+### 2.1.0 son kaynak doğrulaması
+
+Ana ajanın konsolide entegrasyon kontrolü: **`npm test` 117/117 başarılı, 0 hata, 0 atlanan test; 2917,2725 ms**. Önceki 92 kontrole 13 edit, 10 context-window ve 2 masaüstü sürüm metadata testi eklendi. `npm run typecheck`, gerçek TypeScript derleyicisiyle `npm run build` ve derlenmiş renderer/preload `node --check` kontrolleri başarılı oldu. E2E testi veya canlı sağlayıcı görevi çalıştırılmadı.
+
+Ana ajanın bu 2.1.0 snapshot'ındaki `npm audit --json` sonucu 383 toplam bağımlılık için sıfır bilinen açık bildirdi. Kilitli bağımlılıklar değiştirilmedi. Bu sonuç kaynak güvenliği veya gelecekte açık bulunmayacağı garantisi değildir.
+
+OpenCode uyarlaması `fa1260d6ca484fe0fd868aa992ad81ab85343cf3` kaynağına sabittir; benzersiz Unicode/satır eşleştirmesi, kaynak context baytları ve mixed line-ending korunması ile iş/matris/batch sınırları odaklı fixture'larda denetlendi. T Bot'a özgü stale-write kontrolleri tam okumada içerik hash'i ve revision, partial okumada metadata revision kullanır; süreç içindeki kooperatif mutasyonları kilitler. Yeni dosya yayınlama no-clobber, mevcut dosya rename tekrarları yeniden içerik kontrolü kullanır; başarısız rename'i overwrite-copy ile örtmez. Bunlar son karşılaştırma ile rename arasında dış sürece karşı atomik OS CAS veya filesystem sandbox garantisi değildir. Geçerli UTF-8 text desteklenir; binary/UTF-16 düzenleme desteği yoktur. Ayrıntılar [çekirdek incelemesinde](core-review.md).
+
+Hermes uyarlaması `ee7e0f517232fb619c72e49d7e648436bddc598e` kaynağına sabittir; bütçe penceresi, tool call/result atomikliği ve taşma davranışı fixture'larda denetlendi. 2001 mesajlı yerel fixture yaklaşık 15,6 ms'de 1500 tahmini token bütçesine karşı 1476 tahmini token üretti. Bu tek kontrollü gözlem kalite, gerçek sağlayıcı tokenizasyonu veya rakip benchmark'ı değildir. Korunması gereken tur/opaque native içerik bütçeyi aştığında sert kayıpsız üst sınır vaat edilmez; Python/LLM özetleme ve prepared background mekanizmaları taşınmadı. Ayrıntılar [context-window incelemesinde](context-window-review.md). Genel %50–75 tasarruf veya dünya sıralaması kanıtı yoktur.
+
+Bu kayıt anında **2.1.0 setup, yerel kurulum, uzak main push, CI ve yayın henüz doğrulanmadı**. Kaynak belgeleri sabitlendikten sonra üretilecek son paket, manifest hashleri, kurulum ve release/CI sonuçları ana ajanın final teslim kaydında bildirilecektir. Önceki 2.0.2 paket/yayın başarıları bu yeni paketin kanıtı sayılmaz.
+
+### Doğrulanmış 2.0.2 yayın geçmişi
+
+Ana ajan `82aad18` için iki deponun main CI Windows/Ubuntu kontrollerini ve `v2.0.2` tag yayınını doğruladı. Windows release workflow çalışmaları `t-bot: 40660687286` ve `t-bot-desktop: 40660692444` başarılı; her iki GitHub release `draft=false` ve setup, `SHA256SUMS.txt`, `build-manifest.json` dosyalarını içeriyor. Manifest/checksum dosyaları doğrudan HTTP ile okunup GitHub executable asset digest'iyle karşılaştırıldı. İki deponun setup hashleri farklı, paketlenmiş `app.asar` hashleri aynıydı; bunlar ayrı CI derlemeleridir. Yayınlar: [t-bot v2.0.2](https://github.com/egemenkrdsek-boop/t-bot/releases/tag/v2.0.2), [t-bot-desktop v2.0.2](https://github.com/egemenkrdsek-boop/t-bot-desktop/releases/tag/v2.0.2).
+
+Yerel son 2.0.2 derlemesi kendi manifestiyle kurulup hashleri ve native açılışı doğrulandı; bu yerel paket CI paketinden farklıdır. Yayımlanmış executable'ın indirilip yerelde kurulduğu iddia edilmez. `v2.0.2` etiketi değiştirilmeyecek; 2.1.0 kendi test/paket/yayın sürecini kullanacak. Bu yayın kanıtları 2.1.0'ın doğrulaması değildir.

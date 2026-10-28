@@ -53,6 +53,8 @@ export declare class GroundingLedger {
     private turnCommandsRun;
     private turnGitCommits;
     private turnGuiAndBrowserActions;
+    private fileRevisions;
+    private fileHashes;
     constructor(workspace?: string);
     /**
      * Resets turn-scoped evidence sets and HUD warnings at the start of each new user request.
@@ -85,7 +87,11 @@ export declare class GroundingLedger {
     /**
      * Mark a file as inspected (only via real inspection tools such as file_read or file_outline).
      */
-    markFileInspected(filePath: string, workspace?: string): void;
+    markFileInspected(filePath: string, workspace?: string, content?: string): void;
+    forgetFileSnapshot(filePath: string, workspace?: string): void;
+    recordFileRevision(filePath: string, revision: string, workspace?: string): void;
+    /** Content hashes cover complete reads; metadata also protects partial/offset reads. */
+    assertFileSnapshot(filePath: string, revision: string, content: string, workspace?: string): void;
     /**
      * Mark a file as modified (e.g. written, patched) in both session and current turn sets.
      */

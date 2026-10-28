@@ -7,6 +7,7 @@ import { extractFileAstOutline } from '../repo-map.js';
 import { globalContextCache } from '../context-cache.js';
 import { estimateTokens, globalTokenTracker } from '../token-optimizer.js';
 import { handleShellTool } from './shell.js';
+import { applyEdit } from './edit-match.js';
 const string = (args, key) => {
     const value = args[key];
     if (typeof value !== 'string' || !value)
@@ -156,6 +157,9 @@ async function resolveSafe(workspace, input) {
     return target;
 }
 async function atomicWrite(target, content, workspace, input, signal, expected) {
+    if (content.includes('\0') || Buffer.from(content, 'utf8').toString('utf8') !== content) {
+        throw new Error('File mutations require valid UTF-8 text without NUL bytes');
+    }
     await fs.mkdir(path.dirname(target), { recursive: true });
     const temp = path.join(path.dirname(target), `.tbot-${randomUUID()}.tmp`);
     let mode;
@@ -169,33 +173,33 @@ async function atomicWrite(target, content, workspace, input, signal, expected) 
     try {
         await fs.writeFile(temp, content, { encoding: 'utf8', flag: 'wx', mode, signal });
         signal?.throwIfAborted();
-        await resolveSafe(workspace, input);
-        if (expected !== undefined && (await fs.readFile(target, { encoding: 'utf8', signal })) !== expected) {
-            throw new Error('File changed since patch was read; patch not applied');
+        // A new file is published with an atomic no-clobber link, never rename over
+        // an entry that another process created after validation.
+        if (expected === null) {
+            await resolveSafe(workspace, input);
+            signal?.throwIfAborted();
+            await fs.link(temp, target);
+            return;
         }
-        signal?.throwIfAborted();
-        let renamed = false;
         for (let attempt = 0; attempt < 3; attempt++) {
+            signal?.throwIfAborted();
+            await resolveSafe(workspace, input);
+            if ((await fs.readFile(target, { encoding: 'utf8', signal })) !== expected) {
+                throw new Error('File changed since mutation was read; edit not applied');
+            }
+            signal?.throwIfAborted();
             try {
                 await fs.rename(temp, target);
-                renamed = true;
-                break;
+                return;
             }
             catch (err) {
                 if (['EPERM', 'EBUSY', 'EACCES'].includes(err?.code) && attempt < 2) {
                     await new Promise((r) => setTimeout(r, 40));
                 }
-                else if (['EPERM', 'EBUSY', 'EACCES'].includes(err?.code)) {
-                    break;
-                }
                 else {
                     throw err;
                 }
             }
-        }
-        if (!renamed) {
-            await fs.copyFile(temp, target);
-            await fs.unlink(temp).catch(() => { });
         }
     }
     finally {
@@ -259,94 +263,71 @@ function globToMatcher(pattern) {
         return hasSlash ? re.test(cleanRel) : re.test(fileName) || re.test(cleanRel);
     };
 }
-function applyPatchHunk(content, oldText, newText) {
-    const lineAtOffset = (text, index) => text.slice(0, index).split(/\r?\n/).length;
-    // 1. Direct match
-    const at = content.indexOf(oldText);
-    if (at >= 0) {
-        if (content.indexOf(oldText, at + 1) >= 0)
-            throw new Error('old_text must occur exactly once');
-        return {
-            content: content.slice(0, at) + newText + content.slice(at + oldText.length),
-            line: lineAtOffset(content, at),
-        };
+// Process-local transaction serialization, like pinned OpenCode FileMutation:
+// fa1260d6ca484fe0fd868aa992ad81ab85343cf3/packages/core/src/file-mutation.ts.
+// External processes do not participate; content checks below remain necessary.
+const fileTransactions = new Map();
+async function withFileTransaction(target, action) {
+    const key = process.platform === 'win32' ? target.toLowerCase() : target;
+    const previous = fileTransactions.get(key) ?? Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    fileTransactions.set(key, current);
+    await previous;
+    try {
+        return await action();
     }
-    // 2. CRLF -> LF and LF -> CRLF tolerance
-    const oldCRLF = oldText.replace(/(?<!\r)\n/g, '\r\n');
-    const atCRLF = content.indexOf(oldCRLF);
-    if (atCRLF >= 0) {
-        if (content.indexOf(oldCRLF, atCRLF + 1) >= 0)
-            throw new Error('old_text must occur exactly once');
-        const newCRLF = newText.replace(/(?<!\r)\n/g, '\r\n');
-        return {
-            content: content.slice(0, atCRLF) + newCRLF + content.slice(atCRLF + oldCRLF.length),
-            line: lineAtOffset(content, atCRLF),
-        };
+    finally {
+        release();
+        if (fileTransactions.get(key) === current)
+            fileTransactions.delete(key);
     }
-    const oldLF = oldText.replace(/\r\n/g, '\n');
-    const atLF = content.indexOf(oldLF);
-    if (atLF >= 0) {
-        if (content.indexOf(oldLF, atLF + 1) >= 0)
-            throw new Error('old_text must occur exactly once');
-        const newLF = newText.replace(/\r\n/g, '\n');
-        return {
-            content: content.slice(0, atLF) + newLF + content.slice(atLF + oldLF.length),
-            line: lineAtOffset(content, atLF),
-        };
+}
+async function fileRevision(target) {
+    const stat = await fs.stat(target, { bigint: true });
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+}
+async function readMutationText(target, signal) {
+    const bytes = await fs.readFile(target, { signal });
+    const text = bytes.toString('utf8');
+    if (!Buffer.from(text, 'utf8').equals(bytes) || bytes.includes(0)) {
+        throw new Error('File mutations require valid UTF-8 text without NUL bytes');
     }
-    // 3. Fallback: normalize both content and oldText to LF and restore dominant newline
-    const isCRLF = (content.match(/\r\n/g)?.length ?? 0) > (content.match(/[^\r]\n/g)?.length ?? 0);
-    const contentLF = content.replace(/\r\n/g, '\n');
-    const atNorm = contentLF.indexOf(oldLF);
-    if (atNorm >= 0) {
-        if (contentLF.indexOf(oldLF, atNorm + 1) >= 0)
-            throw new Error('old_text must occur exactly once');
-        const newLF = newText.replace(/\r\n/g, '\n');
-        const replacedLF = contentLF.slice(0, atNorm) + newLF + contentLF.slice(atNorm + oldLF.length);
-        return {
-            content: isCRLF ? replacedLF.replace(/(?<!\r)\n/g, '\r\n') : replacedLF,
-            line: lineAtOffset(contentLF, atNorm),
-        };
+    return text;
+}
+async function rememberWrittenFile(target, content, workspace) {
+    globalGroundingLedger.forgetFileSnapshot(target, workspace);
+    const before = await fileRevision(target);
+    if (await fs.readFile(target, 'utf8') !== content || await fileRevision(target) !== before) {
+        throw new Error('File changed during write confirmation; inspect the current file before retrying');
     }
-    // 4. Trailing whitespace tolerant line-by-line match (trimEnd normalization)
-    const contentLines = contentLF.split('\n');
-    const oldLines = oldLF.split('\n');
-    const oldTrimmed = oldLines.map(l => l.trimEnd());
-    if (oldLines.length > 0 && oldLines.length <= contentLines.length) {
-        const matchIndices = [];
-        for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
-            let ok = true;
-            for (let j = 0; j < oldLines.length; j++) {
-                if (contentLines[i + j].trimEnd() !== oldTrimmed[j]) {
-                    ok = false;
-                    break;
-                }
-            }
-            if (ok) {
-                matchIndices.push(i);
-            }
-        }
-        if (matchIndices.length > 1) {
-            throw new Error('old_text must occur exactly once');
-        }
-        if (matchIndices.length === 1) {
-            const startIdx = matchIndices[0];
-            const newLines = newText.replace(/\r\n/g, '\n').split('\n');
-            const updatedLines = [
-                ...contentLines.slice(0, startIdx),
-                ...newLines,
-                ...contentLines.slice(startIdx + oldLines.length),
-            ];
-            const joinedLF = updatedLines.join('\n');
-            return {
-                content: isCRLF ? joinedLF.replace(/(?<!\r)\n/g, '\r\n') : joinedLF,
-                line: startIdx + 1,
-            };
-        }
-    }
-    throw new Error('old_text was not found in file');
+    globalGroundingLedger.markFileInspected(target, workspace, content);
+    globalGroundingLedger.recordFileRevision(target, before, workspace);
 }
 export async function handleFileTool(name, args, workspace, signal) {
+    if (!['file_read', 'file_outline', 'file_write', 'file_patch'].includes(name)) {
+        return handleFileToolInTransaction(name, args, workspace, signal);
+    }
+    const input = typeof args.path === 'string' ? args.path : '.';
+    const target = await resolveSafe(workspace, input);
+    return withFileTransaction(target, async () => {
+        signal?.throwIfAborted();
+        if (name === 'file_write' || name === 'file_patch') {
+            return handleFileToolInTransaction(name, args, workspace, signal);
+        }
+        globalGroundingLedger.forgetFileSnapshot(target, workspace);
+        const before = await fileRevision(target);
+        const output = await handleFileToolInTransaction(name, args, workspace, signal);
+        if (await fileRevision(target) !== before) {
+            globalGroundingLedger.forgetFileSnapshot(target, workspace);
+            throw new Error('File changed during inspection; read the file again');
+        }
+        if (!output.startsWith('[İKİLİ DOSYA ENGELİ'))
+            globalGroundingLedger.recordFileRevision(target, before, workspace);
+        return output;
+    });
+}
+async function handleFileToolInTransaction(name, args, workspace, signal) {
     signal?.throwIfAborted();
     // Forward background process management tools to shell handler if invoked through file tool dispatcher
     if (name === 'process_list' || name === 'process_output' || name === 'process_stop') {
@@ -363,7 +344,7 @@ export async function handleFileTool(name, args, workspace, signal) {
         const content = await fs.readFile(target, 'utf8');
         const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
         const outline = extractFileAstOutline(relPath, content);
-        globalGroundingLedger.markFileInspected(target, workspace);
+        globalGroundingLedger.markFileInspected(target, workspace, content);
         return outline.formatted;
     }
     if (name === 'file_read') {
@@ -402,7 +383,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             const skeletonTokens = estimateTokens(outline.formatted);
             const savedTokens = Math.max(0, fullTokens - skeletonTokens);
             globalTokenTracker.recordContextCacheSaving(savedTokens);
-            globalGroundingLedger.markFileInspected(target, workspace);
+            globalGroundingLedger.markFileInspected(target, workspace, content);
             return outline.formatted;
         }
         // 4. Line range mode
@@ -413,7 +394,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             const end = typeof args.end_line === 'number' && Number.isInteger(args.end_line) ? Math.min(allLines.length, Math.max(start, args.end_line)) : allLines.length;
             const selected = allLines.slice(start - 1, end);
             const formatted = selected.map((line, idx) => `${start + idx}: ${line}`).join('\n') || '(empty line range)';
-            globalGroundingLedger.markFileInspected(target, workspace);
+            globalGroundingLedger.markFileInspected(target, workspace, content);
             const diff = globalContextCache.checkAndRecordRead(workspace, relPath, content, start, end, formatted);
             return diff.output;
         }
@@ -421,7 +402,7 @@ export async function handleFileTool(name, args, workspace, signal) {
         const bypassSkeleton = args.skeleton === false || args.full === true;
         if (bypassSkeleton && args.offset === undefined && args.start_line === undefined && args.end_line === undefined) {
             const content = await fs.readFile(target, 'utf8');
-            globalGroundingLedger.markFileInspected(target, workspace);
+            globalGroundingLedger.markFileInspected(target, workspace, content);
             return content;
         }
         // 6. Automatic Large File Skeletonization (>320 lines of code)
@@ -441,7 +422,7 @@ export async function handleFileTool(name, args, workspace, signal) {
                 const resultTokens = estimateTokens(result);
                 const savedTokens = Math.max(0, fullTokens - resultTokens);
                 globalTokenTracker.recordContextCacheSaving(savedTokens);
-                globalGroundingLedger.markFileInspected(target, workspace);
+                globalGroundingLedger.markFileInspected(target, workspace, content);
                 return result;
             }
         }
@@ -462,8 +443,8 @@ export async function handleFileTool(name, args, workspace, signal) {
             }
             const decoder = new StringDecoder('utf8');
             const text = decoder.write(buffer.subarray(0, consumed)) + decoder.end();
-            globalGroundingLedger.markFileInspected(target, workspace);
             const nextOffset = bytesRead > consumed ? offset + consumed : null;
+            globalGroundingLedger.markFileInspected(target, workspace, offset === 0 && nextOffset === null ? text : undefined);
             if (offset === 0 && nextOffset === null) {
                 const lineCount = text.length === 0 ? 1 : text.split(/\r?\n/).length;
                 const diff = globalContextCache.checkAndRecordRead(workspace, relPath, text, 1, lineCount, text);
@@ -552,7 +533,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             if (stat.size > 10 * 1024 * 1024)
                 throw new Error('Existing file exceeds the 10 MB read limit');
             if (exists) {
-                oldContent = await fs.readFile(target, 'utf8');
+                oldContent = await readMutationText(target, signal);
             }
         }
         catch (error) {
@@ -565,6 +546,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             if (!check.allowed) {
                 throw new Error(check.error);
             }
+            globalGroundingLedger.assertFileSnapshot(target, await fileRevision(target), oldContent, workspace);
         }
         // 2. Anti-Truncation Guard
         if (LAZY_PLACEHOLDER_REGEX.test(args.content)) {
@@ -582,10 +564,11 @@ export async function handleFileTool(name, args, workspace, signal) {
         if (!syntax.valid) {
             throw new Error(`Sözdizimi/Grounding Doğrulama Hatası: ${syntax.error}`);
         }
-        await atomicWrite(target, args.content, workspace, input, signal);
+        await atomicWrite(target, args.content, workspace, input, signal, oldContent);
         const relPath = path.relative(workspace, target).replace(/\\/g, '/');
         globalContextCache.invalidateFile(workspace, relPath);
         globalGroundingLedger.markFileModified(target, workspace);
+        await rememberWrittenFile(target, args.content, workspace);
         let msg = 'File written.';
         if (syntax.warnings && syntax.warnings.length > 0) {
             msg += `\n[AST UYARILARI]:\n${syntax.warnings.map(w => `- ${w}`).join('\n')}`;
@@ -595,6 +578,8 @@ export async function handleFileTool(name, args, workspace, signal) {
     if (name === 'file_patch') {
         const patches = [];
         if (Array.isArray(args.patches) && args.patches.length > 0) {
+            if (args.patches.length > 32)
+                throw new Error('A patch batch may contain at most 32 hunks');
             for (const item of args.patches) {
                 if (!item || typeof item !== 'object')
                     throw new Error('Each patch item must be an object');
@@ -612,6 +597,9 @@ export async function handleFileTool(name, args, workspace, signal) {
                 throw new Error('new_text must be a string');
             patches.push({ old_text: old, new_text: args.new_text });
         }
+        if (patches.reduce((total, patch) => total + patch.old_text.length + patch.new_text.length, 0) > 1_000_000) {
+            throw new Error('Combined patch text exceeds 1 million characters');
+        }
         let exists = false;
         let oldContent = '';
         try {
@@ -619,7 +607,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             exists = stat.isFile();
             if (stat.size > 1_000_000)
                 throw new Error('File exceeds 1 MB');
-            oldContent = await fs.readFile(target, { encoding: 'utf8', signal });
+            oldContent = await readMutationText(target, signal);
         }
         catch (e) {
             if (e.code === 'ENOENT')
@@ -631,6 +619,7 @@ export async function handleFileTool(name, args, workspace, signal) {
         if (!check.allowed) {
             throw new Error(check.error);
         }
+        globalGroundingLedger.assertFileSnapshot(target, await fileRevision(target), oldContent, workspace);
         let nextContent = oldContent;
         let added = 0;
         let removed = 0;
@@ -640,7 +629,7 @@ export async function handleFileTool(name, args, workspace, signal) {
             if (LAZY_PLACEHOLDER_REGEX.test(p.new_text)) {
                 throw new Error('[KESİLME ENGELİ] Mevcut büyük dosyayı kısaltarak veya yer tutucu yorumlarla ezemezsiniz. Cerrahi değişiklik için file_patch kullanın.');
             }
-            const applied = applyPatchHunk(nextContent, p.old_text, p.new_text);
+            const applied = applyEdit(nextContent, p.old_text, p.new_text);
             nextContent = applied.content;
             if (i === 0) {
                 firstPatchLine = applied.line;
@@ -659,6 +648,7 @@ export async function handleFileTool(name, args, workspace, signal) {
         const rel = path.relative(workspace, target).replace(/\\/g, '/') || input;
         globalContextCache.invalidateFile(workspace, rel);
         globalGroundingLedger.markFileModified(target, workspace);
+        await rememberWrittenFile(target, nextContent, workspace);
         let msg = `File patched: ${rel} (+${added}/-${removed} lines, around L${firstPatchLine})`;
         if (syntax.warnings && syntax.warnings.length > 0) {
             msg += `\n[AST UYARILARI]:\n${syntax.warnings.map(w => `- ${w}`).join('\n')}`;

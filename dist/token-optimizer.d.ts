@@ -1,4 +1,5 @@
 import type { Message, ToolDefinition } from './types.js';
+import { type ContextWindow } from './context-window.js';
 export declare const stringTokenCache: Map<string, number>;
 export declare const messageTokenCache: WeakMap<Message, {
     contentRef: string;
@@ -52,12 +53,8 @@ export declare function smartTruncateToolOutput(toolName: string, output: string
     text: string;
     savedTokens: number;
 };
-/**
- * Epoch-based conversation history compression with WeakMap memoization on older tool messages
- * so the Prompt Cache prefix stays stable across turns.
- */
-export declare function compressConversationHistory(messages: Message[], maxTokenBudget?: number): {
-    messages: Message[];
+/** Token-budget windowing adapted from Hermes; the session transcript is never mutated. */
+export declare function compressConversationHistory(messages: Message[], maxTokenBudget?: number): ContextWindow & {
     savedTokens: number;
 };
 export interface TokenSavingsReport {

@@ -12,6 +12,7 @@
   // =========================================================================
   const state = {
     workspace: '',
+    appVersion: '',
     currentSessionId: null,
     isThinking: false,
     turnPending: false,
@@ -1195,7 +1196,7 @@
 
       case '/help':
         appendAssistantTextChunk(`
-### T Bot 2.0 Siber-Zen Komut Kılavuzu
+### T Bot Komut Kılavuzu
 - \`/model\`, \`/provider\` — Model, Sağlayıcı ve API Anahtarlarını Yapılandır
 - \`/yolo\` — Araç Çalıştırma Otomatik Onayını Aç/Kapat
 - \`/goal\` — Otonom Hedef Başlat (.tbot/goal.json)
@@ -1983,7 +1984,18 @@
   // =========================================================================
   // 21. Başlatma (Init)
   // =========================================================================
+  function applyAppVersion(version) {
+    // Only the main-process package metadata is accepted; never interpolate HTML.
+    state.appVersion = typeof version === 'string' && version.length <= 80 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version) ? version : '';
+    for (const element of document.querySelectorAll('[data-app-version]')) {
+      element.textContent = state.appVersion || '—';
+      element.title = state.appVersion ? `Sürüm ${state.appVersion}` : 'Sürüm bilgisi alınamadı';
+    }
+    document.title = `T Bot${state.appVersion ? ` ${state.appVersion}` : ''} — Yerel Kodlama Asistanı`;
+  }
+
   async function init() {
+    applyAppVersion();
     applyTheme(state.theme);
     startLogoAnimation();
     setupEventListeners();
@@ -1992,7 +2004,9 @@
 
     // Başlangıç ayarlarını al
     try {
-      const cfg = await tbot.getConfig?.();
+      const initial = await tbot.getConfig?.();
+      applyAppVersion(initial?.appVersion);
+      const cfg = initial?.config;
       if (cfg) {
         if (cfg.provider) state.provider = cfg.provider;
         if (cfg.model) state.model = cfg.model;

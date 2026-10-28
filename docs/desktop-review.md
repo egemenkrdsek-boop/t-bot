@@ -30,3 +30,10 @@ Bu testler Electron/Win32 kurulumunun, gerçek grafik donanımının, dış mode
 Yerel kurulu `T Bot.exe` Windows Computer Use (`@oai/sky`) ile açıldı ve yalnızca açılış/yerleşim içsel olarak incelendi. 1222×821 pencere görüntüsünde sol oturum listesi, orta karşılama ve mesaj alanı, sağ görev paneli ve üst pencere kontrolleri yerleşti; engelleyici modal, hata ekranı veya boş renderer gözlenmedi. Mesaj gönderilmedi; sağlayıcı, ajan aracı veya uygulama içi browser/computer akışı başlatılmadı. Bu bir E2E testi değildir.
 
 Tek açılış anlık ölçümünde arayüzün toplam Electron çalışma kümesi göstergesi **426.4 MB** idi. Bu tek değer soğuk açılış ölçümüdür; kararlı durum veya rakiple bellek kıyası değildir. Kişisel oturum başlıkları bulunduğundan ekran görüntüsü dosyası kaydedilmedi. Uzun model adıyla alt HUD sağ ucu ve dar mesaj alanındaki uzun placeholder metni sıkışabiliyor; ana kontroller erişilebilir kaldı. Bu kozmetik sınır nedeniyle kurulum sonrası kaynak değişikliği yapılmadı.
+
+
+## 2.1 sürüm metadatası
+
+Header, karşılama başlığı, pencere başlığı ve tray artık sabit `2.0` göstermez. Mevcut `config:get` açılış yanıtı `{ config, appVersion }` zarfıdır; sürüm main sürecinin `app.getVersion()` kaynağından gelir ve disk config nesnesinden ayrıdır. Yeni IPC kanalı veya dosya okuma yolu eklenmedi. Renderer sınırlı sürüm metnini doğrular ve `textContent`/`document.title` kullanır; sürüm alınamazsa `—` ve “Sürüm bilgisi alınamadı” açıklaması gösterilir. Model adındaki gerçek `gemini-2.0-flash` sürümü ürün sürümü olarak değiştirilmedi.
+
+Odaklı doğrulama: `node --test tests/desktop.test.cjs` **25/25 geçti**; `node --check src/desktop/renderer/app.js` geçti. Yeni testler metadata zarfını, renderer payload'ının güvenilir sürümü değiştirememesini, saveConfig yolunun metadata'yı disk config'e eklememesini ve eksik/bozuk sürüm fallback'ini doğrular. E2E, GUI, sağlayıcı çağrısı, ağır build, commit veya push yapılmadı; önceki immutable 2.0.2 release tag'i değiştirilmedi.
