@@ -16,6 +16,10 @@ import * as skillsMod from '../skills.js';
 import * as subagentsMod from '../subagents.js';
 import { globalGroundingLedger } from '../grounding.js';
 import { redactSecrets } from '../sessions.js';
+import { checkpointToolDefinitions, handleCheckpointTool } from '../checkpoints.js';
+import { diagnosticsToolDefinitions, handleDiagnosticsTool } from './diagnostics.js';
+import { capabilitiesAllowed, type Capability } from '../security/capabilities.js';
+import { currentTaintLedger, taintedArgument } from '../security/taint.js';
 
 export interface ToolContext {
   workspace: string;
@@ -25,6 +29,8 @@ export interface ToolContext {
   imageProvider?: ImageProviderConfig;
   /** Host-supplied conversation identity; never accepted from tool arguments. */
   processOwner?: string;
+  /** Optional host capability allowlist. Omitted means the normal tool policy applies. */
+  capabilities?: ReadonlySet<Capability>;
   [key: string]: unknown;
 }
 
@@ -250,6 +256,8 @@ function buildLocalToolDefinitions(): ToolDefinition[] {
     ...shellToolDefinitions,
     ...artifactToolDefinitions,
     ...verifyToolDefinitions,
+    ...diagnosticsToolDefinitions,
+    ...checkpointToolDefinitions,
     ...browserToolDefinitions,
     ...computerToolDefinitions,
     ...gitToolDefinitions,
@@ -329,6 +337,8 @@ export const READ_ONLY_TOOLS = new Set([
   'skill_list',
   'delegate_task',
   'web_search',
+  'diagnostics',
+  'checkpoint_list',
 ]);
 
 export function getToolDefinitions(
@@ -393,6 +403,7 @@ export const APPROVAL_REQUIRED_TOOLS = [
   'git_push',
   'url_fetch',
   'project_verify',
+  'checkpoint_restore',
 ];
 
 let activeKillSwitchCallback: ((reason: string) => void) | null = null;
@@ -428,6 +439,11 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
 
   try {
     context.signal?.throwIfAborted();
+    if (!capabilitiesAllowed(toolName, context.capabilities)) {
+      const err = `Tool denied: capability policy does not allow ${toolName}.`;
+      globalGroundingLedger.recordToolResult(toolName, args, err as any, false as any);
+      return err;
+    }
     const allRemote = remoteTools(context.mcpTools);
     if (toolName === 'mcp_catalog' && allRemote.length) {
       const query = typeof args.query === 'string' ? args.query.toLowerCase().slice(0, 200) : '';
@@ -478,8 +494,20 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     // GUI access can submit forms, send messages and operate terminals. Default
     // to the same approval boundary as shell; trusted/YOLO callers may approve.
     const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL !== 'false';
+    const tainted = taintedArgument(actualArgs);
+    const taintSensitive = tainted !== undefined && (
+      APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
+      isGuiTool ||
+      actualCall.name === 'mcp_call' ||
+      actualCall.name === 'mcp_catalog'
+    );
+    if (taintSensitive && process.env.TBOT_TAINT_STRICT === 'true') {
+      const err = 'Tool error: this call repeats text from an untrusted web/MCP/browser result and strict taint policy blocked it. Ask the user to confirm the exact action.';
+      globalGroundingLedger.recordToolResult(toolName, args, err as any, false as any);
+      return err;
+    }
     const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
-      (isGuiTool && requireGuiApproval) || sensitiveReadPath !== undefined;
+      (isGuiTool && requireGuiApproval) || sensitiveReadPath !== undefined || taintSensitive;
 
     if (isApprovalRequired) {
       const description = remote
@@ -495,6 +523,9 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
               : sensitiveReadPath !== undefined
                 ? `Read the protected file "${String(actualArgs.path)}"; it may contain credentials or private keys.`
                 : `Allow ${actualCall.name} with the supplied arguments.`;
+      const approvalDescription = taintSensitive
+        ? `${description}\n[Untrusted content warning: this argument repeats text from a web, MCP, browser or desktop result. Confirm it matches your intent.]`
+        : description;
       // Show the actual text that will be typed (truncated, never masked) so the
       // user can review what will be submitted.
       const approvalArgs: Record<string, unknown> = remote
@@ -508,7 +539,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
           (actualArgs.press_enter === true || TERMINAL_TARGET.test(String(actualArgs.target ?? actualArgs.handle ?? '')))) {
         approvalArgs.requires_second_approval = true;
       }
-      if (!await context.approve({ tool: actualCall.name, description, arguments: approvalArgs })) {
+      if (!await context.approve({ tool: actualCall.name, description: approvalDescription, arguments: approvalArgs })) {
         const denied = 'Tool action denied by user.';
         globalGroundingLedger.recordToolResult(toolName, args, denied as any, false as any);
         return denied;
@@ -552,6 +583,10 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       output = await handleArtifactTool(toolName, actualArgs, context.workspace);
     } else if (toolName === 'project_verify') {
       output = await handleVerifyTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
+    } else if (toolName === 'diagnostics') {
+      output = await handleDiagnosticsTool(toolName, actualArgs, context.workspace, context.signal);
+    } else if (toolName === 'checkpoint_list' || toolName === 'checkpoint_restore') {
+      output = await handleCheckpointTool(toolName, actualArgs, context.workspace);
     } else if (toolName === 'todo_manage' || toolName === 'goal_manage') {
       output = await executeWorkflowTool(toolName, actualArgs, context.workspace);
     } else if (toolName.startsWith('process_')) {
@@ -570,6 +605,8 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       output = await handleFileTool(toolName, actualArgs, context.workspace, context.signal);
     }
 
+    currentTaintLedger().record(toolName, output);
+    if (actualCall.name !== toolName) currentTaintLedger().record(actualCall.name, output);
     globalGroundingLedger.recordToolResult(toolName, args, output as any, isToolResultOk(toolName, output) as any);
     if (actualCall.name !== toolName) {
       globalGroundingLedger.recordToolResult(actualCall.name, actualArgs, output as any, isToolResultOk(actualCall.name, output) as any);

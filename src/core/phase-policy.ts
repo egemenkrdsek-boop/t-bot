@@ -1,0 +1,166 @@
+/**
+ * Enforced turn phases and completion gates.
+ *
+ * The system prompt already describes locate -> plan -> act -> verify ->
+ * report. This module makes the important parts of that contract executable:
+ * an inspection task cannot write, an edit task cannot silently finish
+ * without changing a file, and a changed file cannot be declared successful
+ * without a verification attempt.
+ */
+import type { ToolCall } from '../types.js';
+import type { TaskContract } from './task-contract.js';
+
+export type AgentPhase = 'intake' | 'locate' | 'plan' | 'act' | 'verify' | 'report';
+
+export interface PhaseState {
+  phase: AgentPhase;
+  reads: number;
+  writes: number;
+  verificationAttempts: number;
+  verificationPassed: boolean;
+  toolCalls: number;
+}
+
+const READ_TOOLS = new Set([
+  'file_read',
+  'file_outline',
+  'file_list',
+  'file_glob',
+  'file_search',
+  'artifact_read',
+  'git_status',
+  'git_diff',
+  'git_log',
+  'memory_recall',
+  'process_list',
+  'process_output',
+  'skill_list',
+  'mcp_catalog',
+  'web_search',
+  'diagnostics',
+  'checkpoint_list',
+]);
+
+const WRITE_TOOLS = new Set([
+  'file_write',
+  'file_patch',
+  'checkpoint_restore',
+  'git_add',
+  'git_commit',
+  'git_push',
+  'skill_create',
+  'process_write',
+  'process_stop',
+]);
+
+const VERIFICATION_COMMAND = /(?:\b(?:test|tests|typecheck|type check|lint|verify|check|tsc|vitest|jest|pytest)\b)/iu;
+const SUCCESS_CLAIM = /(?:\b(?:passed|success|successful|fixed|completed|done|verified|green|başarılı|tamamlandı|düzeltildi|doğrulandı|geçti)\b)/iu;
+
+export function createPhaseState(): PhaseState {
+  return {
+    phase: 'intake',
+    reads: 0,
+    writes: 0,
+    verificationAttempts: 0,
+    verificationPassed: false,
+    toolCalls: 0,
+  };
+}
+
+export function isReadTool(name: string): boolean {
+  return READ_TOOLS.has(name);
+}
+
+export function isWriteTool(name: string): boolean {
+  return WRITE_TOOLS.has(name);
+}
+
+export function isVerificationCall(name: string, args: Record<string, unknown>): boolean {
+  if (name === 'project_verify' || name === 'diagnostics') return true;
+  if (name === 'shell') {
+    const command = typeof args.command === 'string' ? args.command : '';
+    return VERIFICATION_COMMAND.test(command);
+  }
+  return false;
+}
+
+export function phaseLabel(phase: AgentPhase): string {
+  switch (phase) {
+    case 'intake': return 'Intake';
+    case 'locate': return 'Locate';
+    case 'plan': return 'Plan';
+    case 'act': return 'Act';
+    case 'verify': return 'Verify';
+    case 'report': return 'Report';
+  }
+}
+
+/**
+ * A pre-execution gate. Returns an error string when the call must not run.
+ * This is intentionally narrow: it blocks only violations that are provable
+ * from the task kind and the current turn state.
+ */
+export function phaseViolation(
+  state: PhaseState,
+  call: ToolCall,
+  contract: TaskContract,
+  readOnly: boolean
+): string | undefined {
+  if (readOnly && !isReadTool(call.name)) {
+    return 'Tool denied: this investigator is restricted to read-only tools.';
+  }
+  if (contract.kind === 'inspect' && isWriteTool(call.name)) {
+    return 'Tool denied: this is an inspection-only task. Report findings instead of changing files.';
+  }
+  if (contract.kind === 'conversation' && isWriteTool(call.name)) {
+    return 'Tool denied: the request is conversational, not an edit request.';
+  }
+  return undefined;
+}
+
+/** Update state only after a call actually produced a result. */
+export function recordPhaseToolResult(
+  state: PhaseState,
+  call: ToolCall,
+  ok: boolean
+): void {
+  state.toolCalls++;
+  const args = call.arguments ?? {};
+  if (isVerificationCall(call.name, args)) {
+    state.verificationAttempts++;
+    state.verificationPassed = state.verificationPassed || ok;
+    state.phase = 'verify';
+    return;
+  }
+  if (isWriteTool(call.name)) {
+    if (ok) state.writes++;
+    state.phase = 'act';
+    return;
+  }
+  if (isReadTool(call.name)) {
+    if (ok) state.reads++;
+    if (state.writes === 0) state.phase = state.reads > 0 ? 'locate' : 'intake';
+  }
+}
+
+/**
+ * A final-answer gate. The agent may retry once with this correction. After
+ * that retry the answer is allowed through so the user is never trapped in a
+ * loop; the prompt still requires an explicit unverified statement.
+ */
+export function finalAnswerViolation(
+  state: PhaseState,
+  contract: TaskContract,
+  finalText: string
+): string | undefined {
+  if (contract.requiresWrite && state.writes === 0) {
+    return 'Completion gate: this is an edit task, but no file was changed. Make the requested change with file_patch or file_write, or state clearly why it cannot be made.';
+  }
+  if (contract.requiresVerification && state.writes > 0 && state.verificationAttempts === 0) {
+    return 'Completion gate: files were changed, but no verification was run. Call project_verify or diagnostics now. If neither is available, say the change is unverified.';
+  }
+  if (contract.requiresVerification && state.verificationAttempts > 0 && !state.verificationPassed && SUCCESS_CLAIM.test(finalText)) {
+    return 'Completion gate: verification did not pass. Do not claim success. Report the failing command and the remaining error, or fix it and verify again.';
+  }
+  return undefined;
+}

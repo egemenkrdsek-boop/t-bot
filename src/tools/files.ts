@@ -11,6 +11,7 @@ import { handleShellTool } from './shell.js';
 import { applyEdit } from './edit-match.js';
 import { assertNotSensitivePath, isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
 import { redactSecrets } from '../secrets.js';
+import { saveCheckpoint } from '../checkpoints.js';
 
 const string = (args: Record<string, unknown>, key: string): string => {
   const value = args[key];
@@ -561,6 +562,9 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
       throw new Error(`Sözdizimi/Grounding Doğrulama Hatası: ${syntax.error}`);
     }
 
+    if (exists && oldContent !== null) {
+      await saveCheckpoint(workspace, target, oldContent, 'file_write').catch(() => undefined);
+    }
     await atomicWrite(target, args.content, workspace, input, signal, oldContent);
 
     const relPath = path.relative(workspace, target).replace(/\\/g, '/');
@@ -642,6 +646,7 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
       throw new Error(`Sözdizimi/Grounding Doğrulama Hatası: ${syntax.error}`);
     }
 
+    await saveCheckpoint(workspace, target, oldContent, 'file_patch').catch(() => undefined);
     await atomicWrite(target, nextContent, workspace, input, signal, oldContent);
 
     const rel = path.relative(workspace, target).replace(/\\/g, '/') || input;

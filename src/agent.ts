@@ -2,7 +2,7 @@ import { open, realpath } from 'node:fs/promises';
 import { join, relative, isAbsolute, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { executeTool, getToolDefinitions, READ_ONLY_TOOLS, toolDefinitions } from './tools/index.js';
+import { executeTool, getToolDefinitions, isToolResultOk, READ_ONLY_TOOLS, toolDefinitions } from './tools/index.js';
 import { artifactHint, storeArtifact } from './tools/artifacts.js';
 import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
 import type { AgentEvent, AgentInput, ImageAttachment, Message, ToolCall, ToolDefinition } from './types.js';
@@ -22,7 +22,12 @@ import { globalContextCache, withContextReadCache } from './context-cache.js';
 import { buildWorkspaceRepoMap } from './repo-map.js';
 import { getActiveFocusSummary, executeWorkflowTool, WORKFLOW_TOOLS } from './workflows.js';
 import { resolveContextBudget } from './context-budget.js';
+import { planTurnBudget } from './context-planner.js';
 import { collectConstraints, constraintPrompt, constraintViolation } from './constraints.js';
+import { buildTaskContract, taskContractPrompt } from './core/task-contract.js';
+import { createPhaseState, finalAnswerViolation, phaseViolation, recordPhaseToolResult } from './core/phase-policy.js';
+import { defaultCapabilities } from './security/capabilities.js';
+import { withTaintLedger } from './security/taint.js';
 
 const SYSTEM_PROMPT = `You are T Bot, a local software-engineering agent. File and edit tools are workspace-contained. Shell commands run with the user's permissions and require approval. Browser and computer tools may operate on user-authorized sites and applications; they also require approval. Use them when the user asks for browser, desktop or GUI work.
 
@@ -238,8 +243,8 @@ export function reconcileResponseItems(items: Record<string, unknown>[], calls: 
 
 /** Run one user turn, returning the conversation including any native tool calls. */
 export async function runAgent(input: AgentInput, options: AgentRunOptions = {}): Promise<Message[]> {
-  return withGroundingLedger(options.workspace ?? input.workspace, options.toolPolicy !== 'read-only', () =>
-    withPendingExportScope(() => withContextReadCache(() => runAgentInContext(input, options))));
+  return withTaintLedger(() => withGroundingLedger(options.workspace ?? input.workspace, options.toolPolicy !== 'read-only', () =>
+    withPendingExportScope(() => withContextReadCache(() => runAgentInContext(input, options)))));
 }
 
 async function runAgentInContext(input: AgentInput, options: AgentRunOptions): Promise<Message[]> {
@@ -269,6 +274,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
   const constraints = collectConstraints(
     conversation.filter(message => message.role === 'user').map(message => message.content)
   );
+  const contract = buildTaskContract(input.message, { weakMode: budget.weak, readOnly });
 
   session = options.session ?? {
     id: 'temp-session',
@@ -307,6 +313,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
     }
     const boundaries = constraintPrompt(constraints);
     if (boundaries) systemSections.push(boundaries);
+    systemSections.push(taskContractPrompt(contract));
     if (repoMap) systemSections.push(`[PROJE MİMARİ VE SEMBOL HARİTASI (RepoMap)]\n${repoMap}`);
     if (memoryContext) systemSections.push(memoryContext);
     if (skillPrompt) systemSections.push(skillPrompt);
@@ -319,6 +326,8 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
   const seenIds = new Set<string>();
   const callSignatureCounts = new Map<string, number>();
   let didGroundingRetry = false;
+  let didPhaseRetry = false;
+  const phaseState = createPhaseState();
   let wasTruncatedByBudget = false;
   const intentGroups = new Set<string>();
   let reportedWindowing = false;
@@ -326,7 +335,8 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
   const prepareContext = (history: Message[], tools: ToolDefinition[], extra: Message[]) => {
     // A local optimization target, not a provider context-window limit. Reserve prompt/schema costs.
     const fixedTokens = estimateMessagesTokens([system, ...extra], undefined, tools);
-    const window = compressConversationHistory(history, Math.max(0, budget.historyTokens - fixedTokens));
+    const plan = planTurnBudget(budget, fixedTokens);
+    const window = compressConversationHistory(history, plan.historyTokens);
     globalContextCache.retainVisibleReads(window.messages);
     if (window.omittedMessages && !reportedWindowing) {
       emit({ type: 'status', message: `Bağlam pencerelendi: ${window.omittedMessages} eski mesaj bu isteğe taşınmadı; araç grupları bölünmedi ve kullanıcı talimatları korundu. Tam geçmiş oturumda saklanıyor; eksik kaynaklar yeniden okunmalıdır.` });
@@ -515,6 +525,13 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
         if (isFast) {
           return conversation;
         }
+        const phaseCorrection = finalAnswerViolation(phaseState, contract, content);
+        if (phaseCorrection && !didPhaseRetry) {
+          didPhaseRetry = true;
+          conversation.push({ role: 'user', content: phaseCorrection });
+          if (round === maxRounds - 1) maxRounds++;
+          continue;
+        }
         const audit = auditAssistantClaims(content, globalGroundingLedger);
         if (!audit.verified && audit.correctionPrompt && !didGroundingRetry) {
           didGroundingRetry = true;
@@ -536,14 +553,19 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
         emit({ type: 'tool_start', call });
         let result: string;
         const violation = constraintViolation(call, constraints, workspace);
+        const phaseError = phaseViolation(phaseState, call, contract, readOnly);
+        let executed = false;
 
-        if (violation) {
+        if (phaseError) {
+          result = phaseError;
+        } else if (violation) {
           result = violation;
         } else if (readOnly && !isReadOnlyTool(call.name)) {
           result = 'Araç reddedildi: Bu ajan salt okunur araçlarla sınırlandırılmıştır.';
         } else if (input.signal?.aborted) {
           result = 'Araç çalıştırma iptal edildi.';
         } else if (call.name === 'todo_manage' || call.name === 'goal_manage') {
+          executed = true;
           try {
             result = await executeWorkflowTool(call.name, call.arguments, workspace);
           } catch (error) {
@@ -551,6 +573,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
             result = enrichToolErrorWithSelfHealing(call.name, `Araç Hatası: ${rawError}`);
           }
         } else {
+          executed = true;
           try {
             result = readOnly && !isReadOnlyTool(call.name)
               ? 'Araç reddedildi: Bu ajan salt okunur araçlarla sınırlandırılmıştır.'
@@ -561,6 +584,7 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
                     processOwner,
                     approve: input.approve,
                     toolPolicy: readOnly ? 'read-only' : toolPolicy,
+                    capabilities: defaultCapabilities(readOnly),
                     provider: input.provider,
                     onEvent: emit,
                     signal: input.signal,
@@ -575,6 +599,9 @@ async function runAgentInContext(input: AgentInput, options: AgentRunOptions): P
 
         if (result.startsWith('Tool error:') || result.startsWith('Araç Hatası:')) {
           result = enrichToolErrorWithSelfHealing(call.name, result);
+        }
+        if (executed) {
+          recordPhaseToolResult(phaseState, call, isToolResultOk(call.name, result));
         }
 
         const image = await screenshotImage(call, result, workspace);
