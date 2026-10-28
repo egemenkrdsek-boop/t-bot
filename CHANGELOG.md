@@ -53,8 +53,8 @@
 
 ### Verification limits
 
-- Unit/component tests, static checks, build/package/install checks and targeted live runs were completed. Full E2E automation, a full browser/computer task and a Telegram end-to-end task were not run.
-- Live runs are limited to GLM (effort low) in a scratch workspace and to the 8 scenarios listed in `docs/verification.md`. They are not a competitor benchmark or a broad model matrix.
+- Unit/component tests, static checks, build/package/install checks and targeted live runs were completed. The full serial suite passes 283/283 (0 fail, 0 skip). Full E2E automation and a Telegram end-to-end task were not run.
+- Live runs are limited to GLM (effort low) in a scratch workspace, plus one real local computer and one real local browser session. They are not a competitor benchmark or a broad model matrix.
 - Test, build, package and install numbers are recorded in `docs/verification.md`. Rollback was verified by fixtures and code review only; a real failed global write was not exercised.
 - No competitor benchmark, "world #1" or percentage-savings claim is made. Token values remain local estimates.
 

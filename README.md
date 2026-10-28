@@ -162,7 +162,7 @@ Allowlist boşsa yerel terminal tek kullanımlık `/pair <32-karakter hex kod>` 
 
 ## Doğrulama ve kanıt
 
-- Testler birim/bileşen ve kaydedilmiş fixture'lardır; E2E otomasyonu yoktur. 5.0'da ayrıca GLM (effort low) ve scratch workspace ile hedefli canlı koşular yapıldı (8 senaryo); bunlar birim testi veya geniş model matrisi yerine geçmez.
+- Testler birim/bileşen ve kaydedilmiş fixture'lardır; E2E otomasyonu yoktur. 5.0'da ayrıca GLM (effort low) ve scratch workspace ile hedefli canlı koşular, gerçek yerel computer ve browser oturumları yapıldı; bunlar birim testi veya geniş model matrisi yerine geçmez.
 - Kaynak, test, paket, masaüstü ve kurulum kanıtları [doğrulama kaydının](docs/verification.md) 5.0 bölümündedir. Rollback'in canlı global hata senaryosuyla doğrulanmadığı ve diğer sınırlar aynı kayıtta açıkça yazılıdır.
 - "Dünya #1", rakiplere göre yüzde tasarruf veya ölçülmemiş performans iddiası yapılmaz. Token değerleri sağlayıcı faturası değil, yerel tahmindir.
 - TypeScript/JavaScript ve JSON kontrolleri tüm diller için doğrulama garantisi değildir. Windows dışı masaüstü kontrolü vaat edilmez.
