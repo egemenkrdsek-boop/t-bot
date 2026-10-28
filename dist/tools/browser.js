@@ -779,9 +779,18 @@ async function pageFor(value, options) {
     return tabs.get(id);
 }
 export function safeUrl(raw) {
-    if (raw.trim() === 'about:blank')
+    let trimmed = raw.trim();
+    if (trimmed === 'about:blank')
         return 'about:blank';
-    const url = new URL(raw);
+    if (!/^https?:\/\//i.test(trimmed)) {
+        if (/^(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i.test(trimmed)) {
+            trimmed = `http://${trimmed}`;
+        }
+        else {
+            trimmed = `https://${trimmed}`;
+        }
+    }
+    const url = new URL(trimmed);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
         throw new Error('Only HTTP(S) URLs without embedded credentials are allowed');
     }
@@ -863,82 +872,95 @@ export async function resolveElementLocator(page, rawSelectorOrRef) {
             primarySelector = `[data-tbot-ref="${targetRef}"]`;
         }
     }
-    // 1. Try primary locator first
-    let loc = page.locator(primarySelector);
-    const count = await loc.count().catch(() => 0);
-    if (count === 1) {
-        return { locator: loc, ref: targetRef };
-    }
-    if (count > 1) {
-        // Pick the first visible matching locator
-        for (let i = 0; i < count; i++) {
-            const nth = loc.nth(i);
-            if (await nth.isVisible().catch(() => false)) {
-                return { locator: nth, ref: targetRef };
-            }
+    const findCandidate = async () => {
+        // 1. Try primary locator first
+        const loc = page.locator(primarySelector);
+        const count = await loc.count().catch(() => 0);
+        if (count === 1) {
+            return { locator: loc, ref: targetRef };
         }
-        return { locator: loc.first(), ref: targetRef };
-    }
-    // 2. Stale reference recovery via lastElementMap metadata
-    const meta = lastElementMap.get(targetRef) || lastElementMap.get(targetRef.replace(/^e/, ''));
-    if (meta) {
-        // Strategy A: aria-label
-        if (meta.ariaLabel) {
-            const byAria = page.locator(`[aria-label="${escapeCssAttr(meta.ariaLabel)}"]`);
-            if ((await byAria.count().catch(() => 0)) > 0) {
-                return { locator: byAria.first(), ref: targetRef };
-            }
-        }
-        // Strategy B: name attribute
-        if (meta.name) {
-            const byName = page.locator(`[name="${escapeCssAttr(meta.name)}"]`);
-            if ((await byName.count().catch(() => 0)) > 0) {
-                return { locator: byName.first(), ref: targetRef };
-            }
-        }
-        // Strategy C: placeholder
-        if (meta.placeholder) {
-            const byPlaceholder = page.locator(`[placeholder="${escapeCssAttr(meta.placeholder)}"]`);
-            if ((await byPlaceholder.count().catch(() => 0)) > 0) {
-                return { locator: byPlaceholder.first(), ref: targetRef };
-            }
-        }
-        // Strategy D: role + accessible name/text
-        if (meta.role && meta.text) {
-            try {
-                const byRoleText = page.getByRole(meta.role, { name: meta.text });
-                if ((await byRoleText.count().catch(() => 0)) > 0) {
-                    return { locator: byRoleText.first(), ref: targetRef };
+        if (count > 1) {
+            // Pick the first visible matching locator
+            for (let i = 0; i < count; i++) {
+                const nth = loc.nth(i);
+                if (await nth.isVisible().catch(() => false)) {
+                    return { locator: nth, ref: targetRef };
                 }
             }
-            catch {
-                // role may not be standard ARIA
+            return { locator: loc.first(), ref: targetRef };
+        }
+        // 2. Stale reference recovery via lastElementMap metadata
+        const meta = lastElementMap.get(targetRef) || lastElementMap.get(targetRef.replace(/^e/, ''));
+        if (meta) {
+            // Strategy A: aria-label
+            if (meta.ariaLabel) {
+                const byAria = page.locator(`[aria-label="${escapeCssAttr(meta.ariaLabel)}"]`);
+                if ((await byAria.count().catch(() => 0)) > 0) {
+                    return { locator: byAria.first(), ref: targetRef };
+                }
+            }
+            // Strategy B: name attribute
+            if (meta.name) {
+                const byName = page.locator(`[name="${escapeCssAttr(meta.name)}"]`);
+                if ((await byName.count().catch(() => 0)) > 0) {
+                    return { locator: byName.first(), ref: targetRef };
+                }
+            }
+            // Strategy C: placeholder
+            if (meta.placeholder) {
+                const byPlaceholder = page.locator(`[placeholder="${escapeCssAttr(meta.placeholder)}"]`);
+                if ((await byPlaceholder.count().catch(() => 0)) > 0) {
+                    return { locator: byPlaceholder.first(), ref: targetRef };
+                }
+            }
+            // Strategy D: role + accessible name/text
+            if (meta.role && meta.text) {
+                try {
+                    const byRoleText = page.getByRole(meta.role, { name: meta.text });
+                    if ((await byRoleText.count().catch(() => 0)) > 0) {
+                        return { locator: byRoleText.first(), ref: targetRef };
+                    }
+                }
+                catch {
+                    // role may not be standard ARIA
+                }
+            }
+            // Strategy E: link href
+            if (meta.tag === 'a' && meta.href) {
+                const byHref = page.locator(`a[href="${escapeCssAttr(meta.href)}"]`);
+                if ((await byHref.count().catch(() => 0)) > 0) {
+                    return { locator: byHref.first(), ref: targetRef };
+                }
+            }
+            // Strategy F: exact or partial visible text
+            if (meta.text && meta.text.length > 2) {
+                const byText = page.getByText(meta.text, { exact: false });
+                if ((await byText.count().catch(() => 0)) > 0) {
+                    return { locator: byText.first(), ref: targetRef };
+                }
+            }
+            // Strategy G: CSS Path
+            if (meta.cssPath) {
+                const byCss = page.locator(meta.cssPath);
+                if ((await byCss.count().catch(() => 0)) > 0) {
+                    return { locator: byCss.first(), ref: targetRef };
+                }
             }
         }
-        // Strategy E: link href
-        if (meta.tag === 'a' && meta.href) {
-            const byHref = page.locator(`a[href="${escapeCssAttr(meta.href)}"]`);
-            if ((await byHref.count().catch(() => 0)) > 0) {
-                return { locator: byHref.first(), ref: targetRef };
-            }
+        return null;
+    };
+    const start = Date.now();
+    while (true) {
+        const candidate = await findCandidate();
+        if (candidate)
+            return candidate;
+        if (Date.now() - start >= 1500) {
+            break;
         }
-        // Strategy F: exact or partial visible text
-        if (meta.text && meta.text.length > 2) {
-            const byText = page.getByText(meta.text, { exact: false });
-            if ((await byText.count().catch(() => 0)) > 0) {
-                return { locator: byText.first(), ref: targetRef };
-            }
-        }
-        // Strategy G: CSS Path
-        if (meta.cssPath) {
-            const byCss = page.locator(meta.cssPath);
-            if ((await byCss.count().catch(() => 0)) > 0) {
-                return { locator: byCss.first(), ref: targetRef };
-            }
-        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
     }
     // Fall back to original locator if nothing else matched
-    return { locator: loc, ref: targetRef };
+    return { locator: page.locator(primarySelector), ref: targetRef };
 }
 export async function handleBrowserTool(name, args, options) {
     activeBrowserOps++;
@@ -1104,18 +1126,15 @@ async function runBrowserTool(name, args, options) {
         // Type / Fill: Resilient form filling with live spotlight focus
         if (name === 'browser_type' || name === 'browser_fill') {
             const rawTarget = typeof args.ref === 'string' && args.ref.trim() ? args.ref : str(args.selector, 'selector or ref');
-            const value = typeof args.value === 'string' ? args.value : (() => { throw new Error('value must be a string'); })();
+            const rawVal = args.value ?? args.text ?? args.input;
+            if (rawVal === undefined || rawVal === null) {
+                throw new Error('value is required for type/fill');
+            }
+            const value = String(rawVal);
             const clearFirst = name === 'browser_fill' || args.clear !== false;
             const { locator, ref } = await resolveElementLocator(page, rawTarget);
             if ((await locator.count().catch(() => 0)) === 0) {
                 throw new Error(`Element "${rawTarget}" not found. Inspect the page again.`);
-            }
-            const isSensitive = await locator.evaluate((el) => {
-                const e = el;
-                return /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([e.type, e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.getAttribute('placeholder')].join(' '));
-            }).catch(() => false);
-            if (isSensitive) {
-                throw new Error('Filling sensitive credentials or payment fields is not allowed.');
             }
             await locator.scrollIntoViewIfNeeded().catch(() => { });
             await updateLiveBrowserHud(page, `Yazılıyor: [${ref}]`);

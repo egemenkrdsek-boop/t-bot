@@ -82,6 +82,16 @@ export function normalizeToolCall(name, rawArgs) {
         desktop: 'computer',
         desktop_action: 'computer',
         os_control: 'computer',
+        mouse_click: 'computer',
+        keyboard_type: 'computer',
+        open_app: 'computer',
+        take_screenshot: 'computer',
+        screen_capture: 'computer',
+        desktop_click: 'computer',
+        desktop_type: 'computer',
+        navigate: 'browser_navigate',
+        open_url: 'browser_open',
+        web_open: 'browser_open',
         search_web: 'web_search',
         google: 'web_search',
         internet_search: 'web_search',
@@ -94,8 +104,9 @@ export function normalizeToolCall(name, rawArgs) {
         goal: 'goal_manage',
         goals: 'goal_manage',
     };
-    const normalizedName = toolAliases[name] ?? name;
-    const args = { ...rawArgs };
+    const safeName = typeof name === 'string' ? name : '';
+    const normalizedName = toolAliases[safeName] ?? safeName;
+    const args = { ...(rawArgs || {}) };
     if (normalizedName.startsWith('file_')) {
         // path alias
         const pathVal = args.path ?? args.filePath ?? args.file_path ?? args.file ?? args.filename ?? args.target_file;
@@ -136,6 +147,26 @@ export function normalizeToolCall(name, rawArgs) {
         }
     }
     else if (normalizedName === 'url_fetch') {
+        const urlVal = args.url ?? args.target_url ?? args.link;
+        if (urlVal !== undefined) {
+            args.url = urlVal;
+        }
+    }
+    else if (normalizedName === 'computer') {
+        if (name === 'mouse_click' || name === 'desktop_click') {
+            args.action = args.action ?? 'click';
+        }
+        else if (name === 'keyboard_type' || name === 'desktop_type') {
+            args.action = args.action ?? 'type';
+        }
+        else if (name === 'open_app') {
+            args.action = args.action ?? 'open';
+        }
+        else if (name === 'take_screenshot' || name === 'screen_capture') {
+            args.action = args.action ?? 'screenshot';
+        }
+    }
+    else if (normalizedName === 'browser_navigate' || normalizedName === 'browser_open') {
         const urlVal = args.url ?? args.target_url ?? args.link;
         if (urlVal !== undefined) {
             args.url = urlVal;

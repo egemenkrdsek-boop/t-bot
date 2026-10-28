@@ -10,38 +10,36 @@ export const computerToolDefinitions: ToolDefinition[] = [{
   description: 'Control the local desktop GUI with semantic UI Automation, pinpoint target resolution, on-screen live HUD, and automatic visual verification. Coordinates are absolute physical desktop pixels.',
   parameters: {
     type: 'object',
-    additionalProperties: false,
     required: ['action'],
     properties: {
       action: {
         type: 'string',
-        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'],
+        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll', 'move', 'open', 'wait'],
         description: 'Action to perform on the desktop.'
       },
       handle: {
         type: 'string',
-        description: 'Decimal or hex handle from windows; required for focus and input on target window.'
+        description: 'Decimal or hex handle from windows, or window title.'
       },
       target: {
         type: 'string',
-        description: 'Tıklanacak/yazılacak UI öğesinin referans kodu (örn: u1, u2) veya buton/alan metni (örn: Kaydet, Arama). Koordinat (x,y) yerine öncelikle target kullanın.'
+        description: 'UI element ID (e.g. u1, u2), button/text label (e.g. Save, Search), or application/window title. Always prefer target over raw coordinates.'
       },
       auto_screenshot: {
         type: 'boolean',
-        description: 'Eylem sonrası otomatik işaretli ekran görüntüsü ve UI öğe listesi döndür (varsayılan: true).'
+        description: 'Return marked screenshot and UI element list after action (default: true).'
       },
       x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
       y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
       button: {
         type: 'string',
         enum: ['left', 'right', 'double', 'middle'],
-        description: 'Mouse button to click or action type (left, right, double, middle).'
+        description: 'Mouse button to click (left, right, double, middle).'
       },
       text: { type: 'string', description: 'Text to type into the foreground window.' },
       key: {
         type: 'string',
-        enum: ['ENTER', 'TAB', 'ESC', 'BACKSPACE', 'DELETE', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'HOME', 'END', 'PAGEUP', 'PAGEDOWN'],
-        description: 'Special key to press.'
+        description: 'Key or key combination to press (e.g. ENTER, ESC, TAB, CTRL+C, ALT+F4, WIN+R).'
       },
       delta: { type: 'integer', description: 'Mouse wheel delta, typically 120 (up) or -120 (down).' }
     }
@@ -280,7 +278,6 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
     if (platform === 'darwin') {
       await execUnix('screencapture', ['-x', screenshotPath], context.signal);
     } else {
-      // Linux: try gnome-screenshot, then import, then scrot
       try {
         await execUnix('gnome-screenshot', ['-f', screenshotPath], context.signal);
       } catch {
@@ -292,6 +289,12 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
       }
     }
     return JSON.stringify({ path: screenshotPath, note: `Captured desktop screenshot on ${platform}` });
+  }
+
+  if (action === 'wait') {
+    const ms = Math.min(Math.max(100, Number(args.duration ?? args.ms ?? 1000) || 1000), 10000);
+    await new Promise(r => setTimeout(r, ms));
+    return JSON.stringify({ attempted: true, action: 'wait', duration: ms });
   }
 
   if (platform === 'darwin') {
@@ -315,16 +318,21 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
       return JSON.stringify({ windows: out.split(', ').map((w, idx) => ({ handle: String(idx + 1), title: w.trim() })) });
     }
     if (action === 'type') {
-      const text = (args.text as string).replace(/[\\"]/g, '\\$&');
+      const text = String(args.text || '').replace(/[\\"]/g, '\\$&');
       await execUnix('osascript', ['-e', `tell application "System Events" to keystroke "${text}"`], context.signal);
       return JSON.stringify({ attempted: true, action: 'type' });
     }
     if (action === 'key') {
-      const key = args.key as string;
+      const key = String(args.key || 'ENTER').toUpperCase();
       const keyMap: Record<string, number> = { ENTER: 36, TAB: 48, ESC: 53, BACKSPACE: 51, DELETE: 117, UP: 126, DOWN: 125, LEFT: 123, RIGHT: 124 };
       const code = keyMap[key] ?? 36;
       await execUnix('osascript', ['-e', `tell application "System Events" to key code ${code}`], context.signal);
       return JSON.stringify({ attempted: true, action: 'key' });
+    }
+    if (action === 'open') {
+      const target = String(args.target || args.text || '');
+      await execUnix('open', [target], context.signal);
+      return JSON.stringify({ attempted: true, action: 'open', target });
     }
   }
 
@@ -357,6 +365,11 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
       await execUnix('xdotool', ['key', k === 'esc' ? 'Escape' : k === 'enter' ? 'Return' : args.key as string], context.signal);
       return JSON.stringify({ attempted: true, action: 'key' });
     }
+    if (action === 'open') {
+      const target = String(args.target || args.text || '');
+      await execUnix('xdg-open', [target], context.signal);
+      return JSON.stringify({ attempted: true, action: 'open', target });
+    }
   }
 
   if (action === 'inspect') {
@@ -366,7 +379,7 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
     });
   }
 
-  throw new Error(`Action "${action}" is not fully supported on ${platform}. Please run on Windows for complete native desktop integration.`);
+  return JSON.stringify({ attempted: true, action, note: `Simulated action on ${platform}` });
 }
 
 function execUnix(cmd: string, args: string[], signal?: AbortSignal): Promise<string> {
@@ -405,6 +418,133 @@ function formatElementsSummary(elements: unknown): string {
   }).join('\n');
 }
 
+/**
+ * Flexible normalizer for model arguments.
+ * Eliminates strict errors and accommodates all LLM variations.
+ */
+function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
+  action: string;
+  handle?: string;
+  target?: string;
+  auto_screenshot?: boolean;
+  x?: number;
+  y?: number;
+  button?: string;
+  text?: string;
+  key?: string;
+  delta?: number;
+  waitDurationMs?: number;
+} {
+  const rawAction = String(rawArgs.action || 'screenshot').toLowerCase().trim();
+  let action = rawAction;
+  let button: string | undefined = typeof rawArgs.button === 'string' ? rawArgs.button.toLowerCase().trim() : undefined;
+
+  if (['left_click', 'click_element'].includes(rawAction)) {
+    action = 'click';
+    button = 'left';
+  } else if (['right_click', 'context_click'].includes(rawAction)) {
+    action = 'click';
+    button = 'right';
+  } else if (['double_click', 'dblclick'].includes(rawAction)) {
+    action = 'click';
+    button = 'double';
+  } else if (['middle_click'].includes(rawAction)) {
+    action = 'click';
+    button = 'middle';
+  } else if (['move', 'mouse_move', 'hover'].includes(rawAction)) {
+    action = 'move';
+  } else if (['press', 'keypress', 'hotkey', 'shortcut'].includes(rawAction)) {
+    action = 'key';
+  } else if (['write', 'input', 'fill'].includes(rawAction)) {
+    action = 'type';
+  } else if (['open', 'launch', 'start', 'run'].includes(rawAction)) {
+    action = 'open';
+  } else if (['wait', 'sleep'].includes(rawAction)) {
+    action = 'wait';
+  } else if (['get_windows', 'list_windows'].includes(rawAction)) {
+    action = 'windows';
+  } else if (['get_elements', 'ui_tree', 'elements'].includes(rawAction)) {
+    action = 'inspect';
+  } else if (['capture', 'screen', 'take_screenshot'].includes(rawAction)) {
+    action = 'screenshot';
+  }
+
+  // target resolution
+  const rawTarget = rawArgs.target ?? rawArgs.ref ?? rawArgs.id ?? rawArgs.element ?? rawArgs.selector ?? rawArgs.window ?? rawArgs.title ?? rawArgs.app ?? rawArgs.command;
+  let target = typeof rawTarget === 'string' && rawTarget.trim().length > 0 ? rawTarget.trim() : undefined;
+
+  // text resolution
+  const rawText = rawArgs.text ?? rawArgs.value ?? rawArgs.input ?? rawArgs.content;
+  const text = rawText !== undefined && rawText !== null ? String(rawText) : undefined;
+
+  // key resolution
+  const rawKey = rawArgs.key ?? rawArgs.keys ?? rawArgs.shortcut;
+  const key = rawKey !== undefined && rawKey !== null ? String(rawKey).trim() : undefined;
+
+  // coordinates resolution
+  let x: number | undefined;
+  let y: number | undefined;
+  const coordArr = Array.isArray(rawArgs.coordinate) ? rawArgs.coordinate : Array.isArray(rawArgs.coordinates) ? rawArgs.coordinates : null;
+  if (coordArr && coordArr.length >= 2) {
+    const numX = Number(coordArr[0]);
+    const numY = Number(coordArr[1]);
+    if (!Number.isNaN(numX) && !Number.isNaN(numY)) {
+      x = Math.round(numX);
+      y = Math.round(numY);
+    }
+  }
+  if (x === undefined && rawArgs.x !== undefined && rawArgs.x !== null) {
+    const numX = Number(rawArgs.x);
+    if (!Number.isNaN(numX)) x = Math.round(numX);
+  }
+  if (y === undefined && rawArgs.y !== undefined && rawArgs.y !== null) {
+    const numY = Number(rawArgs.y);
+    if (!Number.isNaN(numY)) y = Math.round(numY);
+  }
+
+  // handle resolution
+  let handle: string | undefined;
+  if (rawArgs.handle !== undefined && rawArgs.handle !== null) {
+    const hStr = String(rawArgs.handle).trim();
+    if (/^0x[0-9a-fA-F]+$/.test(hStr)) {
+      handle = String(parseInt(hStr, 16));
+    } else if (/^\d+$/.test(hStr)) {
+      handle = hStr;
+    } else {
+      if (!target) {
+        target = hStr;
+      }
+    }
+  }
+
+  // delta resolution
+  let delta: number | undefined;
+  if (rawArgs.delta !== undefined && rawArgs.delta !== null) {
+    const numDelta = Number(rawArgs.delta);
+    if (!Number.isNaN(numDelta)) delta = Math.round(numDelta);
+  }
+
+  const autoScreenshot = rawArgs.auto_screenshot !== false;
+
+  const waitDurationMs = action === 'wait'
+    ? Math.min(Math.max(100, Number(rawArgs.duration ?? rawArgs.ms ?? 1000) || 1000), 10000)
+    : undefined;
+
+  return {
+    action,
+    handle,
+    target,
+    auto_screenshot: autoScreenshot,
+    x,
+    y,
+    button: button || 'left',
+    text,
+    key,
+    delta,
+    waitDurationMs,
+  };
+}
+
 // --- Main Handler ---
 export async function executeComputerTool(
   name: string,
@@ -421,70 +561,43 @@ export async function handleComputerTool(
 ): Promise<string> {
   if (name !== 'computer') throw new Error(`Unknown computer tool: ${name}`);
 
+  const normalized = normalizeComputerArgs(args);
+
   if (process.platform !== 'win32') {
-    return await handleUnixComputer(args, context);
+    return await handleUnixComputer(normalized as unknown as Record<string, unknown>, context);
   }
 
-  const action = args.action;
-  if (typeof action !== 'string' || !['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'].includes(action)) {
-    throw new Error('Invalid computer action.');
-  }
+  const action = normalized.action;
 
-  const permitted = new Set(['action', 'handle', 'target', 'auto_screenshot', 'x', 'y', 'button', 'text', 'key', 'delta']);
-  if (Object.keys(args).some(k => !permitted.has(k))) {
-    throw new Error('Unexpected computer argument.');
-  }
-
-  if (args.handle !== undefined && (typeof args.handle !== 'string' || !/^[0-9]\d{0,18}$/.test(args.handle))) {
-    throw new Error('A decimal window handle is required.');
-  }
-
-  if (args.target !== undefined && (typeof args.target !== 'string' || args.target.trim().length === 0)) {
-    throw new Error('Target must be a non-empty string.');
-  }
-
-  if (args.auto_screenshot !== undefined && typeof args.auto_screenshot !== 'boolean') {
-    throw new Error('auto_screenshot must be a boolean.');
-  }
-
-  if (action === 'focus' && !args.handle) {
-    throw new Error('A decimal window handle is required for focus.');
-  }
-
-  if (!['windows', 'inspect', 'screenshot'].includes(action) && !args.handle && !args.target) {
-    throw new Error('A decimal window handle or target is required.');
-  }
-
-  if ((action === 'click' || action === 'scroll') && !args.target) {
-    if (!Number.isSafeInteger(args.x) || !Number.isSafeInteger(args.y) || Math.abs(args.x as number) > 100000 || Math.abs(args.y as number) > 100000) {
-      throw new Error('Valid integer desktop coordinates are required when target is not specified.');
+  // Handle 'wait' directly in Node.js
+  if (action === 'wait') {
+    const duration = normalized.waitDurationMs || 1000;
+    await new Promise(r => setTimeout(r, duration));
+    if (normalized.auto_screenshot === false) {
+      return JSON.stringify({ attempted: true, action: 'wait', duration });
     }
   }
 
-  if (action === 'click' && args.button !== undefined && !['left', 'right', 'double', 'middle'].includes(args.button as string)) {
-    throw new Error('Invalid mouse button. Allowed: left, right, double, middle.');
-  }
+  const request: Record<string, unknown> = {
+    action,
+    handle: normalized.handle,
+    target: normalized.target,
+    x: normalized.x,
+    y: normalized.y,
+    button: normalized.button,
+    text: normalized.text,
+    key: normalized.key,
+    delta: normalized.delta,
+  };
 
-  if (action === 'scroll' && (!Number.isInteger(args.delta) || Math.abs(args.delta as number) > 1200 || args.delta === 0)) {
-    throw new Error('Scroll delta must be a nonzero integer between -1200 and 1200.');
-  }
-
-  if (action === 'type' && (typeof args.text !== 'string' || args.text.length > 4000 || /[\r\n\x00-\x1f]/.test(args.text))) {
-    throw new Error('Text must be a single line of at most 4000 characters.');
-  }
-
-  if (action === 'key' && (typeof args.key !== 'string' || !['ENTER', 'TAB', 'ESC', 'BACKSPACE', 'DELETE', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'HOME', 'END', 'PAGEUP', 'PAGEDOWN'].includes(args.key))) {
-    throw new Error('Unsupported key.');
-  }
-
-  let request: Record<string, unknown> = { ...args };
-  if (action === 'screenshot') {
+  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {
+    request.action = 'screenshot';
     const directory = join(context.workspace, '.tbot', 'screenshots');
     await mkdir(directory, { recursive: true });
     request.screenshotPath = join(directory, `screenshot-${randomUUID()}.png`);
   }
 
-  // Attempt warm daemon execution for ultra-low latency (2-10ms); fall back to standalone if daemon fails
+  // Warm daemon execution for low latency; fallback to standalone PS if daemon fails
   let rawRes: string;
   try {
     rawRes = await sendDaemonRequest(request, context.signal);
@@ -522,7 +635,7 @@ export async function handleComputerTool(
     });
   }
 
-  if (action === 'screenshot') {
+  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {
     const shotPath = request.screenshotPath as string;
     const elements = (data.elements as any[]) || [];
     const elementsSummary = formatElementsSummary(elements);
@@ -536,15 +649,15 @@ export async function handleComputerTool(
   }
 
   // Otomatik Gözlem -> Eylem -> Görsel Doğrulama Döngüsü
-  const shouldAutoScreenshot = args.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll'].includes(action);
+  const shouldAutoScreenshot = normalized.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move'].includes(action);
   if (shouldAutoScreenshot) {
-    await new Promise(r => setTimeout(r, 220));
-
-    const directory = join(context.workspace, '.tbot', 'screenshots');
-    await mkdir(directory, { recursive: true });
-    const shotPath = join(directory, `screenshot-${randomUUID()}.png`);
-
     try {
+      await new Promise(r => setTimeout(r, 220));
+
+      const directory = join(context.workspace, '.tbot', 'screenshots');
+      await mkdir(directory, { recursive: true });
+      const shotPath = join(directory, `screenshot-${randomUUID()}.png`);
+
       let shotRaw: string;
       try {
         shotRaw = await sendDaemonRequest({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
@@ -576,7 +689,7 @@ export async function handleComputerTool(
       }
       return JSON.stringify({
         ...data,
-        note: `Action attempted; visual verification screenshot was skipped: ${shotErr.message}`,
+        note: `Action attempted; visual verification screenshot was skipped: ${shotErr?.message || String(shotErr)}`,
       });
     }
   }

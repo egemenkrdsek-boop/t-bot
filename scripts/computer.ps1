@@ -12,7 +12,7 @@ $binDir = Join-Path $env:APPDATA "TBot\bin"
 if (-not (Test-Path -LiteralPath $binDir)) {
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
-$dllPath = Join-Path $binDir "tbot-desktop-native-v10.dll"
+$dllPath = Join-Path $binDir "tbot-desktop-native-v12.dll"
 if (Test-Path -LiteralPath $dllPath) {
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 } else {
@@ -20,6 +20,10 @@ if (Test-Path -LiteralPath $dllPath) {
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Windows.Automation;
+
 public static class DesktopNative {
   public delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
@@ -37,13 +41,13 @@ public static class DesktopNative {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT lpPoint);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, int data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-
 
   [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenWindowStation(string lpszWinSta, bool fInherit, uint dwDesiredAccess);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessWindowStation(IntPtr hWinSta);
@@ -58,6 +62,11 @@ public static class DesktopNative {
       if (hDesk != IntPtr.Zero) return SetThreadDesktop(hDesk);
     } catch {}
     return false;
+  }
+
+  private class BFSItem {
+    public AutomationElement Element;
+    public int Depth;
   }
 
   public static string GetUiElementsJson(string handleStr) {
@@ -99,32 +108,56 @@ public static class DesktopNative {
         GetWindowText(target, titleSb, titleSb.Capacity);
         string winTitle = titleSb.ToString();
 
-        System.Collections.Generic.List<string> list = new System.Collections.Generic.List<string>();
+        List<string> list = new List<string>();
+        Stopwatch sw = Stopwatch.StartNew();
+
         try {
-          System.Windows.Automation.AutomationElement rootEl = System.Windows.Automation.AutomationElement.FromHandle(target);
+          AutomationElement rootEl = AutomationElement.FromHandle(target);
           if (rootEl != null) {
-            System.Windows.Automation.PropertyCondition cond = new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsEnabledProperty, true);
-            System.Windows.Automation.AutomationElementCollection collection = rootEl.FindAll(System.Windows.Automation.TreeScope.Descendants, cond);
+            Queue<BFSItem> queue = new Queue<BFSItem>();
+            queue.Enqueue(new BFSItem { Element = rootEl, Depth = 0 });
+            int visited = 0;
             int idx = 1;
-            foreach (System.Windows.Automation.AutomationElement item in collection) {
-              if (idx > 60) break;
-              try {
-                if (item.Current.IsOffscreen) continue;
-                System.Windows.Rect r = item.Current.BoundingRectangle;
-                if (r.Width <= 4 || r.Height <= 4) continue;
+            TreeWalker walker = TreeWalker.ControlViewWalker;
 
-                string rawType = item.Current.ControlType.ProgrammaticName;
-                string cleanType = rawType.StartsWith("ControlType.") ? rawType.Substring(12) : rawType;
-                string name = item.Current.Name ?? item.Current.AutomationId ?? "";
-                name = name.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
-                if (name.Length > 80) name = name.Substring(0, 77) + "...";
+            while (queue.Count > 0 && visited < 220 && idx <= 60) {
+              if (sw.ElapsedMilliseconds > 800) break;
+              BFSItem curr = queue.Dequeue();
+              visited++;
+              AutomationElement el = curr.Element;
+              int depth = curr.Depth;
 
-                int cx = (int)(r.X + (r.Width / 2.0));
-                int cy = (int)(r.Y + (r.Height / 2.0));
+              if (depth > 0) {
+                try {
+                  if (!el.Current.IsOffscreen) {
+                    System.Windows.Rect r = el.Current.BoundingRectangle;
+                    if (r.Width > 4 && r.Height > 4) {
+                      string rawType = el.Current.ControlType.ProgrammaticName;
+                      string cleanType = rawType.StartsWith("ControlType.") ? rawType.Substring(12) : rawType;
+                      string name = el.Current.Name ?? el.Current.AutomationId ?? "";
+                      name = name.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+                      if (name.Length > 80) name = name.Substring(0, 77) + "...";
 
-                list.Add("{\"id\":\"u" + idx + "\",\"type\":\"" + cleanType + "\",\"name\":\"" + name + "\",\"x\":" + cx + ",\"y\":" + cy + ",\"rect\":{\"left\":" + (int)r.X + ",\"top\":" + (int)r.Y + ",\"width\":" + (int)r.Width + ",\"height\":" + (int)r.Height + "}}");
-                idx++;
-              } catch {}
+                      int cx = (int)(r.X + (r.Width / 2.0));
+                      int cy = (int)(r.Y + (r.Height / 2.0));
+
+                      list.Add("{\"id\":\"u" + idx + "\",\"type\":\"" + cleanType + "\",\"name\":\"" + name + "\",\"x\":" + cx + ",\"y\":" + cy + ",\"rect\":{\"left\":" + (int)r.X + ",\"top\":" + (int)r.Y + ",\"width\":" + (int)r.Width + ",\"height\":" + (int)r.Height + "}}");
+                      idx++;
+                    }
+                  }
+                } catch {}
+              }
+
+              if (depth < 5) {
+                try {
+                  AutomationElement child = walker.GetFirstChild(el);
+                  while (child != null) {
+                    if (sw.ElapsedMilliseconds > 800 || visited + queue.Count >= 220) break;
+                    queue.Enqueue(new BFSItem { Element = child, Depth = depth + 1 });
+                    child = walker.GetNextSibling(child);
+                  }
+                } catch {}
+              }
             }
           }
         } catch {}
@@ -136,7 +169,7 @@ public static class DesktopNative {
 
     t.SetApartmentState(System.Threading.ApartmentState.STA);
     t.Start();
-    t.Join();
+    t.Join(900);
     return jsonResult;
   }
 
@@ -175,6 +208,135 @@ try {
   [void][DesktopNative]::SetProcessDPIAware()
 }
 
+$script:LastUiElements = [System.Collections.Generic.List[object]]::new()
+
+function Get-DesktopWindows() {
+  $windows = [System.Collections.Generic.List[object]]::new()
+  $callback = [DesktopNative+EnumProc]{ param($h, $p)
+    if ([DesktopNative]::IsWindowVisible($h)) {
+      $title = [Text.StringBuilder]::new(1024)
+      [void][DesktopNative]::GetWindowText($h, $title, $title.Capacity)
+      $rect = [DesktopNative+RECT]::new()
+      if ($title.Length -gt 0 -and [DesktopNative]::GetWindowRect($h, [ref]$rect)) {
+        $pId = 0
+        [void][DesktopNative]::GetWindowThreadProcessId($h, [ref]$pId)
+        $procName = ""
+        try {
+          $proc = [System.Diagnostics.Process]::GetProcessById($pId)
+          if ($proc) { $procName = $proc.ProcessName }
+        } catch {}
+
+        $windows.Add(@{
+          handle = $h.ToInt64().ToString();
+          title = $title.ToString();
+          processName = $procName;
+          bounds = @{
+            x = $rect.Left;
+            y = $rect.Top;
+            width = $rect.Right - $rect.Left;
+            height = $rect.Bottom - $rect.Top
+          }
+        })
+      }
+    }
+    return $true
+  }
+  [void][DesktopNative]::EnumWindows($callback, [IntPtr]::Zero)
+  return @($windows.ToArray())
+}
+
+function Find-WindowByText([string]$text) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return [IntPtr]::Zero }
+  $clean = $text.Trim()
+  $openWins = Get-DesktopWindows
+  foreach ($w in $openWins) {
+    if ($w.title -and $w.title.IndexOf($clean, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return [IntPtr]::new([long]$w.handle)
+    }
+    if ($w.processName -and $w.processName.IndexOf($clean, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return [IntPtr]::new([long]$w.handle)
+    }
+  }
+  return [IntPtr]::Zero
+}
+
+function Resolve-WindowHandle($request) {
+  $handleVal = 0L
+  if ($request.handle -and [long]::TryParse([string]$request.handle, [ref]$handleVal) -and $handleVal -gt 0) {
+    $h = [IntPtr]::new($handleVal)
+    if ([DesktopNative]::IsWindow($h)) { return $h }
+  }
+
+  if ($request.handle -and [string]$request.handle -notmatch '^\d+$') {
+    $found = Find-WindowByText([string]$request.handle)
+    if ($found -ne [IntPtr]::Zero) { return $found }
+  }
+
+  if ($request.target) {
+    $found = Find-WindowByText([string]$request.target)
+    if ($found -ne [IntPtr]::Zero) { return $found }
+  }
+
+  if ($null -ne $request.x -and $null -ne $request.y) {
+    $pt = [DesktopNative+POINT]::new()
+    $pt.X = [int]$request.x
+    $pt.Y = [int]$request.y
+    $hit = [DesktopNative]::WindowFromPoint($pt)
+    if ($hit -ne [IntPtr]::Zero) {
+      $ancestor = [DesktopNative]::GetAncestor($hit, 2) # GA_ROOT = 2
+      if ($ancestor -ne [IntPtr]::Zero -and [DesktopNative]::IsWindow($ancestor)) {
+        return $ancestor
+      }
+      if ([DesktopNative]::IsWindow($hit)) { return $hit }
+    }
+  }
+
+  $fg = [DesktopNative]::GetForegroundWindow()
+  if ($fg -ne [IntPtr]::Zero -and [DesktopNative]::IsWindow($fg)) {
+    return $fg
+  }
+
+  return [IntPtr]::Zero
+}
+
+function Resolve-TargetElement([string]$target, [IntPtr]$handle) {
+  if ([string]::IsNullOrWhiteSpace($target)) { return $null }
+  $cleanTarget = $target.Trim().TrimStart('[').TrimEnd(']')
+
+  # 1. Son bulunan UI öğeleri listesinde ara ($script:LastUiElements)
+  if ($script:LastUiElements -and $script:LastUiElements.Count -gt 0) {
+    foreach ($el in $script:LastUiElements) {
+      if ($el.id -eq $cleanTarget -or $el.id -eq $target) { return $el }
+    }
+    foreach ($el in $script:LastUiElements) {
+      if ($el.name -and ($el.name.IndexOf($cleanTarget, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $el.name.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+        return $el
+      }
+    }
+  }
+
+  # 2. Bulunamadıysa hızlı GetUiElementsJson çağırıp güncelle
+  $hStr = if ($handle -ne [IntPtr]::Zero) { $handle.ToInt64().ToString() } else { "" }
+  try {
+    $rawJson = [DesktopNative]::GetUiElementsJson($hStr)
+    $resObj = $rawJson | ConvertFrom-Json
+    if ($resObj.elements) {
+      $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
+      foreach ($item in $resObj.elements) { $script:LastUiElements.Add($item) }
+
+      foreach ($el in $script:LastUiElements) {
+        if ($el.id -eq $cleanTarget -or $el.id -eq $target) { return $el }
+      }
+      foreach ($el in $script:LastUiElements) {
+        if ($el.name -and ($el.name.IndexOf($cleanTarget, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $el.name.IndexOf($target, [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
+          return $el
+        }
+      }
+    }
+  } catch {}
+
+  return $null
+}
 
 function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
   $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -251,49 +413,145 @@ function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
   }
 }
 
+$script:VkMap = @{
+  'ENTER' = 0x0D; 'RETURN' = 0x0D;
+  'TAB' = 0x09;
+  'ESC' = 0x1B; 'ESCAPE' = 0x1B;
+  'SPACE' = 0x20; 'SPACEBAR' = 0x20;
+  'BACKSPACE' = 0x08; 'BS' = 0x08;
+  'DELETE' = 0x2E; 'DEL' = 0x2E;
+  'UP' = 0x26; 'ARROWUP' = 0x26;
+  'DOWN' = 0x28; 'ARROWDOWN' = 0x28;
+  'LEFT' = 0x25; 'ARROWLEFT' = 0x25;
+  'RIGHT' = 0x27; 'ARROWRIGHT' = 0x27;
+  'HOME' = 0x24;
+  'END' = 0x23;
+  'PAGEUP' = 0x21; 'PGUP' = 0x21;
+  'PAGEDOWN' = 0x22; 'PGDN' = 0x22;
+  'INSERT' = 0x2D; 'INS' = 0x2D;
+  'PRINTSCREEN' = 0x2C; 'PRTSC' = 0x2C;
+  'F1' = 0x70; 'F2' = 0x71; 'F3' = 0x72; 'F4' = 0x73;
+  'F5' = 0x74; 'F6' = 0x75; 'F7' = 0x76; 'F8' = 0x77;
+  'F9' = 0x78; 'F10' = 0x79; 'F11' = 0x7A; 'F12' = 0x7B;
+  'A' = 0x41; 'B' = 0x42; 'C' = 0x43; 'D' = 0x44; 'E' = 0x45;
+  'F' = 0x46; 'G' = 0x47; 'H' = 0x48; 'I' = 0x49; 'J' = 0x4A;
+  'K' = 0x4B; 'L' = 0x4C; 'M' = 0x4D; 'N' = 0x4E; 'O' = 0x4F;
+  'P' = 0x50; 'Q' = 0x51; 'R' = 0x52; 'S' = 0x53; 'T' = 0x54;
+  'U' = 0x55; 'V' = 0x56; 'W' = 0x57; 'X' = 0x58; 'Y' = 0x59; 'Z' = 0x5A;
+  '0' = 0x30; '1' = 0x31; '2' = 0x32; '3' = 0x33; '4' = 0x34;
+  '5' = 0x35; '6' = 0x36; '7' = 0x37; '8' = 0x38; '9' = 0x39;
+}
+
+function Send-KeyboardKey([string]$keyName) {
+  $k = $keyName.Trim().ToUpperInvariant()
+
+  # WIN tuşu tekil
+  if ($k -eq 'WIN' -or $k -eq 'WINDOWS' -or $k -eq 'LWIN') {
+    [DesktopNative]::keybd_event(0x5B, 0, 0, [UIntPtr]::Zero)
+    [System.Threading.Thread]::Sleep(30)
+    [DesktopNative]::keybd_event(0x5B, 0, 2, [UIntPtr]::Zero)
+    return
+  }
+
+  # Kombinasyon çözümleme: CTRL+, ALT+, SHIFT+, WIN+
+  if ($k.Contains('+')) {
+    $parts = $k.Split('+')
+    $modifiers = [System.Collections.Generic.List[byte]]::new()
+    $mainKey = ""
+
+    foreach ($p in $parts) {
+      $trimmed = $p.Trim()
+      if ($trimmed -eq 'CTRL' -or $trimmed -eq 'CONTROL') {
+        $modifiers.Add(0x11)
+      } elseif ($trimmed -eq 'ALT') {
+        $modifiers.Add(0x12)
+      } elseif ($trimmed -eq 'SHIFT') {
+        $modifiers.Add(0x10)
+      } elseif ($trimmed -eq 'WIN' -or $trimmed -eq 'WINDOWS') {
+        $modifiers.Add(0x5B)
+      } else {
+        $mainKey = $trimmed
+      }
+    }
+
+    $mainVk = 0
+    if ($script:VkMap.ContainsKey($mainKey)) {
+      $mainVk = $script:VkMap[$mainKey]
+    } elseif ($mainKey.Length -eq 1) {
+      $mainVk = [byte][char]$mainKey[0]
+    }
+
+    if ($mainVk -ne 0) {
+      foreach ($m in $modifiers) {
+        [DesktopNative]::keybd_event($m, 0, 0, [UIntPtr]::Zero)
+        [System.Threading.Thread]::Sleep(10)
+      }
+      [DesktopNative]::keybd_event($mainVk, 0, 0, [UIntPtr]::Zero)
+      [System.Threading.Thread]::Sleep(20)
+      [DesktopNative]::keybd_event($mainVk, 0, 2, [UIntPtr]::Zero)
+      for ($i = $modifiers.Count - 1; $i -ge 0; $i--) {
+        [DesktopNative]::keybd_event($modifiers[$i], 0, 2, [UIntPtr]::Zero)
+        [System.Threading.Thread]::Sleep(10)
+      }
+      return
+    }
+
+    try {
+      $prefix = ""
+      if ($modifiers.Contains(0x11)) { $prefix += "^" }
+      if ($modifiers.Contains(0x12)) { $prefix += "%" }
+      if ($modifiers.Contains(0x10)) { $prefix += "+" }
+      [System.Windows.Forms.SendKeys]::SendWait("$prefix$mainKey")
+      return
+    } catch {}
+  }
+
+  if ($script:VkMap.ContainsKey($k)) {
+    $vk = $script:VkMap[$k]
+    [DesktopNative]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
+    [System.Threading.Thread]::Sleep(20)
+    [DesktopNative]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)
+    return
+  }
+
+  try {
+    [System.Windows.Forms.SendKeys]::SendWait($k.ToLowerInvariant())
+  } catch {
+    foreach ($ch in $k.ToCharArray()) {
+      $b = [byte]$ch
+      [DesktopNative]::keybd_event($b, 0, 0, [UIntPtr]::Zero)
+      [System.Threading.Thread]::Sleep(10)
+      [DesktopNative]::keybd_event($b, 0, 2, [UIntPtr]::Zero)
+    }
+  }
+}
+
 function Execute-DesktopRequest($request) {
   $action = [string]$request.action
   $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 
   if ($action -eq 'windows') {
-    $windows = [System.Collections.Generic.List[object]]::new()
-    $callback = [DesktopNative+EnumProc]{ param($h, $p)
-      if ([DesktopNative]::IsWindowVisible($h)) {
-        $title = [Text.StringBuilder]::new(1024)
-        [void][DesktopNative]::GetWindowText($h, $title, $title.Capacity)
-        $rect = [DesktopNative+RECT]::new()
-        if ($title.Length -gt 0 -and [DesktopNative]::GetWindowRect($h, [ref]$rect)) {
-          $windows.Add(@{
-            handle = $h.ToInt64().ToString();
-            title = $title.ToString();
-            bounds = @{
-              x = $rect.Left;
-              y = $rect.Top;
-              width = $rect.Right - $rect.Left;
-              height = $rect.Bottom - $rect.Top
-            }
-          })
-        }
-      }
-      return $true
-    }
-    [void][DesktopNative]::EnumWindows($callback, [IntPtr]::Zero)
+    $windows = Get-DesktopWindows
     return @{
-      windows = @($windows.ToArray());
+      windows = @($windows);
       foreground = [DesktopNative]::GetForegroundWindow().ToInt64().ToString();
       screen = @{ x=$screen.X; y=$screen.Y; width=$screen.Width; height=$screen.Height }
     }
   }
 
-    if ($action -eq 'inspect') {
+  if ($action -eq 'inspect') {
     $handleInput = if ($request.handle) { [string]$request.handle } else { "" }
     $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
     $resObj = $rawJson | ConvertFrom-Json
+    $elements = @($resObj.elements)
+    $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in $elements) { $script:LastUiElements.Add($item) }
+
     return @{
       action = 'inspect';
       handle = [string]$resObj.handle;
       windowTitle = [string]$resObj.windowTitle;
-      elements = @($resObj.elements);
+      elements = $elements;
     }
   }
 
@@ -303,6 +561,7 @@ function Execute-DesktopRequest($request) {
       throw 'Invalid screenshot path.'
     }
     $bitmap = [Drawing.Bitmap]::new($screen.Width, $screen.Height)
+    $uiElements = @()
     try {
       $graphics = [Drawing.Graphics]::FromImage($bitmap)
       try {
@@ -318,9 +577,13 @@ function Execute-DesktopRequest($request) {
       }
 
       $handleInput = if ($request.handle) { [string]$request.handle } else { "" }
-      $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
-      $uiObj = $rawJson | ConvertFrom-Json
-      $uiElements = @($uiObj.elements)
+      try {
+        $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
+        $uiObj = $rawJson | ConvertFrom-Json
+        $uiElements = @($uiObj.elements)
+        $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $uiElements) { $script:LastUiElements.Add($item) }
+      } catch {}
 
       try {
         Draw-ScreenshotOverlays $bitmap $screen $uiElements
@@ -338,56 +601,96 @@ function Execute-DesktopRequest($request) {
     }
   }
 
-  $value = 0L
-  if (-not [long]::TryParse([string]$request.handle, [ref]$value) -or $value -le 0) {
-    throw 'A valid window handle is required.'
+  if ($action -eq 'open' -or $action -eq 'launch' -or $action -eq 'start') {
+    $targetApp = if ($request.target) { [string]$request.target } elseif ($request.text) { [string]$request.text } elseif ($request.command) { [string]$request.command } else { [string]$request.app }
+    if ([string]::IsNullOrWhiteSpace($targetApp)) {
+      throw 'A target application or URL is required for open.'
+    }
+    try {
+      Start-Process $targetApp
+    } catch {
+      # Fallback to powershell Start-Process via cmd
+      Start-Process "cmd.exe" -ArgumentList "/c start `"`" `"$targetApp`"" -WindowStyle Hidden
+    }
+    [System.Threading.Thread]::Sleep(500)
+    $newFg = [DesktopNative]::GetForegroundWindow()
+    return @{
+      attempted = $true;
+      action = 'open';
+      target = $targetApp;
+      foreground = $newFg.ToInt64().ToString();
+    }
   }
-  $handle = [IntPtr]::new($value)
-  if (-not [DesktopNative]::IsWindow($handle) -or -not [DesktopNative]::IsWindowVisible($handle)) {
-    throw 'Window is no longer visible.'
-  }
+
+  # Handle çözümlemesi
+  $handle = Resolve-WindowHandle $request
 
   if ($action -eq 'focus') {
-    if (-not [DesktopNative]::ForceForeground($handle)) {
-      throw 'Windows refused to focus the window.'
+    if ($handle -ne [IntPtr]::Zero) {
+      [void][DesktopNative]::ForceForeground($handle)
     }
-    return @{ attempted = $true; action = $action; focused = $true }
+    return @{ attempted = $true; action = 'focus'; focused = $true; handle = $handle.ToInt64().ToString() }
   }
 
-  $currentFg = [DesktopNative]::GetForegroundWindow()
-  if ($currentFg -ne $handle) {
-    # Otomatik focus denemesi ile dayanıklılığı artır
+  if ($action -eq 'move') {
+    $moveX = if ($null -ne $request.x) { [int]$request.x } else { $null }
+    $moveY = if ($null -ne $request.y) { [int]$request.y } else { $null }
+    if (($null -eq $moveX -or $null -eq $moveY) -and $request.target) {
+      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      if ($matched) {
+        $moveX = [int]$matched.x
+        $moveY = [int]$matched.y
+      }
+    }
+    if ($null -eq $moveX -or $null -eq $moveY) {
+      $pt = [DesktopNative+POINT]::new()
+      [void][DesktopNative]::GetCursorPos([ref]$pt)
+      $moveX = $pt.X
+      $moveY = $pt.Y
+    }
+    $x = [int]$moveX
+    $y = [int]$moveY
+    [void][DesktopNative]::SetCursorPos($x, $y)
+    return @{ attempted = $true; action = 'move'; x = $x; y = $y }
+  }
+
+  # Gerekirse pencereyi öne getir
+  if ($handle -ne [IntPtr]::Zero -and [DesktopNative]::GetForegroundWindow() -ne $handle) {
     [void][DesktopNative]::ForceForeground($handle)
-    $currentFg = [DesktopNative]::GetForegroundWindow()
   }
 
   if ($action -eq 'click' -or $action -eq 'scroll') {
-    $x = [int]$request.x
-    $y = [int]$request.y
-    $rect = [DesktopNative+RECT]::new()
-    if (-not [DesktopNative]::GetWindowRect($handle, [ref]$rect) -or -not $screen.Contains($x, $y)) {
-      throw 'Coordinates must be inside the target window and virtual screen.'
-    }
-    if ($x -lt $rect.Left -or $x -ge $rect.Right -or $y -lt $rect.Top -or $y -ge $rect.Bottom) {
-      throw 'Coordinates must be inside target window bounds.'
-    }
-    if (-not [DesktopNative]::SetCursorPos($x, $y)) {
-      throw 'Could not move pointer.'
+    $targetX = if ($null -ne $request.x) { [int]$request.x } else { $null }
+    $targetY = if ($null -ne $request.y) { [int]$request.y } else { $null }
+
+    # Target çözümlemesi
+    if ($request.target) {
+      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      if ($matched) {
+        $targetX = [int]$matched.x
+        $targetY = [int]$matched.y
+      } else {
+        # target bir açık pencere başlığı mı?
+        $winTarget = Find-WindowByText ([string]$request.target)
+        if ($winTarget -ne [IntPtr]::Zero) {
+          [void][DesktopNative]::ForceForeground($winTarget)
+          $handle = $winTarget
+        }
+      }
     }
 
-    $point = [DesktopNative+POINT]::new()
-    $point.X = $x
-    $point.Y = $y
-    $hit = [DesktopNative]::WindowFromPoint($point)
-    $ancestor = [DesktopNative]::GetAncestor($hit, 2)
-    $fg = [DesktopNative]::GetForegroundWindow()
-
-    # Chrome, Electron ve WPF uygulamalarında alt pencere handle'ları farklı olabildiği için:
-    # Hedef pencere öne getirilmişse veya nokta pencere sınırları içindeyse tıklamayı kabul et.
-    $isValidTarget = ($ancestor -eq $handle -or $hit -eq $handle -or $fg -eq $handle)
-    if (-not $isValidTarget) {
-      throw 'Target is no longer foreground or the point is covered by another window.'
+    # Koordinat yoksa o anki fare imlecini kullan
+    if ($null -eq $targetX -or $null -eq $targetY) {
+      $pt = [DesktopNative+POINT]::new()
+      [void][DesktopNative]::GetCursorPos([ref]$pt)
+      $targetX = $pt.X
+      $targetY = $pt.Y
     }
+
+    $x = [int]$targetX
+    $y = [int]$targetY
+
+    [void][DesktopNative]::SetCursorPos($x, $y)
 
     if ($action -eq 'click') {
       $btn = if ($request.button) { [string]$request.button } else { 'left' }
@@ -407,37 +710,81 @@ function Execute-DesktopRequest($request) {
         [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
         [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
       }
+      return @{ attempted = $true; action = 'click'; x = $x; y = $y; button = $btn }
     } else {
       # Scroll
-      $delta = [int]$request.delta
+      $delta = if ($null -ne $request.delta) { [int]$request.delta } else { -120 }
       [DesktopNative]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero) # MOUSEEVENTF_WHEEL
+      return @{ attempted = $true; action = 'scroll'; x = $x; y = $y; delta = $delta }
     }
   } elseif ($action -eq 'type') {
-    $inputText = [string]$request.text
-    $escaped = [regex]::Replace($inputText, '[+^%~(){}\[\]]', { param($m) '{' + $m.Value + '}' })
-    if ([DesktopNative]::GetForegroundWindow() -ne $handle) {
-      [void][DesktopNative]::ForceForeground($handle)
-    }
-    [System.Windows.Forms.SendKeys]::SendWait($escaped)
-  } elseif ($action -eq 'key') {
-    $keys = @{
-      ENTER='{ENTER}'; TAB='{TAB}'; ESC='{ESC}'; BACKSPACE='{BACKSPACE}'; DELETE='{DELETE}';
-      UP='{UP}'; DOWN='{DOWN}'; LEFT='{LEFT}'; RIGHT='{RIGHT}'; HOME='{HOME}'; END='{END}';
-      PAGEUP='{PGUP}'; PAGEDOWN='{PGDN}'
-    }
-    if (-not $keys.ContainsKey([string]$request.key)) { throw 'Unsupported key.' }
-    if ([DesktopNative]::GetForegroundWindow() -ne $handle) {
-      [void][DesktopNative]::ForceForeground($handle)
-    }
-    [System.Windows.Forms.SendKeys]::SendWait($keys[[string]$request.key])
-  } else {
-    throw 'Unsupported action.'
-  }
+    $typeX = if ($null -ne $request.x) { [int]$request.x } else { $null }
+    $typeY = if ($null -ne $request.y) { [int]$request.y } else { $null }
 
-  return @{
-    attempted = $true;
-    action = $action;
-    note = 'Input dispatch was attempted; application handling cannot be verified.'
+    # Koordinat veya target varsa önce tıkla
+    if ($request.target) {
+      $matched = Resolve-TargetElement ([string]$request.target) $handle
+      if ($matched) {
+        $typeX = [int]$matched.x
+        $typeY = [int]$matched.y
+      }
+    }
+    if ($null -ne $typeX -and $null -ne $typeY) {
+      $tx = [int]$typeX
+      $ty = [int]$typeY
+      [void][DesktopNative]::SetCursorPos($tx, $ty)
+      [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+      [System.Threading.Thread]::Sleep(80)
+    }
+
+    $inputText = [string]$request.text
+    $pasted = $false
+    try {
+      [System.Windows.Forms.Clipboard]::SetText($inputText)
+      $pasted = $true
+    } catch {
+      try {
+        Set-Clipboard -Value $inputText
+        $pasted = $true
+      } catch {}
+    }
+
+    if ($pasted) {
+      [System.Threading.Thread]::Sleep(30)
+      [DesktopNative]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero) # CTRL Down
+      [DesktopNative]::keybd_event(0x56, 0, 0, [UIntPtr]::Zero) # V Down
+      [System.Threading.Thread]::Sleep(20)
+      [DesktopNative]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V Up
+      [DesktopNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # CTRL Up
+    } else {
+      try {
+        $escaped = [regex]::Replace($inputText, '[+^%~(){}\[\]]', { param($m) '{' + $m.Value + '}' })
+        [System.Windows.Forms.SendKeys]::SendWait($escaped)
+      } catch {
+        foreach ($ch in $inputText.ToCharArray()) {
+          $b = [byte]$ch
+          [DesktopNative]::keybd_event($b, 0, 0, [UIntPtr]::Zero)
+          [System.Threading.Thread]::Sleep(5)
+          [DesktopNative]::keybd_event($b, 0, 2, [UIntPtr]::Zero)
+        }
+      }
+    }
+
+    if ($request.press_enter -or $inputText.EndsWith("`n")) {
+      [System.Threading.Thread]::Sleep(30)
+      [DesktopNative]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero) # ENTER Down
+      [System.Threading.Thread]::Sleep(15)
+      [DesktopNative]::keybd_event(0x0D, 0, 2, [UIntPtr]::Zero) # ENTER Up
+    }
+
+    return @{ attempted = $true; action = 'type'; text = $inputText }
+  } elseif ($action -eq 'key') {
+    $keyInput = [string]$request.key
+    Send-KeyboardKey $keyInput
+    return @{ attempted = $true; action = 'key'; key = $keyInput }
+  } else {
+    throw "Unsupported action: $action"
   }
 }
 
@@ -467,10 +814,12 @@ if ($Action -eq 'daemon') {
     if (-not [string]::IsNullOrWhiteSpace($raw)) {
       $req = $raw | ConvertFrom-Json
       $data = Execute-DesktopRequest $req
-      [Console]::Out.WriteLine(($data | ConvertTo-Json -Depth 6 -Compress))
+      $res = @{ ok = $true; data = $data }
+      [Console]::Out.WriteLine(($res | ConvertTo-Json -Depth 6 -Compress))
     }
   } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    $res = @{ ok = $false; error = $_.Exception.Message }
+    [Console]::Out.WriteLine(($res | ConvertTo-Json -Depth 6 -Compress))
     exit 1
   }
 }
