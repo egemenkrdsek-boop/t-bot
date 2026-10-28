@@ -17,8 +17,10 @@ export interface ReclaimResult {
 }
 /**
  * Trims physical working set memory of the current T Bot process using Win32 EmptyWorkingSet API on Windows.
- * Caches the compiled helper assembly on disk to avoid repeated csc.exe invocations.
- * Enforces a 120-second cooldown unless force is true.
+ * The helper is compiled in-memory by PowerShell on every call (`Add-Type`
+ * without `-OutputAssembly`) and is never loaded from a writable profile path,
+ * so a planted DLL cannot be executed. Enforces a 120-second cooldown unless
+ * force is true.
  */
 export declare function trimWindowsWorkingSet(force?: boolean): Promise<void>;
 /**

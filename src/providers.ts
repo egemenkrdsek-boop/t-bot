@@ -2,7 +2,21 @@ import type { Message, Provider, ProviderEvent, ProviderStreamOptions, ToolCall,
 import { describeEffort, type EffortLevel } from './effort.js';
 import { createOpenAIResponsesProvider } from './openai-responses.js';
 
-export interface ProviderConfig { id: string; model: string; baseUrl?: string; apiKey?: string; timeoutMs?: number; effort?: EffortLevel; }
+export interface ProviderConfig {
+  id: string;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+  timeoutMs?: number;
+  effort?: EffortLevel;
+  /**
+   * Optional one-shot model switch on HTTP 402/404. The config layer owns
+   * reading config.fallbackModel / TBOT_FALLBACK_MODEL and passing it here.
+   */
+  fallbackModel?: string;
+  /** Invoked once when fallbackModel is used; the caller can surface a status. */
+  onFallback?: (info: { provider: string; from: string; to: string; status: number }) => void;
+}
 export const PROVIDER_CATALOG = [
   { id: 'gemini', label: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', requiresApiKey: true },
   { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', requiresApiKey: true },
@@ -21,6 +35,107 @@ export const PROVIDER_CATALOG = [
 ] as const;
 
 type Obj = Record<string, any>;
+
+/** Retry policy for the initial HTTP request (before any stream body is read). */
+export interface FetchRetryOptions {
+  signal?: AbortSignal | null;
+  /** Additional attempts after the first one. Default 2 (three attempts total). */
+  maxRetries?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+}
+
+const RETRY_BASE_DELAY_MS = 500;
+const RETRY_MAX_DELAY_MS = 10_000;
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+/** Parse Retry-After as seconds or an HTTP date; returns milliseconds. */
+export function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const ms = Number(trimmed) * 1000;
+    return Number.isFinite(ms) ? Math.max(0, ms) : undefined;
+  }
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
+function retryDelayMs(attempt: number, base: number, max: number, retryAfter?: number): number {
+  // A server-provided delay wins, but remains bounded so a hostile or buggy
+  // Retry-After cannot stall the turn indefinitely.
+  if (retryAfter !== undefined) return Math.min(max, retryAfter);
+  const exponential = Math.min(max, base * 2 ** attempt);
+  const jitter = Math.random() * Math.min(250, exponential / 2);
+  return Math.min(max, exponential + jitter);
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (error?: unknown) => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onAbort = () => finish(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    timer = setTimeout(() => finish(), ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // Re-check after subscribing: an abort may race with the listener setup.
+    if (signal?.aborted) finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  });
+}
+
+/**
+ * Fetch with a bounded retry for 408/429/5xx and network failures. Retries
+ * stop when the caller aborts or the request timeout fires. Once a response
+ * body starts streaming the caller never re-issues the request.
+ */
+export async function fetchWithRetry(
+  input: string | URL | Request,
+  init: RequestInit = {},
+  options: FetchRetryOptions = {}
+): Promise<Response> {
+  const maxRetries = Math.max(0, Math.min(5, Math.floor(options.maxRetries ?? 2)));
+  const base = Math.max(0, options.baseDelayMs ?? RETRY_BASE_DELAY_MS);
+  const max = Math.max(base, options.maxDelayMs ?? RETRY_MAX_DELAY_MS);
+  const signal = options.signal ?? init.signal ?? undefined;
+  let attempt = 0;
+
+  for (;;) {
+    signal?.throwIfAborted();
+    let response: Response;
+    try {
+      response = await fetch(input, init);
+    } catch (error) {
+      if (signal?.aborted || attempt >= maxRetries) throw error;
+      await sleep(retryDelayMs(attempt, base, max), signal);
+      attempt++;
+      continue;
+    }
+    if (response.ok || !isRetryableStatus(response.status)) return response;
+    if (attempt >= maxRetries) return response;
+    // Release the failed body before reusing the connection.
+    await response.body?.cancel().catch(() => {});
+    const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
+    await sleep(retryDelayMs(attempt, base, max, retryAfter), signal);
+    attempt++;
+  }
+}
+
+function outputTokenLimit(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
 function safeUrl(value: string): URL {
   let url: URL;
   try { url = new URL(value); } catch { throw new Error('Sağlayıcı uç noktası geçersiz. Geçerli bir HTTPS veya localhost URL\'si yapılandırın.'); }
@@ -235,9 +350,10 @@ export function createProvider(config: ProviderConfig): Provider {
   const base = (['custom', 'ollama', 'lmstudio'].includes(spec.id) ? config.baseUrl?.trim() : undefined) || spec.baseUrl;
   if (!base) throw new Error('Özel bir uç nokta gereklidir.');
   safeUrl(base);
-  if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model)) return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey!, effort: config.effort, timeoutMs: config.timeoutMs });
+  if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model)) return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey!, effort: config.effort, timeoutMs: config.timeoutMs, fallbackModel: config.fallbackModel, onFallback: config.onFallback });
   return { id: spec.id, label: spec.label, model: config.model, async *stream(messages: Message[], tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
     const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]);
+    const maxOutput = outputTokenLimit(options.maxOutputTokens);
     try {
       let url: string; let body: Obj; const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'text/event-stream' };
       if (spec.id === 'anthropic') {
@@ -293,7 +409,7 @@ export function createProvider(config: ProviderConfig): Provider {
 
         body = {
           model: config.model,
-          max_tokens: 8192,
+          max_tokens: maxOutput ?? 8192,
           stream: true,
           ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
           messages: anthropicMessages,
@@ -380,24 +496,69 @@ export function createProvider(config: ProviderConfig): Provider {
         url = endpoint(base, 'chat/completions'); if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
         const enableOpenRouterCache = spec.id === 'openrouter' && /^(?:anthropic|google)\//i.test(config.model.trim());
         body = { model: config.model, messages: openaiMessages(messages, enableOpenRouterCache), stream: true, stream_options: { include_usage: true }, ...(tools.length ? { tools: tools.map(t => ({ type: 'function', function: t })) } : {}) };
+        if (maxOutput) {
+          // OpenAI moved chat output caps to max_completion_tokens; compatible
+          // providers still use the classic max_tokens field.
+          if (spec.id === 'openai') body.max_completion_tokens = maxOutput;
+          else body.max_tokens = maxOutput;
+        }
       }
       const requestedEffort = options.effort ?? config.effort ?? 'medium';
-      const effort = describeEffort(spec.id, config.model, requestedEffort);
-      if (effort.effective) {
+      const applyEffort = (model: string) => {
+        const effort = describeEffort(spec.id, model, requestedEffort);
+        if (!effort.effective) return;
         if (spec.id === 'anthropic') body.output_config = { effort: effort.effective };
-        else if (spec.id === 'gemini') body.generationConfig = { thinkingConfig: { thinkingLevel: effort.effective } };
+        else if (spec.id === 'gemini') body.generationConfig = { ...(body.generationConfig ?? {}), thinkingConfig: { thinkingLevel: effort.effective } };
         else if (spec.id === 'openrouter') body.reasoning = { effort: effort.effective };
         else if (spec.id === 'openai') body.reasoning_effort = effort.effective;
         else if (spec.id === 'deepseek') body.reasoning_effort = effort.effective;
+      };
+      applyEffort(config.model);
+      if (maxOutput && spec.id === 'gemini') {
+        body.generationConfig = { ...(body.generationConfig ?? {}), maxOutputTokens: maxOutput };
       }
-      const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' });
+      const fallbackModel = (config.fallbackModel?.trim() || process.env.TBOT_FALLBACK_MODEL?.trim() || '').trim();
+      let activeModel = config.model;
+      let response = await fetchWithRetry(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' }, { signal });
+
+      // HTTP 402 and model-level 404 are not retried (402 must never be retried:
+      // the account has no credit). If a fallback model is configured, switch
+      // exactly once; otherwise return an actionable provider/model error.
+      if ((response.status === 402 || response.status === 404) && fallbackModel && fallbackModel !== config.model) {
+        const from = activeModel;
+        await response.body?.cancel().catch(() => {});
+        activeModel = fallbackModel;
+        if (spec.id === 'gemini') url = endpoint(base, `models/${encodeURIComponent(activeModel)}:streamGenerateContent`) + '?alt=sse';
+        else body.model = activeModel;
+        // Effort support is model-specific; clear fields written for the first model.
+        delete body.output_config;
+        delete body.reasoning;
+        delete body.reasoning_effort;
+        if (body.generationConfig) delete body.generationConfig.thinkingConfig;
+        applyEffort(fallbackModel);
+        if (maxOutput && spec.id === 'gemini') {
+          body.generationConfig = { ...(body.generationConfig ?? {}), maxOutputTokens: maxOutput };
+        }
+        config.onFallback?.({ provider: spec.id, from, to: fallbackModel, status: response.status });
+        console.warn(`[sağlayıcı] ${spec.label}: ${from} -> ${fallbackModel} (HTTP ${response.status}).`);
+        response = await fetchWithRetry(url, { method: 'POST', headers, body: JSON.stringify(body), signal, redirect: 'error' }, { signal });
+      }
+
       if (response.status === 401) {
         yield { type: 'error', code: 'authentication', error: `${spec.label} kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden bu sağlayıcının API anahtarını kontrol edin; varsa sağlayıcıya özel ortam değişkeni veya TBOT_API_KEY kullanılan anahtarı etkileyebilir.` };
         return;
       }
+      if (response.status === 402) {
+        yield { type: 'error', error: `${spec.label} / ${activeModel}: kredi veya kota yetersiz (HTTP 402). /model ile başka bir model seçin veya sağlayıcı hesabınızın kredisini/kotasını kontrol edin.` };
+        return;
+      }
+      if (response.status === 404) {
+        yield { type: 'error', error: `${spec.label} / ${activeModel}: model bulunamadı veya bu hesap için erişilemiyor (HTTP 404). /model ile geçerli bir model seçin.` };
+        return;
+      }
       if (!response.ok) throw new Error(`Sağlayıcı isteği başarısız oldu (HTTP ${response.status}).`);
       if (!response.body) throw new Error('Sağlayıcı Boş Yanıt Döndürdü.');
-      const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined; let finished = false; let toolFinish = false;
+      const pending = new Map<number, { id: string; name: string; args: string }>(); const complete: ToolCall[] = []; let inputTokens: number | undefined; let outputTokens: number | undefined; let cachedTokens: number | undefined; let finished = false; let toolFinish = false; let truncated = false;
       for await (const payload of sse(response.body)) {
         const chunk: Obj = payload === '[DONE]' ? { __done: true } : JSON.parse(payload) as Obj;
         if (chunk.error || chunk.type === 'error') throw new Error('Sağlayıcı bir akış hatası bildirdi.');
@@ -406,7 +567,10 @@ export function createProvider(config: ProviderConfig): Provider {
           if (chunk.type === 'content_block_delta') { if (chunk.delta?.type === 'text_delta') yield { type: 'text', text: chunk.delta.text }; if (chunk.delta?.type === 'input_json_delta') { const call = pending.get(chunk.index); if (call) call.args += chunk.delta.partial_json; } }
           if (chunk.type === 'message_stop') finished = true;
           if (chunk.type === 'message_delta') {
-            if (chunk.delta?.stop_reason) toolFinish = chunk.delta.stop_reason === 'tool_use';
+            if (chunk.delta?.stop_reason) {
+              toolFinish = chunk.delta.stop_reason === 'tool_use';
+              if (chunk.delta.stop_reason === 'max_tokens') truncated = true;
+            }
           }
           if (chunk.type === 'message_start') {
             const usage = chunk.message?.usage;
@@ -424,14 +588,20 @@ export function createProvider(config: ProviderConfig): Provider {
           }
         } else if (spec.id === 'gemini') {
           for (const part of chunk.candidates?.[0]?.content?.parts ?? []) { if (typeof part.text === 'string') yield { type: 'text', text: part.text }; if (part.functionCall) { const args = part.functionCall.args ?? {}; if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.'); if (typeof part.functionCall.name !== 'string' || !part.functionCall.name) throw new Error('Eksik araç çağrısı alındı.'); complete.push({ id: `call_${crypto.randomUUID()}`, name: part.functionCall.name, arguments: args, ...(typeof part.thoughtSignature === 'string' ? { thoughtSignature: part.thoughtSignature } : {}) }); } }
-          if (chunk.candidates?.[0]?.finishReason === 'STOP') { finished = true; toolFinish = true; }
+          const geminiFinish = chunk.candidates?.[0]?.finishReason;
+          if (geminiFinish === 'STOP') { finished = true; toolFinish = true; }
+          if (geminiFinish === 'MAX_TOKENS') truncated = true;
           inputTokens = chunk.usageMetadata?.promptTokenCount ?? inputTokens; outputTokens = chunk.usageMetadata?.candidatesTokenCount ?? outputTokens;
           if (typeof chunk.usageMetadata?.cachedContentTokenCount === 'number') {
             cachedTokens = chunk.usageMetadata.cachedContentTokenCount;
           }
         } else {
           if (chunk.__done) finished = true;
-          if (chunk.choices?.[0]?.finish_reason) toolFinish = ['tool_calls', 'stop'].includes(chunk.choices[0].finish_reason);
+          const chatFinish = chunk.choices?.[0]?.finish_reason;
+          if (chatFinish) {
+            toolFinish = ['tool_calls', 'stop'].includes(chatFinish);
+            if (chatFinish === 'length') truncated = true;
+          }
           const delta = chunk.choices?.[0]?.delta;
           if (typeof delta?.content === 'string') yield { type: 'text', text: delta.content };
           for (const part of delta?.tool_calls ?? []) { const current = pending.get(part.index) ?? { id: '', name: '', args: '' }; current.id += part.id ?? ''; current.name += part.function?.name ?? ''; current.args += part.function?.arguments ?? ''; pending.set(part.index, current); }
@@ -445,6 +615,10 @@ export function createProvider(config: ProviderConfig): Provider {
       }
       // A complete argument object is not proof that the provider finished its turn.
       // Never repair or release executable calls after EOF or an unsafe finish reason.
+      // A max-token stop means the answer is incomplete even if the transport ended cleanly.
+      if (truncated) {
+        throw new Error('Sağlayıcı yanıtı max_tokens çıktı sınırında kesildi; yanıt eksik ve başarı sayılmadı. Daha büyük bir çıktı bütçesi veya daha küçük bir istek kullanın.');
+      }
       if (!finished) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
       if ((pending.size || complete.length) && !toolFinish) {
         throw new Error('Tamamlanmamış araç çağrısı; sağlayıcı güvenli bitiş nedeni bildirmedi.');

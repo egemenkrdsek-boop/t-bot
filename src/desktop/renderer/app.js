@@ -21,6 +21,7 @@
     thinkingTimerId: null,
     spinnerIndex: 0,
     turnAssistantTextProduced: false,
+    turnSummaryAnnounced: false,
     yoloEnabled: false,
     ultracodeMode: false,
     workspacePermission: 'ask', // main'den gelen kalıcı çalışma alanı izni ('ask' | 'allow')
@@ -119,8 +120,13 @@
     btnAddTodo: document.getElementById('btn-add-todo'),
     todosList: document.getElementById('todos-list'),
     todosProgressBadge: document.getElementById('todos-progress-badge'),
+    todosProgressFill: document.getElementById('todos-progress-fill'),
+    planPreview: document.getElementById('plan-preview'),
+    planStateBadge: document.getElementById('plan-state-badge'),
+    btnApplyPlan: document.getElementById('btn-apply-plan'),
     heroCardGoal: document.getElementById('hero-card-goal'),
     mcpServerCountTag: document.getElementById('mcp-server-count-tag'),
+    inspectorModelMeta: document.getElementById('inspector-model-meta'),
 
     // Terminal & Sohbet
     chatFeed: document.getElementById('chat-feed'),
@@ -140,6 +146,13 @@
     fileInputHidden: document.getElementById('file-input-hidden'),
     userInput: document.getElementById('user-input'),
     btnSend: document.getElementById('btn-send'),
+    btnStopTurn: document.getElementById('btn-stop-turn'),
+    chipModel: document.getElementById('chip-model'),
+    chipEffort: document.getElementById('chip-effort'),
+    chipWorkspace: document.getElementById('chip-workspace'),
+    chipModelText: document.getElementById('chip-model-text'),
+    chipEffortText: document.getElementById('chip-effort-text'),
+    chipWorkspaceText: document.getElementById('chip-workspace-text'),
     hudModelVal: document.getElementById('hud-model-val'),
     hudEffortVal: document.getElementById('hud-effort-val'),
     hudModeVal: document.getElementById('hud-mode-val'),
@@ -147,11 +160,17 @@
     hudMiniBar: document.getElementById('hud-mini-bar'),
     hudTokensSaved: document.getElementById('hud-tokens-saved'),
     hudGroundingVal: document.getElementById('hud-grounding-val'),
+    hudPolicyVal: document.getElementById('hud-policy-val'),
+    btnRemovePermission: document.getElementById('btn-remove-workspace-permission'),
     hudRamVal: document.getElementById('hud-ram-val'),
     hudRamDot: document.getElementById('hud-ram-dot'),
+    heroProviderStatus: document.getElementById('hero-provider-status'),
+    heroProviderText: document.getElementById('hero-provider-text'),
+    srAnnouncer: document.getElementById('sr-announcer'),
 
     // Komut Paleti
     commandPalette: document.getElementById('command-palette'),
+    paletteBackdrop: document.getElementById('palette-backdrop'),
     paletteSearch: document.getElementById('palette-search'),
     paletteItems: document.getElementById('palette-items'),
 
@@ -269,7 +288,9 @@
   // 3b. Tema Yönetimi (Daylight Light / Dark Mode)
   // =========================================================================
   function applyTheme(theme) {
-    state.theme = theme || 'light';
+    state.theme = theme === 'light' || theme === 'dark'
+      ? theme
+      : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     document.documentElement.setAttribute('data-theme', state.theme);
     document.body.setAttribute('data-theme', state.theme);
     localStorage.setItem('tbot_theme', state.theme);
@@ -321,6 +342,22 @@
     dom.btnQuickYolo?.setAttribute('title', turnActive
       ? (effectiveYolo ? 'Bu turda araçlar otomatik onaylanıyor' : 'Bu turda araçlar için onay isteniyor')
       : (workspaceAuto ? 'Bu çalışma alanı için kalıcı otomatik onay açık' : (effectiveYolo ? 'YOLO Modu: Araçları onaysız otomatik yürüt' : 'Onaylı Mod: Araçlar için izin istenir')));
+    updatePolicyHud();
+  }
+
+  // The effective approval policy is displayed once, in the status row.
+  function updatePolicyHud() {
+    const workspaceAuto = state.workspacePermission === 'allow';
+    const effectiveYolo = state.turnPolicy.active ? state.turnPolicy.yolo : state.yoloEnabled;
+    const auto = effectiveYolo || workspaceAuto;
+    if (dom.hudPolicyVal) {
+      dom.hudPolicyVal.textContent = auto
+        ? (workspaceAuto ? 'Alan izni açık' : 'YOLO (bu oturum)')
+        : 'Onaylı';
+      dom.hudPolicyVal.className = auto ? 'hud-val hud-warning' : 'hud-val';
+    }
+    dom.btnRemovePermission?.classList.toggle('hidden', !workspaceAuto);
+    dom.btnQuickYolo?.setAttribute('aria-label', auto ? 'Araç onayı otomatik; kapatmak için tıklayın' : 'Araç onayı isteniyor; YOLO için tıklayın');
   }
 
   async function applyApprovalPolicy() {
@@ -347,6 +384,21 @@
     updateApprovalModeDisplay();
   }
 
+  // The single visible action that removes a persisted workspace approval.
+  async function removeWorkspacePermission() {
+    if (state.workspacePermission !== 'allow') return;
+    const result = await tbot.setWorkspacePermission?.(state.workspace, 'ask')
+      .catch(error => ({ ok: false, error: String(error) }));
+    if (!result?.ok) {
+      appendErrorNotice(`Çalışma alanı izni kaldırılamadı: ${result?.error || 'bilinmeyen hata'}`);
+      return;
+    }
+    state.workspacePermission = 'ask';
+    updateApprovalModeDisplay();
+    appendTranscriptEntry({ kind: 'notice', text: 'Bu çalışma alanı için kalıcı otomatik onay kaldırıldı.', error: false });
+    scrollToBottom(followTranscript);
+  }
+
   // =========================================================================
   // 5. Live telemetry and status line
   // =========================================================================
@@ -357,20 +409,42 @@
     return '▰'.repeat(filled) + '▱'.repeat(empty);
   }
 
+  function shortModelName(name) {
+    const value = String(name || '').trim();
+    const parts = value.split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : value;
+  }
+
   function updateHudBar() {
     if (dom.hudModelVal) dom.hudModelVal.textContent = state.model;
     const effortLabel = toTurkishTitleCase(state.effort);
     if (dom.hudEffortVal) dom.hudEffortVal.textContent = effortLabel;
+    if (dom.chipModelText) dom.chipModelText.textContent = shortModelName(state.model) || 'Model';
+    if (dom.chipEffortText) dom.chipEffortText.textContent = effortLabel || 'Orta';
+    if (dom.chipWorkspaceText) {
+      const workspace = String(state.workspace || '');
+      const tail = workspace.split(/[\\/]/).filter(Boolean).pop();
+      dom.chipWorkspaceText.textContent = tail || workspace || '—';
+      dom.chipWorkspace?.setAttribute('title', workspace ? `Çalışma alanı: ${workspace}` : 'Çalışma alanı seç');
+    }
+    if (dom.inspectorModelMeta) {
+      dom.inspectorModelMeta.textContent = `${state.provider || '—'} · ${state.model || '—'} · ${effortLabel || '—'}`;
+    }
+    if (dom.heroProviderText) {
+      const label = `${state.provider || 'sağlayıcı'} · ${state.model || 'model'}`;
+      dom.heroProviderText.textContent = label;
+      dom.heroProviderStatus?.classList.remove('is-warning');
+    }
     const modeLabel = state.runMode === 'plan' ? (state.pendingPlan ? 'Plan Hazır' : 'Plan')
       : state.runMode === 'ultracode' ? 'Ultracode'
-        : state.runMode === 'subagents' ? 'Subagents'
+        : state.runMode === 'subagents' ? 'Alt Ajan'
           : state.runMode === 'plan-apply' ? 'Plan Uygula' : 'Ajan';
     if (dom.hudModeVal) dom.hudModeVal.textContent = modeLabel;
 
     if (dom.hudSavingsVal) dom.hudSavingsVal.textContent = `%${state.telemetry.savingsPercent}`;
     if (dom.telemetrySavingsVal) dom.telemetrySavingsVal.textContent = state.telemetry.savingsPercent;
     if (dom.hudMiniBar) dom.hudMiniBar.textContent = renderMiniSavingsBar(state.telemetry.savingsPercent, 5);
-    if (dom.hudTokensSaved) dom.hudTokensSaved.textContent = `(${state.telemetry.savedTokens.toLocaleString()} Tok)`;
+    if (dom.hudTokensSaved) dom.hudTokensSaved.textContent = `(${state.telemetry.savedTokens.toLocaleString('tr-TR')} tok)`;
 
     if (dom.hudRamVal) dom.hudRamVal.textContent = `${state.telemetry.ramMB} MB`;
     if (dom.telemetryRamVal) dom.telemetryRamVal.textContent = `${state.telemetry.ramMB} MB`;
@@ -388,6 +462,24 @@
         dom.hudRamDot.textContent = '●';
       }
     }
+    updateGroundingDisplay();
+    updatePolicyHud();
+    updatePlanPanel();
+  }
+
+  function updateGroundingDisplay() {
+    if (!dom.hudGroundingVal) return;
+    const value = state.telemetry.groundedStatus || '—';
+    dom.hudGroundingVal.textContent = value;
+    dom.hudGroundingVal.className = value === 'Doğrulandı' ? 'hud-success' : /uyarı/i.test(value) ? 'hud-warning' : 'hud-dim';
+  }
+
+  function describeGrounding(status) {
+    if (!status || typeof status !== 'object') return '—';
+    if (status.verified) return 'Doğrulandı';
+    const warnings = Array.isArray(status.warnings) ? status.warnings.length : 0;
+    if (warnings > 0) return `${warnings} uyarı`;
+    return 'Kanıtsız';
   }
 
   function updateTelemetry(data) {
@@ -397,6 +489,7 @@
     if (typeof data.savingsPercent === 'number') state.telemetry.savingsPercent = Math.round(data.savingsPercent);
     if (typeof data.savedTokens === 'number') state.telemetry.savedTokens = data.savedTokens;
     if (typeof data.systemUsedPercent === 'number') state.telemetry.systemUsedPercent = data.systemUsedPercent;
+    if (data.grounding && typeof data.grounding === 'object') state.telemetry.groundedStatus = describeGrounding(data.grounding);
     if (typeof data.groundedStatus === 'string') state.telemetry.groundedStatus = data.groundedStatus;
     updateHudBar();
   }
@@ -454,6 +547,33 @@
       state.thinkingTimerId = null;
     }
     dom.thinkingBar?.classList.add('hidden');
+  }
+
+  // Streaming must never fight a screen reader or a text selection: the
+  // transcript is marked busy and taken out of the live region; one summary is
+  // announced when the turn ends.
+  function setStreamingAria(streaming) {
+    if (dom.chatFeed) {
+      dom.chatFeed.setAttribute('aria-busy', String(streaming));
+      dom.chatFeed.setAttribute('aria-live', streaming ? 'off' : 'polite');
+    }
+  }
+
+  function announce(message) {
+    if (!dom.srAnnouncer) return;
+    // Clearing first makes repeated identical summaries announce again.
+    dom.srAnnouncer.textContent = '';
+    setTimeout(() => {
+      if (dom.srAnnouncer) dom.srAnnouncer.textContent = message;
+    }, 60);
+  }
+
+  function announceTurnSummary(message) {
+    if (state.turnSummaryAnnounced) return;
+    state.turnSummaryAnnounced = true;
+    if (message) announce(message);
+    else if (state.turnAssistantTextProduced) announce('T Bot yanıtı hazır.');
+    else announce('Tur sona erdi.');
   }
 
   function abortCurrentTurn() {
@@ -528,23 +648,70 @@
     }).join('');
   }
 
+  const HIGHLIGHT_KEYWORDS = new Set([
+    'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'class', 'new', 'await', 'async',
+    'import', 'from', 'export', 'default', 'true', 'false', 'null', 'undefined', 'interface', 'type', 'extends',
+    'implements', 'try', 'catch', 'finally', 'throw', 'switch', 'case', 'break', 'continue', 'typeof', 'instanceof',
+    'def', 'elif', 'None', 'True', 'False', 'self', 'in', 'is', 'not', 'with', 'as', 'lambda', 'echo', 'Set', 'Get',
+  ]);
+  const HIGHLIGHT_LANGS = new Set([
+    'js', 'javascript', 'ts', 'typescript', 'jsx', 'tsx', 'json', 'python', 'py', 'bash', 'sh', 'shell',
+    'powershell', 'ps1', 'css', 'sql', 'yaml', 'yml',
+  ]);
+
+  // Escapes every token independently; the input is never inserted raw.
+  function highlightCode(code, lang) {
+    if (!code) return '';
+    const language = String(lang || '').toLowerCase();
+    if (!HIGHLIGHT_LANGS.has(language)) return escapeHtml(code);
+    const tokenPattern = /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g;
+    let output = '';
+    let lastIndex = 0;
+    let match;
+    while ((match = tokenPattern.exec(code)) !== null) {
+      output += escapeHtml(code.slice(lastIndex, match.index));
+      if (match[1]) output += `<span class="syntax-comment">${escapeHtml(match[1])}</span>`;
+      else if (match[2]) output += `<span class="syntax-string">${escapeHtml(match[2])}</span>`;
+      else if (match[3]) output += `<span class="syntax-number">${escapeHtml(match[3])}</span>`;
+      else if (HIGHLIGHT_KEYWORDS.has(match[4])) output += `<span class="syntax-keyword">${escapeHtml(match[4])}</span>`;
+      else output += escapeHtml(match[4]);
+      lastIndex = tokenPattern.lastIndex;
+    }
+    return output + escapeHtml(code.slice(lastIndex));
+  }
+
+  function isTableSeparator(line) {
+    return /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(line);
+  }
+
+  function splitTableRow(line) {
+    return String(line).trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  }
+
+  function renderInlineFormatting(escaped) {
+    return escaped
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  }
+
   function parseMarkdown(mdText) {
     if (!mdText) return '';
     let text = String(mdText).replace(/\r\n/g, '\n');
 
-    // 1. Kod Blokları (```lang ... ```)
+    // 1. Fenced code blocks are extracted before escaping so the highlighter
+    // escapes each token exactly once.
     const codeBlocks = [];
-    text = text.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    text = text.replace(/```([a-zA-Z0-9_-]*)[ \t]*\n([\s\S]*?)```/g, (match, lang, code) => {
       const idx = codeBlocks.length;
       const cleanLang = lang || 'kod';
-      const escapedCode = escapeHtml(code.trimEnd());
+      const highlighted = highlightCode(code.trimEnd(), lang);
       codeBlocks.push(`
         <div class="code-block-wrapper">
           <div class="code-block-header">
             <span>${escapeHtml(cleanLang)}</span>
             <button class="btn-copy-code" data-copy-code>Görünür kodu kopyala</button>
           </div>
-          <pre><code>${escapedCode}</code></pre>
+          <pre><code>${highlighted}</code></pre>
         </div>
       `);
       return `__CODE_BLOCK_${idx}__`;
@@ -552,47 +719,105 @@
 
     text = escapeHtml(text);
 
-    // 2. Satır İçi Kod (`kod`)
+    // 2. Inline code (already escaped) becomes a placeholder so emphasis rules
+    // cannot touch its contents.
+    const inlineCode = [];
     text = text.replace(/`([^`\n]+)`/g, (match, inline) => {
-      return `<code>${inline}</code>`;
+      const idx = inlineCode.length;
+      inlineCode.push(`<code>${inline}</code>`);
+      return `__INLINE_CODE_${idx}__`;
     });
 
-    // 3. Başlıklar
-    text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-    text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-    text = text.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+    // 3. Safe links only: http(s), never javascript:/file:. Links are opened by
+    // the preload bridge instead of navigating the renderer.
+    text = text.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) =>
+      `<a class="md-link" data-external-link href="${url}" rel="noreferrer noopener">${label}</a>`);
 
-    // 4. Kalın ve İtalik
-    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // 4. Emphasis after code/link extraction.
+    text = renderInlineFormatting(text);
 
-    // 5. Alıntılar (Blockquote)
-    text = text.replace(/^&gt; (.*$)/gim, '<blockquote>$1</blockquote>');
-
-    // 6. Maddeler (- veya * listeleri)
-    text = text.replace(/^\s*[-*]\s+(.*$)/gim, '<li>$1</li>');
-    text = text.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
-
-    // 7. Paragraflar ve Satır Sonları
     const lines = text.split('\n');
     const result = [];
+    const restoreInline = (value) => String(value).replace(/__INLINE_CODE_(\d+)__/g, (match, idx) => inlineCode[Number(idx)] || '');
+    const pushParagraph = (line) => {
+      const withInline = restoreInline(line);
+      if (withInline.trim()) result.push(`<p>${withInline}</p>`);
+    };
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (/^__(CODE_BLOCK_\d+)__$/.test(line)) {
-        result.push(line);
-      } else if (line.startsWith('<h1>') || line.startsWith('<h2>') || line.startsWith('<h3>') || line.startsWith('<ul>') || line.startsWith('<blockquote>')) {
-        result.push(line);
-      } else if (line.trim().length > 0) {
-        result.push(`<p>${line}</p>`);
+      if (/^__CODE_BLOCK_\d+__$/.test(line.trim())) {
+        result.push(line.trim());
+        continue;
       }
+      if (!line.trim()) continue;
+
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        const level = Math.min(6, heading[1].length);
+        result.push(`<h${level}>${restoreInline(heading[2])}</h${level}>`);
+        continue;
+      }
+
+      if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+        result.push('<hr>');
+        continue;
+      }
+
+      // Tables: header row followed by a separator row.
+      if (line.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+        const headers = splitTableRow(line);
+        const rows = [];
+        i += 2;
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+          rows.push(splitTableRow(lines[i]));
+          i++;
+        }
+        i--;
+        const headHtml = headers.map(cell => `<th>${restoreInline(cell)}</th>`).join('');
+        const bodyHtml = rows.map(cells => `<tr>${cells.map(cell => `<td>${restoreInline(cell)}</td>`).join('')}</tr>`).join('');
+        result.push(`<table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`);
+        continue;
+      }
+
+      if (/^\s*(?:[-*+])\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*(?:[-*+])\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*(?:[-*+])\s+/, ''));
+          i++;
+        }
+        i--;
+        result.push(`<ul>${items.map(item => `<li>${restoreInline(item)}</li>`).join('')}</ul>`);
+        continue;
+      }
+
+      if (/^\s*\d+[.)]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''));
+          i++;
+        }
+        i--;
+        result.push(`<ol>${items.map(item => `<li>${restoreInline(item)}</li>`).join('')}</ol>`);
+        continue;
+      }
+
+      if (/^&gt;\s?/.test(line)) {
+        const quotes = [];
+        while (i < lines.length && /^&gt;\s?/.test(lines[i])) {
+          quotes.push(lines[i].replace(/^&gt;\s?/, ''));
+          i++;
+        }
+        i--;
+        result.push(`<blockquote>${quotes.map(restoreInline).join('<br>')}</blockquote>`);
+        continue;
+      }
+
+      pushParagraph(line);
     }
+
     let html = result.join('\n');
-
-    // Kod bloklarını geri yerleştir
-    html = html.replace(/__CODE_BLOCK_(\d+)__/g, (match, idx) => {
-      return codeBlocks[parseInt(idx, 10)] || '';
-    });
-
+    html = html.replace(/__CODE_BLOCK_(\d+)__/g, (match, idx) => codeBlocks[parseInt(idx, 10)] || '');
     return html;
   }
 
@@ -781,7 +1006,10 @@
     const length = entry.streaming ? entry.textLength : entry.text.length;
     const start = textPageStart(entry.textPage, length);
     const text = entry.streaming && entry.textPage == null ? entry.tail : (entry.streaming ? entry.chunks.join('') : entry.text).slice(start, start + TEXT_PAGE_CHARS);
-    body.innerHTML = textPager('assistant', start, length) + parseMarkdown(text);
+    const copyAll = !entry.streaming && entry.text.length > 4_000 && length <= TEXT_PAGE_CHARS
+      ? '<div class="copy-all-row"><button type="button" data-copy-full-text="assistant">Tamamını kopyala</button></div>'
+      : '';
+    body.innerHTML = textPager('assistant', start, length) + parseMarkdown(text) + copyAll;
     entry.renderedTextPage = entry.textPage;
   }
 
@@ -802,13 +1030,14 @@
       const status = entry.status || 'running';
       const label = { running: 'Çalışıyor…', success: '✓ Tamamlandı', error: '✗ Hata', denied: '⊘ Reddedildi', stopped: 'Durduruldu' }[status];
       wrapper.dataset.id = entry.call.id;
-      wrapper.innerHTML = `<div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle><div class="tool-header-left"><span class="tool-icon">◈</span><span class="tool-title">${escapeHtml(entry.title)}</span>${target ? `<span class="tool-target" title="${escapeHtml(target)}">› ${escapeHtml(target)}</span>` : ''}</div><div class="tool-header-right"><span class="tool-duration">${escapeHtml(entry.duration || '')}</span><span class="tool-badge ${status}">${label}</span><span class="tool-accordion-icon">▼</span></div></div><div class="tool-card-body hidden"></div>`;
+      wrapper.innerHTML = `<div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle><div class="tool-header-left"><span class="tool-status-dot ${status}" aria-hidden="true"></span><span class="tool-icon">◈</span><span class="tool-title">${escapeHtml(entry.title)}</span>${target ? `<span class="tool-target" title="${escapeHtml(target)}">› ${escapeHtml(target)}</span>` : ''}</div><div class="tool-header-right"><span class="tool-duration">${escapeHtml(entry.duration || '')}</span><span class="tool-badge ${status}">${label}</span><span class="tool-accordion-icon" aria-hidden="true">▼</span></div></div><div class="tool-card-body hidden"></div>`;
       wrapper.transcriptEntry = entry;
       if (entry.expanded) setToolExpanded(wrapper, true);
     } else {
       const text = entry.text || '';
       const start = textPageStart(entry.textPage === undefined ? 0 : entry.textPage, text.length);
-      wrapper.innerHTML = `<div class="${entry.error === false ? 'approval-status' : 'error-notice-card'}">${textPager('notice', start, text.length)}<div class="error-notice-text">${escapeHtml(text.slice(start, start + TEXT_PAGE_CHARS))}</div></div>`;
+      const toneClass = entry.error === false ? 'approval-status' : entry.tone === 'warning' ? 'notice-card notice-warning' : 'error-notice-card';
+      wrapper.innerHTML = `<div class="${toneClass}">${textPager('notice', start, text.length)}<div class="error-notice-text">${escapeHtml(text.slice(start, start + TEXT_PAGE_CHARS))}</div></div>`;
     }
     return wrapper;
   }
@@ -837,6 +1066,17 @@
   function renderAssistantBuffer() {
     if (assistantRenderTimer) clearTimeout(assistantRenderTimer);
     assistantRenderTimer = null;
+    // Never replace nodes under an active selection; the final render happens
+    // in finalizeAssistantMessage once the reader is done selecting.
+    const selection = typeof window.getSelection === 'function' ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed && currentAssistantEntry?.element) {
+      const anchor = selection.anchorNode;
+      const body = currentAssistantEntry.element.querySelector('.assistant-message-body');
+      if (anchor && body && typeof body.contains === 'function' && body.contains(anchor)) {
+        assistantRenderTimer = setTimeout(renderAssistantBuffer, 120);
+        return;
+      }
+    }
     const wasAtBottom = isTranscriptAtBottom();
     if (currentAssistantEntry) renderAssistantEntry(currentAssistantEntry);
     scrollToBottom(wasAtBottom && followTranscript);
@@ -940,6 +1180,41 @@
     return isToolError(result, toolName) ? 'error' : 'success';
   }
 
+  function normalizeDisplayPath(value) {
+    return String(value || '').replace(/\\/g, '/');
+  }
+
+  // Only screenshots inside the current workspace's .tbot/screenshots folder
+  // are previewed; the main process re-validates containment and links.
+  function isWorkspaceScreenshotPath(candidate) {
+    const workspace = normalizeDisplayPath(state.workspace).replace(/\/+$/, '');
+    const target = normalizeDisplayPath(candidate);
+    if (!workspace || !target) return false;
+    const lowerWorkspace = workspace.toLowerCase();
+    const lowerTarget = target.toLowerCase();
+    if (lowerTarget !== lowerWorkspace && !lowerTarget.startsWith(`${lowerWorkspace}/`)) return false;
+    return /(^|\/)\.tbot\/screenshots\/[^/]+\.(?:png|jpe?g|webp)$/i.test(lowerTarget);
+  }
+
+  function screenshotFilePath(result) {
+    const text = String(result || '');
+    const saved = text.match(/Screenshot saved:\s*([^\r\n]+?\.(?:png|jpe?g|webp))(?:[\s"']|$)/i);
+    if (saved) return saved[1].trim();
+    const jsonKey = text.match(/"(?:path|screenshotPath|screenshot_path|file)"\s*:\s*("(?:[^"\\]|\\.)*")/);
+    if (jsonKey) {
+      try {
+        const parsed = JSON.parse(jsonKey[1]);
+        if (typeof parsed === 'string') return parsed;
+      } catch { /* fall through to the absolute-path scan */ }
+    }
+    const absolute = text.match(/([A-Za-z]:[\\/][^\r\n"'<>|]+?\.(?:png|jpe?g|webp))|(\/[^\r\n"'<>|]+?\.(?:png|jpe?g|webp))/i);
+    return absolute ? (absolute[1] || absolute[2]).trim() : '';
+  }
+
+  function screenshotFileUrl(filePath) {
+    return `tbot-file://shot/?workspace=${encodeURIComponent(state.workspace)}&path=${encodeURIComponent(filePath)}`;
+  }
+
   function renderToolBody(card) {
     const entry = card.transcriptEntry;
     const body = card.querySelector('.tool-card-body');
@@ -950,8 +1225,23 @@
     const resultStart = textPageStart(entry.resultPage === undefined ? 0 : entry.resultPage, result.length);
     const resultSlice = result.slice(resultStart, resultStart + TEXT_PAGE_CHARS);
     const diff = entry.call.name === 'file_patch' || entry.call.name === 'file_write' || entry.call.name === 'git_diff' || resultSlice.includes('@@');
-    body.innerHTML = `<div class="tool-section-title">Parametreler:</div>${textPager('args', argsStart, args.length)}<pre class="tool-args-pre">${escapeHtml(args.slice(argsStart, argsStart + TEXT_PAGE_CHARS))}</pre>${entry.result != null ? `<div class="tool-section-title">Sonuç:</div>${textPager('result', resultStart, result.length)}${diff ? formatDiff(resultSlice) : `<pre>${escapeHtml(resultSlice)}</pre>`}` : '<span>Sonuç bekleniyor…</span>'}`;
-    // Decode screenshots only while this tool is open; closing releases the image DOM.
+    const copyActions = entry.result != null
+      ? '<div class="tool-body-actions"><button type="button" class="tool-copy-btn" data-copy-full-text="args">Parametreleri kopyala</button><button type="button" class="tool-copy-btn" data-copy-full-text="result">Sonucu kopyala</button></div>'
+      : '';
+    body.innerHTML = `<div class="tool-section-title">Parametreler:</div>${textPager('args', argsStart, args.length)}<pre class="tool-args-pre">${escapeHtml(args.slice(argsStart, argsStart + TEXT_PAGE_CHARS))}</pre>${entry.result != null ? `<div class="tool-section-title">Sonuç:</div>${textPager('result', resultStart, result.length)}${diff ? formatDiff(resultSlice) : `<pre>${escapeHtml(resultSlice)}</pre>`}${copyActions}` : '<span>Sonuç bekleniyor…</span>'}`;
+    // Screenshot preview: workspace-contained file paths use the local scheme;
+    // legacy inline data URLs stay supported without touching the IPC payload.
+    const screenshotPath = screenshotFilePath(result);
+    if (screenshotPath && isWorkspaceScreenshotPath(screenshotPath)) {
+      const preview = document.createElement('div');
+      preview.className = 'tool-screenshot-preview';
+      preview.setAttribute('data-preview-image', '');
+      preview.setAttribute('role', 'button');
+      preview.tabIndex = 0;
+      preview.innerHTML = `<img src="${screenshotFileUrl(screenshotPath)}" alt="Ekran görüntüsü" loading="lazy" decoding="async">`;
+      body.appendChild(preview);
+      return;
+    }
     const image = result.match(/data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/);
     if (image) {
       const preview = document.createElement('div');
@@ -1044,8 +1334,38 @@
   // =========================================================================
   // 10. Canlı Araç Onay Kartı (Approval Request)
   // =========================================================================
+  function approvalRisk(req) {
+    const tool = String(req?.tool || '');
+    if (tool === 'mcp_stdio') return { level: 'high', label: 'Yüksek risk · yerel süreç' };
+    if (['shell', 'computer', 'file_write', 'file_patch', 'git_push', 'git_commit', 'file_delete', 'file_move'].includes(tool)) {
+      return { level: 'high', label: 'Yüksek risk' };
+    }
+    if (tool.startsWith('browser') || tool.startsWith('web') || tool.startsWith('git_')) {
+      return { level: 'medium', label: 'Orta risk' };
+    }
+    return { level: 'low', label: 'Düşük risk' };
+  }
+
+  function updateApprovalQueueBadge() {
+    const badge = document.getElementById('live-approval-card')?.querySelector?.('.approval-queue-badge');
+    if (!badge) return;
+    const queued = state.approvalQueue.length;
+    badge.textContent = queued > 0 ? `+${queued} onay sırada` : '';
+    badge.classList.toggle('hidden', queued === 0);
+  }
+
+  function approvalPreviewHtml(req) {
+    const args = req?.arguments || {};
+    const candidate = typeof args.patch === 'string' ? args.patch
+      : typeof args.diff === 'string' ? args.diff
+        : typeof args.unifiedDiff === 'string' ? args.unifiedDiff : '';
+    if (!candidate.trim()) return '';
+    // A bounded preview only; the full content is available in the argument pager.
+    return `<div class="tool-section-title">Değişiklik Önizlemesi:</div>${formatDiff(candidate.slice(0, 3_500))}`;
+  }
+
   function renderApprovalRequest(req) {
-    if (state.currentApproval) { state.approvalQueue.push(req); return; }
+    if (state.currentApproval) { state.approvalQueue.push(req); updateApprovalQueueBadge(); return; }
     // Onay beklerken düşünme zamanlayıcısı durur; karar sonrası yeniden başlar.
     stopThinking();
     finalizeAssistantMessage();
@@ -1055,21 +1375,27 @@
     const card = document.createElement('div');
     card.className = 'approval-card';
     card.id = 'live-approval-card';
+    const risk = approvalRisk(req);
+    card.dataset.risk = risk.level;
 
     const toolTitle = req.toolTitle || TOOL_TITLE_MAP[req.tool] || toTurkishTitleCase(req.tool);
     const details = `${req.description || 'Bu aracın çalıştırılması sisteminizde değişiklik yapabilir.'}\n\nParametreler:\n${JSON.stringify(req.arguments ?? {}, null, 2)}`;
+    const alwaysLabel = req.tool === 'mcp_stdio' ? 'Bu sunucuya her zaman izin ver' : 'Bu Turda İzin Ver';
 
     card.innerHTML = `
       <div class="approval-header">
         <span>Onay Bekleniyor:</span>
         <strong>${escapeHtml(toolTitle)} (${escapeHtml(req.tool)})</strong>
+        <span class="approval-risk ${risk.level}">${escapeHtml(risk.label)}</span>
+        <span class="approval-queue-badge${state.approvalQueue.length ? '' : ' hidden'}">${state.approvalQueue.length ? `+${state.approvalQueue.length} onay sırada` : ''}</span>
       </div>
       <div class="approval-argument-pages">${textPager('approval', 0, details.length)}</div>
       <pre class="approval-args">${escapeHtml(details.slice(0, TEXT_PAGE_CHARS))}</pre>
+      ${approvalPreviewHtml(req)}
       <div class="approval-actions">
-        <button id="btn-approval-allow" class="btn-approve">✓ İzin Ver (Enter)</button>
+        <button id="btn-approval-allow" class="btn-approve">✓ Onayla (Enter)</button>
         <button id="btn-approval-deny" class="btn-reject">✗ Reddet (Esc)</button>
-        <button id="btn-approval-yolo" class="btn-yolo-session">Bu Turda İzin Ver</button>
+        <button id="btn-approval-yolo" class="btn-yolo-session">${alwaysLabel}</button>
       </div>
     `;
 
@@ -1092,13 +1418,13 @@
     const card = document.getElementById('live-approval-card');
     if (card) {
       card.innerHTML = `
-        <div style="font-size:12px;color:${approved ? 'var(--bright-mint)' : 'var(--coral-danger)'};">
-          ${approved ? `✓ İzin Verildi ${alwaysAllow ? '(YOLO Aktif Edildi)' : ''}` : '✗ İşlem Reddedildi'}
+        <div style="font-size:13px;color:${approved ? 'var(--success)' : 'var(--danger)'};">
+          ${approved ? `✓ Onaylandı ${alwaysAllow ? '(kalıcı izin kaydedildi)' : ''}` : '✗ İşlem Reddedildi'}
         </div>
       `;
       card.id = '';
       card.classList.remove('approval-card');
-      card.style.border = '1px solid var(--border-subtle)';
+      card.style.border = '1px solid var(--border)';
       card.style.boxShadow = 'none';
       card.style.animation = 'none';
     }
@@ -1132,7 +1458,17 @@
   // =========================================================================
   window.tbotOpenLightbox = function (imgSrc, title = 'Görsel Önizlemesi') {
     if (!dom.lightboxModal || !dom.lightboxImg) return;
-    if (!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(imgSrc)) return;
+    const inlineImage = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(imgSrc);
+    let localScreenshot = false;
+    if (!inlineImage && typeof imgSrc === 'string' && imgSrc.startsWith('tbot-file://')) {
+      try {
+        const parsed = new URL(imgSrc);
+        localScreenshot = parsed.protocol === 'tbot-file:' && parsed.hostname === 'shot';
+      } catch {
+        localScreenshot = false;
+      }
+    }
+    if (!inlineImage && !localScreenshot) return;
     dom.lightboxImg.src = imgSrc;
     if (dom.lightboxTitle) dom.lightboxTitle.textContent = title;
     dom.lightboxModal.classList.remove('hidden');
@@ -1294,6 +1630,7 @@
     if (dom.userInput && options.text == null) dom.userInput.value = '';
     state.attachedImages = [];
     state.turnAssistantTextProduced = false;
+    state.turnSummaryAnnounced = false;
     state.currentStepCount = 0;
     const effectiveMode = options.mode || (options.goal ? 'goal' : state.ultracodeMode ? 'ultracode' : undefined);
     state.runMode = effectiveMode || 'agent';
@@ -1302,12 +1639,14 @@
 
     state.turnPending = true;
     state.turnPolicy = { active: true, yolo: state.yoloEnabled };
+    setStreamingAria(true);
     updateApprovalModeDisplay();
     setTurnControls();
     transcriptPage('latest');
     const userEntry = appendUserMessage(options.display || text, images);
     startThinking(effectiveMode === 'plan' ? 'Plan Hazırlanıyor' : effectiveMode === 'ultracode' ? 'Ultracode Çalışıyor' : effectiveMode === 'subagents' ? 'Alt Ajanlar Çalışıyor' : 'T Bot Çözümlüyor');
 
+    let turnFailed = false;
     try {
       const res = await tbot.startTurn?.({
         message: text,
@@ -1323,7 +1662,7 @@
 
       if (res?.sessionId) state.currentSessionId = res.sessionId;
       if (res && res.ok === false) {
-        if (!res.aborted) appendErrorNotice(res.error || 'İşlem başarısız oldu');
+        if (!res.aborted) { turnFailed = true; appendErrorNotice(res.error || 'İşlem başarısız oldu'); }
       } else {
         if (res?.memoryStats) updateTelemetry(res.memoryStats);
         if (options.mode === 'plan') {
@@ -1339,6 +1678,7 @@
         }
       }
     } catch (err) {
+      turnFailed = true;
       appendErrorNotice(err instanceof Error ? err.message : String(err));
     } finally {
       state.turnPending = false;
@@ -1350,6 +1690,8 @@
       finalizeAssistantMessage();
       stopThinking();
       releaseUserImages(userEntry);
+      setStreamingAria(false);
+      announceTurnSummary(turnFailed ? 'Tur hata ile sona erdi.' : undefined);
       state.turnPolicy = { active: false, yolo: false };
       state.runMode = state.pendingPlan ? 'plan' : state.ultracodeMode ? 'ultracode' : 'agent';
       updateApprovalModeDisplay();
@@ -1362,6 +1704,7 @@
 
   function setTurnControls() {
     [dom.btnSend, dom.btnWorkspace, dom.btnNewSession, dom.modalBtnStartGoal].forEach(button => { if (button) button.disabled = state.turnPending || state.sessionLoading; });
+    dom.btnStopTurn?.classList.toggle('hidden', !state.turnPending);
   }
 
   function autoResizeTextarea() {
@@ -1398,12 +1741,38 @@
     }
   }
 
+  function paletteGroupFor(commandName) {
+    if (['/model', '/provider', '/auth', '/config', '/effort', '/tokens', '/memory', '/status', '/doctor', '/ram'].includes(commandName)) return 'Sistem';
+    if (['/plan', '/ultracode', '/subagents', '/goal', '/imagegen'].includes(commandName)) return 'Çalışma';
+    if (['/skills', '/mcp', '/bot', '/gui'].includes(commandName)) return 'Bağlantılar';
+    if (['/sessions', '/resume', '/clear'].includes(commandName)) return 'Oturumlar';
+    return 'Diğer';
+  }
+
   function renderPaletteCatalog() {
     if (!dom.paletteItems || state.commands.length === 0) return;
-    const items = state.commands.map((command, index) => {
+    // Large catalogs are grouped with headings; small catalogs stay flat so the
+    // test contract and keyboard order remain unchanged.
+    const grouped = state.commands.length > 12;
+    const nodes = [];
+    let lastGroup = '';
+    state.commands.forEach((command, index) => {
+      if (grouped) {
+        const group = paletteGroupFor(command.name);
+        if (group !== lastGroup) {
+          lastGroup = group;
+          const heading = document.createElement('div');
+          heading.className = 'palette-group';
+          heading.setAttribute('role', 'presentation');
+          heading.textContent = group;
+          nodes.push(heading);
+        }
+      }
       const item = document.createElement('div');
       item.className = `palette-item${index === 0 ? ' selected' : ''}`;
       item.setAttribute('data-cmd', command.name);
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', index === 0 ? 'true' : 'false');
       const name = document.createElement('span');
       name.className = 'palette-cmd';
       name.textContent = command.name;
@@ -1411,22 +1780,39 @@
       description.className = 'palette-desc';
       description.textContent = command.description;
       item.append(name, description);
-      return item;
+      nodes.push(item);
     });
-    dom.paletteItems.replaceChildren(...items);
+    dom.paletteItems.replaceChildren(...nodes);
   }
 
-  function openCommandPalette(filter = '') {
+  // Commands that take an argument stay in the composer after palette selection.
+  const PALETTE_ARGUMENT_FALLBACKS = new Set([
+    '/plan', '/goal', '/imagegen', '/remember', '/forget', '/effort',
+    '/bot', '/gui', '/skills', '/undo', '/ultracode', '/subagents',
+    '/frontenddesign', '/backend', '/codereview', '/debuganalysis',
+  ]);
+  function paletteCommandTakesArgument(commandName) {
+    const spec = state.commands.find(command => command.name === commandName);
+    if (spec) return spec.argument === 'required' || spec.argument === 'optional';
+    return PALETTE_ARGUMENT_FALLBACKS.has(commandName);
+  }
+
+  function openCommandPalette(filter = '', options = {}) {
     dom.commandPalette?.classList.remove('hidden');
+    dom.paletteBackdrop?.classList.remove('hidden');
     if (dom.paletteSearch) {
       dom.paletteSearch.value = filter;
-      dom.paletteSearch.focus();
+      // Explicit Ctrl+K/button opens focus the search field; auto-opening while
+      // the user types in the composer must not steal focus from it.
+      if (options.focusSearch !== false) dom.paletteSearch.focus();
     }
     filterPaletteItems(filter);
   }
 
   function closeCommandPalette() {
     dom.commandPalette?.classList.add('hidden');
+    dom.paletteBackdrop?.classList.add('hidden');
+    if (dom.userInput) dom.userInput.focus();
   }
 
   function closeTopmostOverlay() {
@@ -1459,18 +1845,49 @@
       const match = cleanCmd.includes(q) || desc.includes(q);
       item.classList.toggle('hidden', !match);
       item.classList.remove('selected');
+      item.setAttribute('aria-selected', 'false');
       if (match && !firstVisible) firstVisible = item;
     });
 
-    if (firstVisible) firstVisible.classList.add('selected');
+    if (firstVisible) {
+      firstVisible.classList.add('selected');
+      firstVisible.setAttribute('aria-selected', 'true');
+    }
+  }
+
+  function markPaletteSelection(items, selected) {
+    for (const item of items) {
+      const active = item === selected;
+      item.classList.toggle('selected', active);
+      item.setAttribute('aria-selected', String(active));
+    }
+  }
+
+  function selectPaletteCommand(commandName) {
+    if (!commandName) {
+      closeCommandPalette();
+      return;
+    }
+    // Argument commands are primed in the composer so the user can finish
+    // typing ("/plan fix parser") without the palette re-opening or stealing focus.
+    if (paletteCommandTakesArgument(commandName)) {
+      if (dom.userInput) {
+        dom.userInput.value = `${commandName} `;
+        autoResizeTextarea();
+      }
+      closeCommandPalette();
+      return;
+    }
+    handleSlashCommand(commandName);
+    closeCommandPalette();
   }
 
   function executeSelectedPaletteItem() {
     const selected = dom.paletteItems?.querySelector('.palette-item.selected:not(.hidden)');
     if (selected) {
       const cmd = selected.getAttribute('data-cmd');
-      if (cmd) handleSlashCommand(cmd);
-      closeCommandPalette();
+      if (cmd) selectPaletteCommand(cmd);
+      else closeCommandPalette();
     }
   }
 
@@ -1789,11 +2206,46 @@
         break;
       }
 
-      case '/yolo':
-        toggleYoloMode();
-        appendAssistantTextChunk(`YOLO Modu: **${state.yoloEnabled ? 'Açık (Otomatik Onay)' : 'Kapalı (Onaylı)'}**`);
-        finalizeAssistantMessage();
+      case '/yolo': {
+        const mode = argument.toLowerCase();
+        if (!mode) {
+          toggleYoloMode();
+          appendAssistantTextChunk(`YOLO Modu: **${state.yoloEnabled ? 'Açık (Otomatik Onay)' : 'Kapalı (Onaylı)'}**`);
+          finalizeAssistantMessage();
+          break;
+        }
+        if (mode === 'on' || mode === 'off') {
+          state.yoloEnabled = mode === 'on';
+          if (state.turnPolicy.active) {
+            state.turnPolicy.yolo = state.yoloEnabled;
+            tbot.setTurnPolicy?.(state.yoloEnabled)?.catch?.(error => appendErrorNotice(String(error)));
+          }
+          updateApprovalModeDisplay();
+          notice(`YOLO Modu: **${state.yoloEnabled ? 'açık' : 'kapalı'}** (yalnız bu oturum/tur). Kalıcı izin için \`/yolo always\`.`);
+          break;
+        }
+        if (mode === 'always' || mode === 'ask') {
+          const result = await tbot.setWorkspacePermission?.(state.workspace, mode === 'always' ? 'allow' : 'ask')
+            .catch(error => ({ ok: false, error: String(error) }));
+          if (!result?.ok) {
+            notice(`Çalışma alanı izni değiştirilemedi: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+            break;
+          }
+          state.workspacePermission = mode === 'always' ? 'allow' : 'ask';
+          state.yoloEnabled = mode === 'always';
+          if (state.turnPolicy.active) {
+            state.turnPolicy.yolo = state.yoloEnabled;
+            tbot.setTurnPolicy?.(state.yoloEnabled)?.catch?.(() => undefined);
+          }
+          updateApprovalModeDisplay();
+          notice(mode === 'always'
+            ? 'Bu çalışma alanı için **kalıcı otomatik onay** açıldı. Kaldırmak için `/yolo ask` veya durum satırındaki “izni kaldır”.'
+            : 'Bu çalışma alanı için kalıcı izin **kaldırıldı**; araçlar yine onay isteyecek.');
+          break;
+        }
+        notice('Kullanım: /yolo on|off|always|ask');
         break;
+      }
 
       case '/goal':
         if (argument) {
@@ -1910,6 +2362,7 @@
     state.pendingPlan = null;
     state.pendingPlanRequest = '';
     state.runMode = 'agent';
+    updatePlanPanel();
     showEmptyHeroIfEmpty();
   }
 
@@ -2054,6 +2507,7 @@
       }
       state.currentSessionId = res.session.id;
       clearChatTerminal();
+      if (res.warning) appendTranscriptEntry({ kind: 'notice', text: `⚠ ${String(res.warning)}`, tone: 'warning' });
       await loadSessionsList();
       applyApprovalPolicy();
     } catch (error) {
@@ -2122,6 +2576,7 @@
     if (todos.length === 0) {
       dom.todosList.innerHTML = '<div class="empty-list-hint">Görev Maddesi Yok</div>';
       if (dom.todosProgressBadge) dom.todosProgressBadge.textContent = '0/0';
+      if (dom.todosProgressFill) dom.todosProgressFill.style.width = '0%';
       return;
     }
 
@@ -2162,6 +2617,9 @@
     if (dom.todosProgressBadge) {
       dom.todosProgressBadge.textContent = `${completed}/${todos.length}`;
     }
+    if (dom.todosProgressFill) {
+      dom.todosProgressFill.style.width = `${todos.length ? Math.round((completed / todos.length) * 100) : 0}%`;
+    }
   }
 
   async function addTodoItem(text) {
@@ -2172,6 +2630,34 @@
     }, state.workspace);
     if (dom.inputNewTodo) dom.inputNewTodo.value = '';
     refreshWorkflow();
+  }
+
+  function setInspectorTab(tab) {
+    const target = ['tasks', 'plan', 'tools'].includes(tab) ? tab : 'tasks';
+    for (const name of ['tasks', 'plan', 'tools']) {
+      document.getElementById(`inspector-panel-${name}`)?.classList.toggle('hidden', name !== target);
+    }
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll('[data-inspector-tab]').forEach(button => {
+        const active = button.dataset.inspectorTab === target;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+    }
+  }
+
+  function updatePlanPanel() {
+    if (dom.planPreview) {
+      dom.planPreview.textContent = state.pendingPlan
+        ? String(state.pendingPlan).slice(0, TEXT_PAGE_CHARS)
+        : 'Henüz hazırlanmış bir plan yok. /plan <istek> ile plan oluşturun.';
+    }
+    if (dom.planStateBadge) {
+      dom.planStateBadge.textContent = state.pendingPlan ? 'Hazır' : 'Bekliyor';
+      dom.planStateBadge.className = state.pendingPlan ? 'status-badge badge-active' : 'status-badge badge-dim';
+    }
+    dom.btnApplyPlan?.classList.toggle('hidden', !state.pendingPlan);
+    if (dom.btnApplyPlan) dom.btnApplyPlan.disabled = !state.pendingPlan;
   }
 
   // =========================================================================
@@ -2338,7 +2824,7 @@
       html += '</div>';
       dom.doctorResults.innerHTML = html;
     } catch (err) {
-      dom.doctorResults.innerHTML = `<div style="color:var(--coral-danger)">Teşhis hatası: ${escapeHtml(String(err))}</div>`;
+      dom.doctorResults.innerHTML = `<div style="color:var(--danger)">Teşhis hatası: ${escapeHtml(String(err))}</div>`;
     }
   }
 
@@ -2392,10 +2878,31 @@
     setSidebar(side, !panel.classList.contains('collapsed'));
   }
 
+  async function chooseWorkspace() {
+    if (state.turnPending || state.sessionLoading) return;
+    const selected = await tbot.selectWorkspace?.();
+    if (!selected) return;
+    state.currentSessionId = null;
+    clearChatTerminal();
+    state.workspace = selected;
+    if (dom.workspacePath) dom.workspacePath.textContent = selected;
+    updateHudBar();
+    refreshWorkflow();
+    loadSessionsList();
+    applyApprovalPolicy();
+  }
+
   function setupEventListeners() {
     window.addEventListener('unhandledrejection', event => { event.preventDefault(); appendErrorNotice(String(event.reason)); });
     document.querySelectorAll('[data-toggle-sidebar]').forEach(button => button.addEventListener('click', () => toggleSidebar(button.dataset.toggleSidebar)));
     document.addEventListener('click', event => {
+      const link = event.target.closest?.('a[data-external-link]');
+      if (link) {
+        event.preventDefault();
+        const href = link.getAttribute('href') || '';
+        tbot.openExternalUrl?.(href)?.catch?.(error => appendErrorNotice(`Bağlantı açılamadı: ${String(error)}`));
+        return;
+      }
       const target = event.target.closest('button, [data-preview-image], [data-tool-toggle]');
       if (!target) return;
       if (target.hasAttribute('data-history-page')) transcriptPage(target.dataset.historyPage);
@@ -2447,8 +2954,8 @@
         event.preventDefault();
         const items = Array.from(dom.paletteItems.querySelectorAll('.palette-item:not(.hidden)'));
         const index = items.findIndex(item => item.classList.contains('selected'));
-        items.forEach(item => item.classList.remove('selected'));
-        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.classList.add('selected');
+        const next = items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length];
+        markPaletteSelection(items, next);
       }
     });
     document.querySelectorAll('button[title]').forEach(button => { if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.title); });
@@ -2468,18 +2975,8 @@
     });
 
     // 2. Çalışma Klasörü Seçici
-    dom.btnWorkspace?.addEventListener('click', async () => {
-      const selected = await tbot.selectWorkspace?.();
-      if (selected) {
-        state.currentSessionId = null;
-        clearChatTerminal();
-        state.workspace = selected;
-        if (dom.workspacePath) dom.workspacePath.textContent = selected;
-        refreshWorkflow();
-        loadSessionsList();
-        applyApprovalPolicy();
-      }
-    });
+    dom.btnWorkspace?.addEventListener('click', chooseWorkspace);
+    dom.chipWorkspace?.addEventListener('click', chooseWorkspace);
 
     // 3. RAM Boşalt ve Tema Butonları
     dom.btnThemeToggle?.addEventListener('click', toggleTheme);
@@ -2490,6 +2987,9 @@
     dom.btnQuickConfig?.addEventListener('click', openConfigModal);
     dom.btnQuickDoctor?.addEventListener('click', runDoctorDiagnostics);
     dom.btnQuickClear?.addEventListener('click', () => void clearSession());
+    dom.btnRemovePermission?.addEventListener('click', removeWorkspacePermission);
+    dom.chipModel?.addEventListener('click', openConfigModal);
+    dom.chipEffort?.addEventListener('click', openConfigModal);
     const primeMode = (prefix) => {
       if (state.turnPending || state.sessionLoading) return;
       if (dom.userInput) {
@@ -2557,10 +3057,10 @@
     dom.userInput?.addEventListener('input', () => {
       autoResizeTextarea();
       const val = dom.userInput?.value || '';
-      if (val === '/') {
-        openCommandPalette();
-      } else if (val.startsWith('/') && !val.includes('\n')) {
-        openCommandPalette(val);
+      // Only a bare command name (no whitespace) drives the palette. Once an
+      // argument is being typed the palette must close and stay out of the way.
+      if (/^\/[^\s\n]*$/.test(val)) {
+        openCommandPalette(val, { focusSearch: false });
       } else {
         closeCommandPalette();
       }
@@ -2570,7 +3070,13 @@
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         if (!dom.commandPalette?.classList.contains('hidden')) {
-          executeSelectedPaletteItem();
+          const selected = dom.paletteItems?.querySelector('.palette-item.selected:not(.hidden)');
+          if (selected) {
+            executeSelectedPaletteItem();
+          } else {
+            closeCommandPalette();
+            submitUserMessage();
+          }
         } else {
           submitUserMessage();
         }
@@ -2589,8 +3095,7 @@
           let nextIdx = e.key === 'ArrowDown' ? currentIdx + 1 : currentIdx - 1;
           if (nextIdx < 0) nextIdx = items.length - 1;
           if (nextIdx >= items.length) nextIdx = 0;
-          items.forEach(it => it.classList.remove('selected'));
-          items[nextIdx]?.classList.add('selected');
+          markPaletteSelection(items, items[nextIdx]);
         }
       }
     });
@@ -2614,6 +3119,7 @@
 
     // 10. Düşünmeyi Durdur Butonu
     dom.btnAbortTurn?.addEventListener('click', abortCurrentTurn);
+    dom.btnStopTurn?.addEventListener('click', abortCurrentTurn);
 
     // 11. Aşağı Kaydır Butonu
     dom.btnScrollBottom?.addEventListener('click', () => transcriptPage('latest'));
@@ -2641,13 +3147,24 @@
 
     // 13. Komut Paleti Olayları
     dom.paletteSearch?.addEventListener('input', (e) => filterPaletteItems(e.target?.value || ''));
+    dom.paletteBackdrop?.addEventListener('click', closeCommandPalette);
     // The palette is rebuilt from the shared command catalog after startup.
     // Delegate clicks on the container so replaced items keep working.
     dom.paletteItems?.addEventListener('click', (event) => {
       const item = event.target?.closest?.('.palette-item');
       const cmd = item?.getAttribute('data-cmd');
-      if (cmd) handleSlashCommand(cmd);
-      closeCommandPalette();
+      if (cmd) selectPaletteCommand(cmd);
+      else closeCommandPalette();
+    });
+
+    // 13b. Görev paneli sekmeleri ve plan onayı
+    document.querySelectorAll('[data-inspector-tab]').forEach(button => {
+      button.addEventListener('click', () => setInspectorTab(button.dataset.inspectorTab));
+    });
+    dom.btnApplyPlan?.addEventListener('click', () => {
+      if (!state.pendingPlan || !state.pendingPlanRequest) return;
+      setInspectorTab('tasks');
+      void submitUserMessage({ text: state.pendingPlanRequest, display: '/plan apply', mode: 'plan-apply', plan: state.pendingPlan });
     });
 
     // 14. Modallar & Lightbox Kapatma
@@ -2692,11 +3209,17 @@
     dom.modalBtnCancelGoal?.addEventListener('click', closeGoalModal);
     dom.modalBtnStartGoal?.addEventListener('click', startModalGoal);
 
-    // Genel Klavye Kısayolları (Ctrl+K, Esc)
+    // Genel Klavye Kısayolları (Ctrl+K, Ctrl+N, Ctrl+L, Esc)
     window.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         openCommandPalette();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        dom.btnNewSession?.click();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        void clearSession();
       } else if (e.key === 'Escape') {
         if (state.currentApproval) { handleEscape(); return; }
         if (closeTopmostOverlay()) return;
@@ -2714,6 +3237,8 @@
       pinnedTranscriptEntries.delete(entry);
       const badge = entry.element?.querySelector('.tool-badge');
       if (badge) { badge.classList.remove('running'); badge.textContent = 'Durduruldu'; }
+      const dot = entry.element?.querySelector('.tool-status-dot');
+      if (dot) dot.className = 'tool-status-dot stopped';
     }
     activeToolCards.clear();
     refreshTranscript();
@@ -2774,6 +3299,15 @@
         updateHudBar();
         break;
 
+      case 'warning': {
+        const message = String(event.message || '').trim();
+        if (message) {
+          appendTranscriptEntry({ kind: 'notice', text: `⚠ ${message}`, tone: 'warning' });
+          scrollToBottom(followTranscript);
+        }
+        break;
+      }
+
       case 'error':
         finalizeAssistantMessage();
         stopThinking();
@@ -2788,6 +3322,8 @@
         finishInterruptedTools();
         finalizeAssistantMessage();
         stopThinking();
+        setStreamingAria(false);
+        announceTurnSummary();
         break;
     }
   }
@@ -2822,6 +3358,12 @@
         updateTelemetry(stats);
       });
     }
+
+    // Canlı doğrulama durumu (sys:grounding)
+    tbot.onGroundingUpdate?.((status) => {
+      state.telemetry.groundedStatus = describeGrounding(status);
+      updateGroundingDisplay();
+    });
   }
 
   // =========================================================================
@@ -2846,8 +3388,8 @@
     setupIpcListeners();
     setSidebar('left', false);
     setSidebar('right', false);
-    if (window.innerWidth < 1080) setSidebar('right', true);
-    if (window.innerWidth < 760) setSidebar('left', true);
+    if (window.innerWidth < 1100) setSidebar('right', true);
+    if (window.innerWidth < 900) setSidebar('left', true);
 
     // Başlangıç ayarlarını al
     try {
@@ -2873,13 +3415,17 @@
       if (dom.workspacePath) dom.workspacePath.textContent = state.workspace;
       const memStats = await tbot.getMemoryStats?.();
       if (memStats) updateTelemetry(memStats);
+      const grounding = tbot.getGrounding ? await tbot.getGrounding().catch(() => null) : null;
+      if (grounding) state.telemetry.groundedStatus = describeGrounding(grounding);
     } catch {
       // ignore
     }
 
     await loadCommandMetadata();
+    setStreamingAria(false);
     updateHudBar();
     updateApprovalModeDisplay();
+    updatePlanPanel();
     loadSessionsList();
     refreshWorkflow();
     applyApprovalPolicy();

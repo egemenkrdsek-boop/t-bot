@@ -4,6 +4,43 @@ import { randomUUID } from 'node:crypto';
 import { configDirectory } from './config.js';
 import { acquireFileLock } from './lock.js';
 import { deleteApiKey, normalizeKey, readSavedKey, setApiKey } from './secrets.js';
+/**
+ * Launchers allowed to start a local stdio MCP server. Shells and scripting
+ * hosts are deliberately absent: the server command is spawned directly, and
+ * only through an explicitly approved connection.
+ */
+const STDIO_COMMAND_ALLOWLIST = new Set([
+    'node', 'nodejs', 'npx', 'npm', 'pnpm', 'yarn', 'bun', 'bunx', 'deno',
+    'python', 'python3', 'uv', 'uvx', 'pipx', 'docker',
+]);
+/** Test/UI helper: names accepted by isAllowedStdioCommand. */
+export function stdioCommandAllowlist() {
+    return [...STDIO_COMMAND_ALLOWLIST].sort();
+}
+export function isAllowedStdioCommand(command) {
+    if (typeof command !== 'string' || !command.trim())
+        return false;
+    const base = command.trim().replace(/\\/g, '/').split('/').pop() ?? '';
+    const normalized = base.toLowerCase().replace(/\.(?:exe|cmd|bat|com)$/, '');
+    if (STDIO_COMMAND_ALLOWLIST.has(normalized))
+        return true;
+    // Common published MCP server binaries (e.g. mcp-server-fetch).
+    return /^mcp-server-[a-z0-9._-]+$/.test(normalized);
+}
+/** Minimal stdio: parsing used only for config validation (same rules as mcp.ts). */
+function firstStdioToken(raw) {
+    const match = raw.trim().match(/^"([^"]*)"|^'([^']*)'|^(\S+)/);
+    return match?.[1] ?? match?.[2] ?? match?.[3] ?? '';
+}
+function assertAllowedStdioConfig(url) {
+    if (!url.startsWith('stdio:'))
+        return;
+    const command = firstStdioToken(url.slice('stdio:'.length));
+    if (!isAllowedStdioCommand(command)) {
+        throw new Error(`MCP stdio command "${command || '(empty)'}" is not allowlisted. ` +
+            `Allowed launchers: ${stdioCommandAllowlist().join(', ')}.`);
+    }
+}
 const SERVICE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,40}$/;
 const defaultConnections = () => ({
     vercel: { enabled: false, readOnly: false },
@@ -26,6 +63,7 @@ function parseConnection(value) {
         (record.team !== undefined && typeof record.team !== 'string') ||
         (record.url !== undefined && typeof record.url !== 'string') ||
         (record.command !== undefined && typeof record.command !== 'string') ||
+        (record.stdioApproved !== undefined && typeof record.stdioApproved !== 'boolean') ||
         (record.args !== undefined && (!Array.isArray(record.args) || !record.args.every((item) => typeof item === 'string')))) {
         throw new Error('Invalid MCP connection configuration');
     }
@@ -36,6 +74,7 @@ function parseConnection(value) {
         ...(record.team ? { team: record.team } : {}),
         ...(record.url ? { url: record.url } : {}),
         ...(record.command ? { command: record.command } : {}),
+        ...(record.stdioApproved === true ? { stdioApproved: true } : {}),
         ...(Array.isArray(record.args) && record.args.length ? { args: record.args } : {}),
     };
 }
@@ -128,7 +167,7 @@ export async function saveConnection(service, patch) {
     await updateConnections((connections) => {
         const previous = connections[service] ?? { enabled: false, readOnly: false };
         // Whitelist fields: tokens and other unexpected values never enter metadata.
-        connections[service] = parseConnection({
+        const next = parseConnection({
             enabled: patch.enabled ?? previous.enabled,
             readOnly: patch.readOnly ?? previous.readOnly,
             project: patch.project === undefined ? previous.project : patch.project,
@@ -136,8 +175,26 @@ export async function saveConnection(service, patch) {
             url: patch.url === undefined ? previous.url : patch.url,
             command: patch.command === undefined ? previous.command : patch.command,
             args: patch.args === undefined ? previous.args : patch.args,
+            stdioApproved: patch.stdioApproved === undefined ? previous.stdioApproved : patch.stdioApproved,
         });
+        if (next.url)
+            assertAllowedStdioConfig(next.url);
+        // Any change to the command line revokes a previous stdio approval so the
+        // user sees and approves the exact command again.
+        const commandChanged = (patch.url !== undefined && patch.url !== previous.url) ||
+            (patch.command !== undefined && patch.command !== previous.command) ||
+            patch.args !== undefined;
+        if (commandChanged && patch.stdioApproved === undefined)
+            delete next.stdioApproved;
+        connections[service] = next;
     });
+}
+/** Record explicit user approval for this service's stdio command line. */
+export async function approveStdioConnection(service, approved = true) {
+    await saveConnection(service, { stdioApproved: approved });
+}
+export async function revokeStdioConnection(service) {
+    await saveConnection(service, { stdioApproved: false });
 }
 async function resolveToken(service) {
     validateService(service);
@@ -166,7 +223,7 @@ export async function setMcpToken(service, token) {
 }
 export async function removeConnection(service) {
     validateService(service);
-    await saveConnection(service, { enabled: false, readOnly: false, project: '', team: '', url: '', command: '', args: [] });
+    await saveConnection(service, { enabled: false, readOnly: false, project: '', team: '', url: '', command: '', args: [], stdioApproved: false });
     await deleteApiKey(`mcp-${service}`);
 }
 //# sourceMappingURL=mcp-config.js.map

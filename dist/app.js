@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline/promises';
-import { stdin, stdout } from 'node:process';
+import { stdin, stdout, stderr } from 'node:process';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSession, SessionStore } from './sessions.js';
@@ -16,7 +16,7 @@ import { EFFORT_LEVELS, describeEffort } from './effort.js';
 import { BUILTIN_SKILLS, resolveSkills, skillRequiresReadOnly } from './skills.js';
 import { IMAGE_MODELS } from './tools/image.js';
 import { executeTool, registerGuiKillSwitch } from './tools/index.js';
-import { connectMcp } from './mcp.js';
+import { connectMcp, registerMcpStdioApproval } from './mcp.js';
 import { MCP_PRESETS } from './mcp-presets.js';
 import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
 import { getGoal, startGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal, runGoal, planTask, executePlan } from './workflows.js';
@@ -104,15 +104,67 @@ async function configure(config, onboarding = false, presetProvider = false, mod
     console.log('Ayarlar kaydedildi.');
     return config;
 }
-function showEvent(event) {
-    if (event.type === 'text')
-        stdout.write(safe(event.text));
-    else if (event.type === 'tool_start')
-        console.error(`\n[araç] ${safe(event.call.name)}`);
-    else if (event.type === 'error')
-        console.error(`\nHata: ${safe(event.error)}`);
-    else if (event.type === 'status')
-        console.error(`\n${safe(event.message)}`);
+/**
+ * One ordered stdout stream for assistant text with explicit block boundaries.
+ * Control lines (tool/status/error) stay on stderr for piping, but stdout gets a
+ * newline before and after them so separate assistant turns cannot concatenate.
+ */
+export function createCliEventPrinter(writeOut = text => stdout.write(text), writeErr = text => stderr.write(text)) {
+    let streaming = false;
+    let atLineStart = true;
+    const out = (text) => {
+        if (!text)
+            return;
+        writeOut(text);
+        atLineStart = text.endsWith('\n');
+    };
+    const ensureLine = () => {
+        if (!atLineStart)
+            out('\n');
+    };
+    const closeBlock = () => {
+        if (streaming) {
+            ensureLine();
+            streaming = false;
+        }
+        ensureLine();
+    };
+    return {
+        emit: (event) => {
+            if (event.type === 'text') {
+                const text = safe(event.text);
+                if (!text)
+                    return;
+                if (!streaming) {
+                    // A new assistant block always starts on a fresh paragraph.
+                    ensureLine();
+                    out('\n');
+                    streaming = true;
+                }
+                out(text);
+                return;
+            }
+            if (event.type === 'tool_start') {
+                closeBlock();
+                writeErr(`\n[araç] ${safe(event.call.name)}\n`);
+                return;
+            }
+            if (event.type === 'tool_end') {
+                closeBlock();
+                return;
+            }
+            if (event.type === 'error') {
+                closeBlock();
+                writeErr(`\nHata: ${safe(event.error)}\n`);
+                return;
+            }
+            if (event.type === 'status') {
+                closeBlock();
+                writeErr(`\n${safe(event.message)}\n`);
+            }
+        },
+        finish: () => { closeBlock(); },
+    };
 }
 async function approveOnce(request, signal) {
     if (!stdin.isTTY || !stdout.isTTY) {
@@ -408,6 +460,13 @@ export async function main(argv) {
             console.error(`[Telegram Bot] Hata: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
+    const showEvent = createCliEventPrinter();
+    /** Persist the session and surface any truncation warning instead of silently losing history. */
+    const saveSession = async () => {
+        const result = await store.save(session);
+        if (result.warning)
+            console.error(`Oturum kaydı uyarısı: ${result.warning}`);
+    };
     if (options.message) {
         if (yolo)
             console.error('YOLO açık: araç onayları bu oturumda otomatik verilir.');
@@ -416,11 +475,26 @@ export async function main(argv) {
         process.once('SIGINT', cancel);
         process.once('SIGTERM', cancel);
         registerGuiKillSwitch((reason) => {
-            showEvent({ type: 'error', error: reason });
+            showEvent.emit({ type: 'error', error: reason });
             controller.abort();
         });
+        // S6: no local MCP stdio process may start without an explicit human decision.
+        registerMcpStdioApproval(async (request) => {
+            const description = [
+                'Yerel MCP stdio sunucusu başlatmak isteniyor.',
+                `Sunucu: ${request.service}`,
+                `Komut: ${[request.command, ...request.args].join(' ')}`,
+                `Dizin: ${request.cwd}`,
+                'Onay verilmezse bağlantı kurulmaz.',
+            ].join('\n');
+            return approveOnce({
+                tool: `mcp_stdio:${request.service}`,
+                description,
+                arguments: { command: request.command, args: request.args, cwd: request.cwd },
+            }, controller.signal);
+        });
         try {
-            await hydrateMcp(controller.signal, showEvent);
+            await hydrateMcp(controller.signal, showEvent.emit);
             console.error(describeEffort(config.provider, config.model, selectedEffort).message);
             session.messages = await runRouted({
                 processOwner: `cli:${session.id}`,
@@ -430,15 +504,18 @@ export async function main(argv) {
                 workspace,
                 mcpTools,
                 imageProvider: await imageConfig(),
-                onEvent: withAuth(event => { showEvent(event); if (event.type === 'error')
+                onEvent: withAuth(event => { showEvent.emit(event); if (event.type === 'error')
                     process.exitCode = 1; }),
                 approve: checkApproval(undefined, controller.signal),
                 signal: controller.signal
             });
-            await store.save(session);
+            await saveSession();
+            showEvent.finish();
             stdout.write('\n');
         }
         finally {
+            showEvent.finish();
+            registerMcpStdioApproval(undefined);
             registerGuiKillSwitch(null);
             process.off('SIGINT', cancel);
             process.off('SIGTERM', cancel);
@@ -471,7 +548,7 @@ export async function main(argv) {
                     signal
                 };
                 session.messages = await runRouted(input);
-                await store.save(session);
+                await saveSession();
                 return session.messages;
             },
             onWorkflow: async (command, text, emit, tuiApprove, signal, suspendUi) => {
@@ -519,12 +596,12 @@ export async function main(argv) {
                     const result = await executeTool({ id: randomUUID(), name: 'image_generate', arguments: { prompt: text } }, { workspace, approve: input.approve, signal, imageProvider: { provider: imageId, apiKey: chosenKey, model: imageModel } });
                     emit({ type: result.startsWith('Tool error:') ? 'error' : 'status', ...(result.startsWith('Tool error:') ? { error: result } : { message: result }) });
                     session.messages.push({ role: 'user', content: `/imagegen ${text}` }, { role: 'assistant', content: result });
-                    await store.save(session);
+                    await saveSession();
                     return;
                 }
                 if (['/frontenddesign', '/backend', '/codereview', '/debuganalysis'].includes(command)) {
                     session.messages = await runRouted({ ...input, message: `${command} ${text}`.trim() });
-                    await store.save(session);
+                    await saveSession();
                     return;
                 }
                 if (command === '/mcp') {
@@ -558,7 +635,7 @@ export async function main(argv) {
                     else if (action !== 'run')
                         await startGoal(workspace, text);
                     session.messages = await runGoal({ ...input, message: '' }, runRouted);
-                    await store.save(session);
+                    await saveSession();
                     return;
                 }
                 if (command === '/plan') {
@@ -574,12 +651,12 @@ export async function main(argv) {
                         const approved = pendingPlan;
                         pendingPlan = undefined;
                         session.messages = await executePlan({ ...input, message: approved.request }, approved.plan, runRouted);
-                        await store.save(session);
+                        await saveSession();
                         return;
                     }
                     const planned = await planTask(input);
                     session.messages = planned;
-                    await store.save(session);
+                    await saveSession();
                     const plan = [...planned].reverse().find(m => m.role === 'assistant')?.content ?? '';
                     pendingPlan = { request: text, plan };
                     emit({ type: 'status', message: 'Plan hazır. Uygulamak için /plan apply yazın.' });
@@ -595,7 +672,7 @@ export async function main(argv) {
                         message: text,
                         workerProvider: workerProvider ?? provider,
                     });
-                    await store.save(session);
+                    await saveSession();
                     return;
                 }
                 if (command === '/subagents') {
@@ -884,7 +961,7 @@ export async function main(argv) {
                     session.messages = [];
                     pendingPlan = undefined;
                     globalGroundingLedger.clear();
-                    await store.save(session);
+                    await saveSession();
                     return undefined;
                 }
                 if (command === '/checkpoints') {

@@ -9,7 +9,6 @@ export interface CachedFileEntry {
     workspace: string;
     normalizedPath: string;
     hash: string;
-    lines: string[];
     totalLines: number;
     reads: ReadRangeRecord[];
     lastContent?: string;

@@ -24,6 +24,10 @@ export declare function sendTelegramMessage(token: string, chatId: string, text:
  */
 export declare function sendTelegramPhoto(token: string, chatId: string, filePath: string, caption?: string): Promise<boolean>;
 /**
+ * Scans workspace directories for screenshots and generated images created during a run turn.
+ */
+export declare function collectGeneratedImages(workspace: string, startTime: number): Promise<string[]>;
+/**
  * Starts the Zero-Backend Local Telegram Bot Gateway Bridge.
  */
 export declare function startTelegramBotBridge(options: {

@@ -2,6 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { configDirectory } from '../config.js';
+import { describeSensitiveMatch } from './denylist.js';
 
 const isWindows = process.platform === 'win32';
 
@@ -84,6 +85,12 @@ function sensitiveReason(target: string): string | null {
 
   const name = basename(resolved).toLowerCase();
   if (PROTECTED_FILES.some(pattern => pattern.test(name))) return 'credential file';
+
+  // Shared policy used by file search, workspace packing, screenshots,
+  // Telegram delivery and approval text. Keeping it last preserves the
+  // existing T Bot data-directory reasons above without weakening them.
+  const shared = describeSensitiveMatch(resolved);
+  if (shared) return shared;
   return null;
 }
 

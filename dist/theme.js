@@ -1,31 +1,91 @@
-/**
- * T Bot terminal palette: Tabit green on graphite, semantic status colors,
- * and a calm low-contrast surface set. ANSI is disabled for NO_COLOR/dumb terminals.
- */
-const color = Boolean(process.stdout.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb');
+/** Resolve the palette from explicit configuration or the COLORFGBG background index. */
+export function detectTheme(env = process.env) {
+    const explicit = (env.TBOT_THEME ?? '').trim().toLowerCase();
+    if (explicit === 'light' || explicit === 'dark')
+        return explicit;
+    const hint = (env.COLORFGBG ?? '').trim();
+    if (hint) {
+        const parts = hint.split(';').map(part => part.trim()).filter(Boolean);
+        const background = Number(parts[parts.length - 1]);
+        if (Number.isInteger(background)) {
+            // ANSI colours 0-6 and 8 are dark surfaces; 7 and 9-15 are light surfaces.
+            return (background >= 0 && background <= 6) || background === 8 ? 'dark' : 'light';
+        }
+    }
+    return 'dark';
+}
+export const colorEnabled = Boolean(process.stdout.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb');
+const color = colorEnabled;
 export const paint = (code) => (value) => (color ? `\x1b[${code}m${value}\x1b[0m` : value);
-export const theme = {
+export const themeMode = detectTheme();
+const DARK_PALETTE = {
     // Tabit green remains the brand: a calm leaf/bright-lime system on graphite.
-    brand: paint('1;38;2;155;227;61'),
-    accent: paint('38;2;155;227;61'),
-    iceWhite: paint('1;38;2;237;245;234'),
-    brightMint: paint('1;38;2;198;230;160'),
-    crystalCyan: paint('38;2;147;166;141'),
-    softLavender: paint('38;2;180;205;165'),
-    amber: paint('38;2;252;196;25'),
-    warning: paint('38;2;252;196;25'),
-    forest: paint('38;2;101;184;23'),
-    muted: paint('38;2;147;166;141'),
-    text: paint('38;2;237;245;234'),
-    danger: paint('38;2;255;107;107'),
-    error: paint('38;2;255;107;107'),
-    panel: paint('38;2;95;115;90'),
-    badge: paint('1;38;2;169;227;75'),
-    cyan: paint('38;2;140;233;154'),
-    success: paint('38;2;111;212;74'),
-    dim: paint('38;2;116;136;110'),
-    bold: paint('1'),
+    brand: '1;38;2;155;227;61',
+    accent: '38;2;155;227;61',
+    iceWhite: '1;38;2;237;245;234',
+    brightMint: '1;38;2;198;230;160',
+    crystalCyan: '38;2;147;166;141',
+    softLavender: '38;2;180;205;165',
+    amber: '38;2;252;196;25',
+    warning: '38;2;252;196;25',
+    forest: '38;2;101;184;23',
+    muted: '38;2;147;166;141',
+    text: '38;2;237;245;234',
+    danger: '38;2;255;107;107',
+    error: '38;2;255;107;107',
+    panel: '38;2;95;115;90',
+    badge: '1;38;2;169;227;75',
+    cyan: '38;2;140;233;154',
+    success: '38;2;111;212;74',
+    dim: '38;2;116;136;110',
+    bold: '1',
 };
+const LIGHT_PALETTE = {
+    // Dark ink on a light terminal; green stays the brand but is deepened for contrast.
+    brand: '1;38;2;44;104;16',
+    accent: '38;2;44;104;16',
+    iceWhite: '1;38;2;22;30;26',
+    brightMint: '1;38;2;38;96;16',
+    crystalCyan: '38;2;70;88;80',
+    softLavender: '38;2;84;68;120',
+    amber: '38;2;146;94;0',
+    warning: '38;2;146;94;0',
+    forest: '38;2;44;104;16',
+    muted: '38;2;78;94;86',
+    text: '38;2;28;36;31',
+    danger: '38;2;170;36;36',
+    error: '38;2;170;36;36',
+    panel: '38;2;72;84;76',
+    badge: '1;38;2;34;88;13',
+    cyan: '38;2;18;104;104',
+    success: '38;2;36;116;22',
+    dim: '38;2;116;126;120',
+    bold: '1',
+};
+function buildTheme(palette) {
+    return {
+        brand: paint(palette.brand),
+        accent: paint(palette.accent),
+        iceWhite: paint(palette.iceWhite),
+        brightMint: paint(palette.brightMint),
+        crystalCyan: paint(palette.crystalCyan),
+        softLavender: paint(palette.softLavender),
+        amber: paint(palette.amber),
+        warning: paint(palette.warning),
+        forest: paint(palette.forest),
+        muted: paint(palette.muted),
+        text: paint(palette.text),
+        danger: paint(palette.danger),
+        error: paint(palette.error),
+        panel: paint(palette.panel),
+        badge: paint(palette.badge),
+        cyan: paint(palette.cyan),
+        success: paint(palette.success),
+        dim: paint(palette.dim),
+        bold: paint(palette.bold),
+    };
+}
+export const theme = buildTheme(themeMode === 'light' ? LIGHT_PALETTE : DARK_PALETTE);
 export const unicode = Boolean(process.stdin && process.stdout.isTTY && process.env.TERM !== 'dumb' && process.env.TBOT_ASCII !== '1');
 const plain = !unicode;
 export const symbols = {
@@ -102,6 +162,171 @@ export function truncateAnsi(str, maxCols) {
         count++;
     }
     return color ? `${result}…\x1b[0m` : `${result}…`;
+}
+/**
+ * Görünür genişliği `width` sütuna sığdırır. `truncateAnsi` üzerine kuruludur:
+ * ANSI dizileri korunur, taşmada tek `…` eklenir.
+ */
+export function fitLine(text, width) {
+    return truncateAnsi(text, Math.max(0, Math.floor(width)));
+}
+function toAnsiAtoms(text) {
+    const atoms = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text.charCodeAt(i) === 0x1b) {
+            const match = text.slice(i).match(/^\x1b\[[0-9;?]*[a-zA-Z]/);
+            if (match) {
+                atoms.push({ raw: match[0], vis: 0, isAnsi: true });
+                i += match[0].length;
+                continue;
+            }
+        }
+        const codePoint = text.codePointAt(i);
+        const char = String.fromCodePoint(codePoint);
+        atoms.push({ raw: char, vis: 1, isAnsi: false });
+        i += char.length;
+    }
+    return atoms;
+}
+/** Track the SGR state so wrapped continuation lines keep their colour. */
+function nextSgrState(active, sequence) {
+    if (!/^\x1b\[[0-9;]*m$/.test(sequence))
+        return active;
+    const params = sequence.slice(2, -1);
+    if (!params || params.split(';').every(part => part === '' || part === '0'))
+        return '';
+    const next = `${active}${sequence}`;
+    return next.length > 240 ? sequence : next;
+}
+function hasOpenSgr(raw) {
+    const matches = raw.match(/\x1b\[[0-9;]*m/g);
+    if (!matches?.length)
+        return false;
+    const params = matches[matches.length - 1].slice(2, -1);
+    return Boolean(params) && !params.split(';').every(part => part === '' || part === '0');
+}
+function wrapSegment(text, width) {
+    const max = Math.max(1, Math.floor(width));
+    const atoms = toAnsiAtoms(text);
+    if (!atoms.length)
+        return [''];
+    const lines = [];
+    let current = [];
+    let cols = 0;
+    let active = '';
+    let lastSpace = -1;
+    let atLineStart = true;
+    let firstLine = true;
+    const flush = (list, dropTrailingSpace) => {
+        let head = list;
+        if (dropTrailingSpace) {
+            while (head.length && !head[head.length - 1].isAnsi && head[head.length - 1].raw === ' ') {
+                head = head.slice(0, -1);
+            }
+        }
+        let raw = head.map(atom => atom.raw).join('');
+        active = '';
+        for (const atom of head)
+            if (atom.isAnsi)
+                active = nextSgrState(active, atom.raw);
+        if (hasOpenSgr(raw))
+            raw += '\x1b[0m';
+        lines.push(raw);
+        current = active ? [{ raw: active, vis: 0, isAnsi: true }] : [];
+        cols = 0;
+        lastSpace = -1;
+        atLineStart = true;
+        firstLine = false;
+    };
+    const hardBreak = () => {
+        let vis = 0;
+        let cut = 0;
+        for (; cut < current.length; cut++) {
+            const atom = current[cut];
+            if (!atom.isAnsi && vis + atom.vis > max)
+                break;
+            if (!atom.isAnsi)
+                vis += atom.vis;
+        }
+        if (!current.slice(0, cut).some(atom => !atom.isAnsi)) {
+            const firstVisible = current.findIndex(atom => !atom.isAnsi);
+            cut = firstVisible >= 0 ? firstVisible + 1 : current.length;
+        }
+        const head = current.slice(0, cut);
+        const tail = current.slice(cut);
+        flush(head, true);
+        current.push(...tail);
+        cols = tail.reduce((sum, atom) => sum + atom.vis, 0);
+        atLineStart = false;
+        lastSpace = -1;
+        for (let i = 0; i < current.length; i++)
+            if (!current[i].isAnsi && current[i].raw === ' ')
+                lastSpace = i;
+    };
+    const breakAtSpace = () => {
+        if (lastSpace < 0)
+            return false;
+        const head = current.slice(0, lastSpace);
+        if (!head.some(atom => !atom.isAnsi))
+            return false;
+        const tail = current.slice(lastSpace + 1);
+        flush(head, true);
+        current.push(...tail);
+        cols = tail.reduce((sum, atom) => sum + atom.vis, 0);
+        atLineStart = false;
+        lastSpace = -1;
+        for (let i = 0; i < current.length; i++)
+            if (!current[i].isAnsi && current[i].raw === ' ')
+                lastSpace = i;
+        return true;
+    };
+    for (const atom of atoms) {
+        if (atom.isAnsi) {
+            current.push(atom);
+            continue;
+        }
+        if (atom.raw === ' ') {
+            if (atLineStart && !firstLine)
+                continue;
+            if (cols >= max) {
+                flush(current, true);
+                continue;
+            }
+            current.push(atom);
+            cols += 1;
+            lastSpace = current.length - 1;
+            atLineStart = false;
+            continue;
+        }
+        while (cols >= max) {
+            if (!breakAtSpace())
+                hardBreak();
+            if (cols < max || (!current.length && !lines.length))
+                break;
+            // A tail that is still too wide is split again on the next pass.
+            if (cols >= max && current.every(item => item.isAnsi))
+                break;
+        }
+        current.push(atom);
+        cols += atom.vis;
+        atLineStart = false;
+    }
+    if (current.length)
+        flush(current, true);
+    return lines.length ? lines : [''];
+}
+/**
+ * ANSI-güvenli kelime kaydırma. Görünür genişliği `width` sütunu aşmaz;
+ * satır sonlarında renk durumu korunur ve sıfırlama dizisi eklenir.
+ */
+export function wrapLine(text, width) {
+    if (!text)
+        return [''];
+    const max = Math.max(1, Math.floor(width));
+    return String(text)
+        .split('\n')
+        .flatMap(segment => wrapSegment(segment, max));
 }
 const CONJUNCTIONS = new Set([
     've',
@@ -323,7 +548,7 @@ export function renderCyberWave(frame = 0, width = 8) {
     if (process.env.NO_COLOR !== undefined) {
         return '━'.repeat(safeWidth);
     }
-    if (!isTrueColorSupported()) {
+    if (themeMode === 'light' || !isTrueColorSupported()) {
         const fallbackColors = [
             theme.brightMint,
             theme.crystalCyan,
@@ -351,7 +576,7 @@ export function cyberPulseBadge(text, frame = 0) {
     if (process.env.NO_COLOR !== undefined)
         return text;
     const safeFrame = Number.isFinite(Number(frame)) ? Math.abs(Math.floor(Number(frame))) : 0;
-    if (!isTrueColorSupported()) {
+    if (themeMode === 'light' || !isTrueColorSupported()) {
         return theme.brightMint(text);
     }
     let result = '';

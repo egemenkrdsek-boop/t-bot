@@ -1,4 +1,12 @@
 import type { ToolDefinition } from '../types.js';
+export interface ConsoleRecord {
+    type: string;
+    text: string;
+    location?: string;
+    timestamp: number;
+}
+/** Last console/page-error records for the browser session (bounded). */
+export declare const consoleHistory: ConsoleRecord[];
 export interface FallbackElementMeta {
     role: string;
     text: string;
@@ -50,7 +58,12 @@ export declare function captureAnnotatedScreenshotAndElements(page: any, workspa
 export declare function ensureBrowser(options?: {
     headless?: boolean;
 }): Promise<any>;
-export declare function safeUrl(raw: string): string;
+/**
+ * Public-URL policy for every navigation (including redirects). Loopback is
+ * only reachable with an explicit opt-in; private LAN and metadata addresses
+ * are always blocked by `assertPublicHttpUrl`.
+ */
+export declare function validateBrowserUrl(raw: string, allowLocal?: boolean): Promise<string>;
 export declare function closeBrowser(): Promise<void>;
 /**
  * Resilient element resolver with SPA stale reference recovery.

@@ -3,6 +3,7 @@ import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { childEnvironment } from '../security/env.js';
+import { isSensitivePath } from '../security/paths.js';
 export const gitToolDefinitions = [
     {
         name: 'git_status',
@@ -113,10 +114,30 @@ function runGit(executable, cwd, args, signal) {
         if (key.toUpperCase().startsWith('GIT_'))
             delete env[key];
     return new Promise((resolvePromise, reject) => {
-        // `-c core.hooksPath=` disables repository hooks for every invocation.
-        execFile(executable, ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=false', ...args], {
+        // Hooks, fsmonitor, pager, sshCommand and credential helpers are disabled
+        // per invocation; the global/system config files are not loaded at all, so
+        // a hostile .gitconfig or repository-local config cannot inject a command.
+        execFile(executable, [
+            '--no-optional-locks',
+            '-c', 'core.hooksPath=',
+            '-c', 'core.fsmonitor=false',
+            '-c', 'core.pager=cat',
+            '-c', 'credential.helper=',
+            '-c', 'core.sshCommand=',
+            '-c', 'color.ui=false',
+            '-c', 'color.grep=never',
+            '-c', 'core.quotepath=false',
+            ...args,
+        ], {
             cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true, signal,
-            env: { ...env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', GIT_EXTERNAL_DIFF: '', GIT_CONFIG_NOSYSTEM: '1' },
+            env: {
+                ...env,
+                GIT_PAGER: 'cat',
+                GIT_TERMINAL_PROMPT: '0',
+                GIT_EXTERNAL_DIFF: '',
+                GIT_CONFIG_NOSYSTEM: '1',
+                GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+            },
         }, (error, stdout, stderr) => {
             if (error) {
                 reject(new Error(`Git failed: ${stderr.trim() || error.message}`));
@@ -126,12 +147,162 @@ function runGit(executable, cwd, args, signal) {
         });
     });
 }
+function outputPaths(output) {
+    return String(output || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => line.length > 0 && line !== '(no output)')
+        .map(line => line.replace(/^"|"$/g, ''));
+}
+function porcelainPaths(output) {
+    return String(output || '')
+        .split(/\r?\n/)
+        .filter(line => line.length > 3)
+        .map(line => line.slice(3).trim().replace(/^"|"$/g, ''))
+        .filter(Boolean);
+}
+function sensitivePaths(workspace, paths) {
+    return [...new Set(paths.filter(item => isSensitivePath(resolve(workspace, item))))];
+}
+function previewSection(label, output, max = 40) {
+    const lines = String(output || '')
+        .split(/\r?\n/)
+        .map(line => line.trimEnd())
+        .filter(line => line.length > 0 && line !== '(no output)');
+    if (!lines.length)
+        return `${label}: (none)`;
+    const shown = lines.slice(0, max);
+    if (lines.length > max)
+        shown.push(`… (${lines.length - max} more)`);
+    return `${label}:\n${shown.join('\n')}`;
+}
+/**
+ * Build the approval text for git writes: staged paths, diff summary and a
+ * sensitive-path refusal. Returns undefined for read-only git tools.
+ */
+export async function buildGitApprovalPreview(name, args, workspace, signal) {
+    if (name !== 'git_add' && name !== 'git_commit' && name !== 'git_push')
+        return undefined;
+    const root = await realpath(resolve(workspace));
+    signal?.throwIfAborted();
+    let executable;
+    try {
+        executable = await resolveGitExecutable(root);
+    }
+    catch {
+        return { description: '', blocked: 'Tool error: Git is not available on an absolute PATH. Install Git or add its installation directory to PATH, then retry.' };
+    }
+    const run = (gitArgs) => runGit(executable, root, gitArgs, signal);
+    try {
+        await run(['rev-parse', '--show-toplevel']);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not a git repository/i.test(message)) {
+            return { description: '', blocked: 'Tool error: this workspace is not a Git repository. Run `git init` or open a repository checkout before using git tools.' };
+        }
+        return { description: '', blocked: `Tool error: ${message}` };
+    }
+    const insideWorkspace = (value) => {
+        const rel = relative(root, resolve(root, value));
+        return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+    };
+    if (name === 'git_add') {
+        const rawPaths = Array.isArray(args.paths) ? args.paths : ['.'];
+        const paths = rawPaths.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim());
+        if (paths.length !== rawPaths.length)
+            return { description: '', blocked: 'Tool error: paths elements must be non-empty strings.' };
+        if (!paths.length)
+            paths.push('.');
+        const outside = paths.filter(item => !insideWorkspace(item));
+        if (outside.length)
+            return { description: '', blocked: `Tool error: refusing to stage paths outside the workspace: ${outside.join(', ')}` };
+        const status = await run(['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '--', ...paths]);
+        const stat = await run(['diff', '--stat', '--no-ext-diff', '--no-textconv', '--', ...paths]);
+        const sensitive = sensitivePaths(root, [...paths.filter(item => item !== '.'), ...porcelainPaths(status)]);
+        const description = [
+            `Stage these paths: ${paths.join(', ')}`,
+            previewSection('Working tree', status),
+            previewSection('Diff summary', stat),
+        ].join('\n');
+        return sensitive.length
+            ? { description, blocked: `Tool error: refusing to stage protected paths: ${sensitive.join(', ')}. Remove them or stage explicit non-sensitive paths.` }
+            : { description };
+    }
+    if (name === 'git_commit') {
+        const stagedNames = outputPaths(await run(['diff', '--cached', '--name-only', '--no-renames', '--', '.']));
+        const stagedStat = await run(['diff', '--cached', '--stat', '--no-ext-diff', '--no-textconv', '--', '.']);
+        const all = args.all === true;
+        const workingNames = all ? outputPaths(await run(['diff', '--name-only', '--no-renames', '--', '.'])) : [];
+        const workingStat = all ? await run(['diff', '--stat', '--no-ext-diff', '--no-textconv', '--', '.']) : '';
+        const sensitive = sensitivePaths(root, [...stagedNames, ...workingNames]);
+        const description = [
+            stagedNames.length === 0 && workingNames.length === 0
+                ? 'Nothing is staged; the commit will fail unless files are staged first.'
+                : '',
+            previewSection('Staged files', stagedNames.join('\n')),
+            previewSection('Staged diff summary', stagedStat),
+            all ? previewSection('Tracked changes (-a)', workingStat) : '',
+        ].filter(Boolean).join('\n');
+        return sensitive.length
+            ? { description, blocked: `Tool error: refusing to commit protected paths: ${sensitive.join(', ')}. Unstage or remove them before committing.` }
+            : { description };
+    }
+    const remote = typeof args.remote === 'string' && args.remote.trim() ? args.remote.trim() : 'origin';
+    let branch = typeof args.branch === 'string' && args.branch.trim() ? args.branch.trim() : '';
+    if (!branch) {
+        try {
+            branch = (await run(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+        }
+        catch {
+            branch = '(unknown)';
+        }
+    }
+    let upstream = '';
+    try {
+        upstream = (await run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])).trim();
+    }
+    catch {
+        upstream = '';
+    }
+    const rangeNames = upstream ? outputPaths(await run(['diff', '--name-only', `${upstream}..HEAD`, '--', '.'])) : [];
+    const log = upstream
+        ? await run(['log', '--oneline', `${upstream}..HEAD`, '--', '.'])
+        : await run(['log', '--oneline', '-5', '--', '.']);
+    const stat = upstream ? await run(['diff', '--stat', `${upstream}..HEAD`, '--', '.']) : '';
+    const sensitive = sensitivePaths(root, rangeNames);
+    const description = [
+        `Push ${branch} to ${remote}${upstream ? ` (upstream ${upstream})` : ' (no upstream; creates a remote branch)'}`,
+        previewSection(upstream ? 'Commits to push' : 'Recent commits', log),
+        upstream ? previewSection('Diff summary', stat) : '',
+    ].filter(Boolean).join('\n');
+    return sensitive.length
+        ? { description, blocked: `Tool error: refusing to push protected paths: ${sensitive.join(', ')}. Rewrite or remove those commits first.` }
+        : { description };
+}
 export async function handleGitTool(name, args, context) {
     const workspace = await realpath(resolve(context.workspace));
     context.signal?.throwIfAborted();
-    const executable = await resolveGitExecutable(workspace);
+    let executable;
+    try {
+        executable = await resolveGitExecutable(workspace);
+    }
+    catch {
+        throw new Error('Git is not available on an absolute PATH. Install Git or add its installation directory to PATH, then retry.');
+    }
     const run = (args) => runGit(executable, workspace, args, context.signal);
-    const root = await realpath((await run(['rev-parse', '--show-toplevel'])).trim());
+    let rootRaw;
+    try {
+        rootRaw = (await run(['rev-parse', '--show-toplevel'])).trim();
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not a git repository/i.test(message)) {
+            throw new Error('This workspace is not a Git repository. Run `git init` to create one, or open an existing repository checkout before using git tools.');
+        }
+        throw error;
+    }
+    const root = await realpath(rootRaw);
     const inside = relative(root, workspace);
     if (isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`))
         throw new Error('Workspace is outside the Git repository');
@@ -166,6 +337,11 @@ export async function handleGitTool(name, args, context) {
                 throw new Error('Refusing to stage a path outside the workspace');
             paths.push(value);
         }
+        const status = await run(['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '--', ...paths]);
+        const blocked = sensitivePaths(workspace, [...paths.filter(item => item !== '.'), ...porcelainPaths(status)]);
+        if (blocked.length) {
+            throw new Error(`Refusing to stage protected paths: ${blocked.join(', ')}. Remove them or stage explicit non-sensitive paths.`);
+        }
         const output = await run(['add', '--', ...paths]);
         return output.trim() === '(no output)' || !output.trim() ? 'Files staged successfully.' : output;
     }
@@ -178,6 +354,12 @@ export async function handleGitTool(name, args, context) {
         // when the workspace is the repository root. Always scope to the workspace.
         if (args.all && !atRepoRoot) {
             throw new Error('git_commit "all" is not allowed outside the repository root; stage explicit paths first');
+        }
+        const stagedNames = outputPaths(await run(['diff', '--cached', '--name-only', '--no-renames', '--', '.']));
+        const workingNames = args.all ? outputPaths(await run(['diff', '--name-only', '--no-renames', '--', '.'])) : [];
+        const blocked = sensitivePaths(workspace, [...stagedNames, ...workingNames]);
+        if (blocked.length) {
+            throw new Error(`Refusing to commit protected paths: ${blocked.join(', ')}. Unstage or remove them before committing.`);
         }
         const commitArgs = ['commit', ...(args.all ? ['-a'] : []), '-m', args.message.trim(), '--', '.'];
         return run(commitArgs);
@@ -212,6 +394,21 @@ export async function handleGitTool(name, args, context) {
         const remote = typeof args.remote === 'string' && args.remote.trim() ? args.remote.trim() : 'origin';
         if (remote.startsWith('-') || /[\s]/.test(remote))
             throw new Error('Invalid remote name');
+        // Refuse to publish a commit range that contains a credential file.
+        let upstream = '';
+        try {
+            upstream = (await run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])).trim();
+        }
+        catch {
+            upstream = '';
+        }
+        if (upstream) {
+            const rangeNames = outputPaths(await run(['diff', '--name-only', `${upstream}..HEAD`, '--', '.']));
+            const blocked = sensitivePaths(workspace, rangeNames);
+            if (blocked.length) {
+                throw new Error(`Refusing to push protected paths: ${blocked.join(', ')}. Rewrite or remove those commits first.`);
+            }
+        }
         const pushArgs = ['push', remote];
         if (typeof args.branch === 'string' && args.branch.trim()) {
             const branch = args.branch.trim();

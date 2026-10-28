@@ -495,6 +495,28 @@ function Get-DesktopWindows() {
   }
 }
 
+function Get-WindowTitle([IntPtr]$handle) {
+  if ($handle -eq [IntPtr]::Zero) { return "" }
+  try {
+    $sb = [Text.StringBuilder]::new(512)
+    [void][DesktopNative]::GetWindowText($handle, $sb, $sb.Capacity)
+    return $sb.ToString()
+  } catch { return "" }
+}
+
+function Get-WindowProcessName([IntPtr]$handle) {
+  if ($handle -eq [IntPtr]::Zero) { return "" }
+  try {
+    $procId = 0
+    [void][DesktopNative]::GetWindowThreadProcessId($handle, [ref]$procId)
+    if ($procId -gt 0) {
+      $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+      if ($proc) { return [string]$proc.ProcessName }
+    }
+  } catch {}
+  return ""
+}
+
 function Find-WindowByText([string]$text) {
   if ([string]::IsNullOrWhiteSpace($text)) { return [IntPtr]::Zero }
   $clean = $text.Trim()
@@ -1001,10 +1023,13 @@ function Execute-DesktopRequest($request) {
     $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
     foreach ($item in $elements) { $script:LastUiElements.Add($item) }
 
+    $inspectProcess = ""
+    try { $inspectProcess = Get-WindowProcessName ([IntPtr]::new([long]$resObj.handle)) } catch {}
     return @{
       action = 'inspect';
       handle = [string]$resObj.handle;
       windowTitle = [string]$resObj.windowTitle;
+      processName = $inspectProcess;
       windowBounds = $resObj.windowBounds;
       landmarks = $resObj.landmarks;
       elements = $elements;
@@ -1021,6 +1046,7 @@ function Execute-DesktopRequest($request) {
     $activeHwnd = Resolve-WindowHandle $request
     $windowBounds = $null
     $landmarks = $null
+    $activeTitle = ""
     try {
       $graphics = [Drawing.Graphics]::FromImage($bitmap)
       try {
@@ -1036,6 +1062,7 @@ function Execute-DesktopRequest($request) {
         $uiElements = @($uiObj.elements)
         $windowBounds = $uiObj.windowBounds
         $landmarks = $uiObj.landmarks
+        $activeTitle = [string]$uiObj.windowTitle
         $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
         foreach ($item in $uiElements) { $script:LastUiElements.Add($item) }
       } catch {}
@@ -1048,11 +1075,16 @@ function Execute-DesktopRequest($request) {
     } finally {
       $bitmap.Dispose()
     }
+    $activeHandleStr = ""
+    if ($activeHwnd -ne [IntPtr]::Zero) { $activeHandleStr = $activeHwnd.ToInt64().ToString() }
     return @{
       path = $file;
       screenshotPath = $file;
       bounds = @{ x=$screen.X; y=$screen.Y; width=$screen.Width; height=$screen.Height };
       windowBounds = $windowBounds;
+      windowTitle = $activeTitle;
+      handle = $activeHandleStr;
+      processName = (Get-WindowProcessName $activeHwnd);
       landmarks = $landmarks;
       elements = @($uiElements);
     }
@@ -1077,17 +1109,85 @@ function Execute-DesktopRequest($request) {
       action = 'open';
       target = $targetApp;
       foreground = $newFg.ToInt64().ToString();
+      handle = $newFg.ToInt64().ToString();
+      windowTitle = (Get-WindowTitle $newFg);
+      processName = (Get-WindowProcessName $newFg);
     }
   }
 
   # Handle çözümlemesi
   $handle = Resolve-WindowHandle $request
 
-  if ($action -eq 'focus') {
-    if ($handle -ne [IntPtr]::Zero) {
-      [void][DesktopNative]::ForceForeground($handle)
+  if ($action -eq 'click_text') {
+    $label = [string]$request.text
+    if ([string]::IsNullOrWhiteSpace($label)) {
+      return @{ attempted = $false; action = 'click_text'; warning = 'click_text requires "text" (the visible label of the UI element).'; available = @() }
     }
-    return @{ attempted = $true; action = 'focus'; focused = $true; handle = $handle.ToInt64().ToString() }
+    if ($handle -ne [IntPtr]::Zero) { [void][DesktopNative]::ForceForeground($handle) }
+    $hStr = ""
+    if ($handle -ne [IntPtr]::Zero) { $hStr = $handle.ToInt64().ToString() }
+    $elements = @()
+    $winTitle = Get-WindowTitle $handle
+    try {
+      $rawJson = [DesktopNative]::GetUiElementsJson($hStr)
+      $uiObj = $rawJson | ConvertFrom-Json
+      $elements = @($uiObj.elements)
+      $winTitle = [string]$uiObj.windowTitle
+      $script:LastUiElements = [System.Collections.Generic.List[object]]::new()
+      foreach ($item in $elements) { $script:LastUiElements.Add($item) }
+    } catch {}
+
+    $match = $null
+    foreach ($el in $elements) {
+      if ($el.name -and ([string]$el.name).Trim() -ieq $label.Trim()) { $match = $el; break }
+    }
+    if ($null -eq $match) {
+      foreach ($el in $elements) {
+        if ($el.name -and ([string]$el.name).IndexOf($label, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $match = $el; break }
+      }
+    }
+    if ($null -eq $match) {
+      $available = @($elements | Where-Object { $_.name } | Select-Object -First 12 | ForEach-Object { "$($_.id):$($_.name)" })
+      return @{
+        attempted = $false;
+        action = 'click_text';
+        text = $label;
+        warning = "No visible UI element in window `"$winTitle`" matches `"$label`".";
+        available = $available;
+        handle = $hStr;
+        windowTitle = $winTitle;
+        processName = (Get-WindowProcessName $handle);
+      }
+    }
+
+    [void][DesktopNative]::SetCursorPos([int]$match.x, [int]$match.y)
+    [System.Threading.Thread]::Sleep(40)
+    [DesktopNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTDOWN
+    [DesktopNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # MOUSEEVENTF_LEFTUP
+    return @{
+      attempted = $true;
+      action = 'click_text';
+      text = $label;
+      element = @{ id = [string]$match.id; name = [string]$match.name; type = [string]$match.type; x = [int]$match.x; y = [int]$match.y };
+      handle = $hStr;
+      windowTitle = $winTitle;
+      processName = (Get-WindowProcessName $handle);
+    }
+  }
+
+  if ($action -eq 'focus') {
+    $focused = $false
+    if ($handle -ne [IntPtr]::Zero) {
+      $focused = [bool][DesktopNative]::ForceForeground($handle)
+    }
+    return @{
+      attempted = $true;
+      action = 'focus';
+      focused = $focused;
+      handle = $handle.ToInt64().ToString();
+      windowTitle = (Get-WindowTitle $handle);
+      processName = (Get-WindowProcessName $handle);
+    }
   }
 
   if ($action -eq 'move') {
@@ -1317,7 +1417,7 @@ function Execute-DesktopRequest($request) {
     return @{
       attempted = $false;
       action = $action;
-      warning = "Unsupported action '$action'. Available actions: windows, inspect, screenshot, focus, click, type, key, scroll, move, drag, open, wait.";
+      warning = "Unsupported action '$action'. Available actions: windows, inspect, screenshot, focus, click, click_text, type, key, scroll, move, drag, open, wait, wait_for_window.";
       foreground = $fg.ToInt64().ToString();
     }
   }

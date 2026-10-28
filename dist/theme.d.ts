@@ -1,4 +1,19 @@
+/**
+ * T Bot terminal palette: Tabit green on graphite, semantic status colors,
+ * and a calm low-contrast surface set. ANSI is disabled for NO_COLOR/dumb terminals.
+ *
+ * The palette follows the terminal background so the TUI stays readable on a
+ * light (white) terminal:
+ *   TBOT_THEME=light|dark   explicit override
+ *   COLORFGBG=15;0          xterm background hint (0-6 / 8 dark, 7 / 9-15 light)
+ * When neither is present the dark palette is used (historical behaviour).
+ */
+export type ThemeMode = 'light' | 'dark';
+/** Resolve the palette from explicit configuration or the COLORFGBG background index. */
+export declare function detectTheme(env?: Record<string, string | undefined>): ThemeMode;
+export declare const colorEnabled: boolean;
 export declare const paint: (code: string) => (value: string) => string;
+export declare const themeMode: ThemeMode;
 export declare const theme: {
     brand: (value: string) => string;
     accent: (value: string) => string;
@@ -58,6 +73,16 @@ export declare function visibleLength(str: string): number;
  * ve taşma durumunda sonuna `…\x1b[0m` ekler (sıfır-taşma garantisi).
  */
 export declare function truncateAnsi(str: string, maxCols: number): string;
+/**
+ * Görünür genişliği `width` sütuna sığdırır. `truncateAnsi` üzerine kuruludur:
+ * ANSI dizileri korunur, taşmada tek `…` eklenir.
+ */
+export declare function fitLine(text: string, width: number): string;
+/**
+ * ANSI-güvenli kelime kaydırma. Görünür genişliği `width` sütunu aşmaz;
+ * satır sonlarında renk durumu korunur ve sıfırlama dizisi eklenir.
+ */
+export declare function wrapLine(text: string, width: number): string[];
 /**
  * Cümle olmayan metinleri Türkçe Başlık Düzenine (Title Case) dönüştürür.
  * Bağlaçlar küçük harfle yazılırken teknik kısaltmalar korunur.

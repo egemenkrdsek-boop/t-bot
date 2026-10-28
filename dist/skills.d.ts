@@ -27,6 +27,14 @@ export declare function resolveSkills(message: string, workspace?: string): Skil
 export declare function buildSkillPrompt(skills?: readonly (SkillDefinition | string)[], workspace?: string): string;
 export declare function skillRequiresReadOnly(skills: readonly SkillDefinition[], message: string): boolean;
 /**
+ * C8: the same read-only answer as `skillRequiresReadOnly`, but for restored
+ * skill ids where the current message ("continue") no longer names the skill.
+ */
+export declare function skillIdsRequireReadOnly(ids: readonly string[], message: string): boolean;
+export declare function rememberSessionSkills(sessionId: string | undefined, skillIds: readonly string[]): void;
+export declare function recallSessionSkills(sessionId: string | undefined): string[];
+export declare function clearSessionSkills(sessionId?: string): void;
+/**
  * Autonomous Skill Distillation (Hermes Agent feature).
  * Distills a reusable project skill (.tbot/skills/auto-<slug>.md)
  * from a successful multi-tool engineering turn deterministically without LLM calls.

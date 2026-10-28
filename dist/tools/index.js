@@ -5,9 +5,9 @@ import { verifyToolDefinitions, handleVerifyTool } from './verify.js';
 import { isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
 import { browserToolDefinitions, handleBrowserTool } from './browser.js';
 import { computerToolDefinitions, handleComputerTool } from './computer.js';
-import { gitToolDefinitions, handleGitTool } from './git.js';
+import { gitToolDefinitions, handleGitTool, buildGitApprovalPreview } from './git.js';
 import { imageToolDefinitions, handleImageTool } from './image.js';
-import { memoryToolDefinitions, handleMemoryTool, forgetFact } from '../memory.js';
+import { memoryToolDefinitions, handleMemoryTool, forgetFact, requiresGlobalMemoryApproval } from '../memory.js';
 import { WEB_TOOLS, executeWebTool } from './web.js';
 import { WORKFLOW_TOOLS, executeWorkflowTool } from '../workflows.js';
 import * as skillsMod from '../skills.js';
@@ -19,6 +19,8 @@ import { diagnosticsToolDefinitions, handleDiagnosticsTool } from './diagnostics
 import { capabilitiesAllowed } from '../security/capabilities.js';
 import { currentTaintLedger, taintedArgument } from '../security/taint.js';
 import { pruneScreenshots } from './screenshot-store.js';
+import { uniqueToolDefinitions } from './registry.js';
+import { buildWorkspacePack } from '../mcp-local-vercel.js';
 export function isToolResultOk(name, output) {
     if (typeof output !== 'string')
         return false;
@@ -239,13 +241,7 @@ function buildLocalToolDefinitions() {
         ...getSkillDefs(),
         ...getSubagentDefs(),
     ];
-    const seen = new Set();
-    return all.filter(tool => {
-        if (!tool || typeof tool.name !== 'string' || seen.has(tool.name))
-            return false;
-        seen.add(tool.name);
-        return true;
-    });
+    return uniqueToolDefinitions(all);
 }
 export const localToolDefinitions = buildLocalToolDefinitions();
 export const toolDefinitions = localToolDefinitions;
@@ -302,6 +298,9 @@ export const READ_ONLY_TOOLS = new Set([
     'web_search',
     'diagnostics',
     'checkpoint_list',
+    'browser_read',
+    'browser_wait_for',
+    'browser_console',
 ]);
 export function getToolDefinitions(connectionsOrPolicy, policy = 'all') {
     let connections;
@@ -315,11 +314,12 @@ export function getToolDefinitions(connectionsOrPolicy, policy = 'all') {
     }
     const local = syncLocalTools();
     const all = remoteTools(connections);
-    const definitions = [
+    // Local definitions come first, so a remote tool can never shadow one.
+    const definitions = uniqueToolDefinitions([
         ...local,
         ...(all.length ? catalogTools : []),
         ...featuredTools(connections).map(({ definition }) => ({ ...definition, description: definition.description.slice(0, 600) })),
-    ];
+    ]);
     if (effectivePolicy === 'read-only') {
         return definitions.filter(tool => READ_ONLY_TOOLS.has(tool.name));
     }
@@ -344,6 +344,56 @@ function redact(value) {
 const FILE_READ_PATH_TOOLS = new Set(['file_read', 'file_outline', 'file_list', 'file_glob', 'file_search']);
 const FILE_WRITE_PATH_TOOLS = new Set(['file_write', 'file_patch']);
 const TERMINAL_TARGET = /terminal|console|command prompt|cmd(?:\.exe)?\b|powershell|pwsh|bash|wsl|shell/i;
+/**
+ * Approval text for the local Vercel adapter's `create_deployment`. Shows the
+ * exact workspace pack (files, byte count, digest) and how many credential
+ * files the shared denylist excluded. It never sends file contents.
+ */
+async function describeVercelDeployment(args, workspace) {
+    if (args.auto_pack_workspace === true) {
+        const pack = await buildWorkspacePack(workspace);
+        const names = pack.files.map(file => file.file);
+        const shown = names.slice(0, 40);
+        const skipped = pack.sensitiveSkipped;
+        return {
+            text: [
+                `auto_pack_workspace is ON: ${pack.files.length} file(s), ${pack.bytes} byte(s), sha256 ${pack.digest}.`,
+                `Files: ${shown.join(', ') || '(none)'}${names.length > shown.length ? ` … (+${names.length - shown.length} more)` : ''}`,
+                `Sensitive files excluded: ${skipped.length}${skipped.length ? ` (${skipped.slice(0, 20).join(', ')}${skipped.length > 20 ? ' …' : ''})` : ''}.`,
+                skipped.length
+                    ? '[Sensitive path warning: credential-like files were found and excluded from the upload. Confirm that the listed files are the complete intended payload.]'
+                    : '',
+            ].filter(Boolean).join('\n'),
+        };
+    }
+    const files = Array.isArray(args.files) ? args.files : [];
+    if (files.length) {
+        const names = [];
+        const sensitive = [];
+        let base64Chars = 0;
+        for (const item of files) {
+            if (!item || typeof item !== 'object')
+                continue;
+            const record = item;
+            const file = typeof record.file === 'string' ? record.file : '(invalid)';
+            names.push(file);
+            if (typeof record.data === 'string')
+                base64Chars += record.data.length;
+            if (isSensitivePath(file))
+                sensitive.push(file);
+        }
+        if (sensitive.length) {
+            return { blocked: `Tool error: refusing to upload protected paths: ${sensitive.join(', ')}. Remove them or upload explicit non-sensitive files.` };
+        }
+        return {
+            text: `Explicit files: ${files.length} file(s), ${base64Chars} base64 character(s).\nFiles: ${names.slice(0, 40).join(', ')}${names.length > 40 ? ` … (+${names.length - 40} more)` : ''}`,
+        };
+    }
+    if (typeof args.repoId === 'string') {
+        return { text: `Git source: repoId ${args.repoId}, ref ${String(args.ref ?? '')}.` };
+    }
+    return { text: 'No files, git source or auto_pack_workspace was supplied; the deployment will be rejected unless a source is provided.' };
+}
 export const APPROVAL_REQUIRED_TOOLS = [
     'shell',
     'file_write',
@@ -358,6 +408,8 @@ export const APPROVAL_REQUIRED_TOOLS = [
     'url_fetch',
     'project_verify',
     'checkpoint_restore',
+    'browser_download',
+    'browser_upload',
 ];
 let activeKillSwitchCallback = null;
 export function registerGuiKillSwitch(cb) {
@@ -375,6 +427,9 @@ export function triggerGuiKillSwitch(reason) {
 }
 export async function executeTool(call, context) {
     const rawArgs = (call.args || call.arguments || {});
+    // C2/TODO(D1): remove this second normalization once agent.ts sends the
+    // canonical call produced by canonicalizeToolCall(). Kept now so aliases
+    // outside the agent path behave exactly as before.
     const normalized = normalizeToolCall(call.name, rawArgs);
     const toolName = normalized.name;
     const args = normalized.args;
@@ -445,8 +500,11 @@ export async function executeTool(call, context) {
         // screenshots still use the normal GUI approval boundary.
         const guiAction = String(actualArgs.action ?? '').toLowerCase();
         const isGuiObservation = actualCall.name === 'browser_inspect' ||
+            actualCall.name === 'browser_read' ||
+            actualCall.name === 'browser_console' ||
+            actualCall.name === 'browser_wait_for' ||
             (actualCall.name === 'browser_tabs' && (!guiAction || guiAction === 'list')) ||
-            (actualCall.name === 'computer' && (guiAction === 'inspect' || guiAction === 'windows'));
+            (actualCall.name === 'computer' && (guiAction === 'inspect' || guiAction === 'windows' || guiAction === 'wait_for_window'));
         // Shell is already approval-gated, but a command that names a credential
         // file deserves an explicit warning in the approval prompt. This is a
         // high-signal heuristic, not a complete parser.
@@ -466,8 +524,45 @@ export async function executeTool(call, context) {
             globalGroundingLedger.recordToolResult(toolName, args, err, false);
             return err;
         }
+        // Git writes show staged paths and a diff summary before approval, and a
+        // credential file in the range is refused before the prompt is shown.
+        let gitPreview;
+        if (!remote && (actualCall.name === 'git_add' || actualCall.name === 'git_commit' || actualCall.name === 'git_push')) {
+            try {
+                gitPreview = await buildGitApprovalPreview(actualCall.name, actualArgs, context.workspace, context.signal);
+            }
+            catch (error) {
+                const err = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+                globalGroundingLedger.recordToolResult(toolName, args, err, false);
+                return err;
+            }
+            if (gitPreview?.blocked) {
+                globalGroundingLedger.recordToolResult(toolName, args, gitPreview.blocked, false);
+                return gitPreview.blocked;
+            }
+        }
+        // Global memory is a cross-workspace instruction vector; it is fail-closed
+        // without an explicit approval even when GUI/YOLO policy bypasses prompts.
+        const globalMemoryNeedsApproval = requiresGlobalMemoryApproval(actualCall.name, actualArgs);
         const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
-            guiNeedsApproval || sensitiveReadPath !== undefined || taintSensitive;
+            guiNeedsApproval || sensitiveReadPath !== undefined || taintSensitive || globalMemoryNeedsApproval;
+        // The Vercel adapter is remote from the dispatcher's point of view, so its
+        // approval text is enriched here instead of in the MCP layer.
+        let vercelPreview;
+        if (remote && remote.connection.service === 'vercel' && remote.definition.name.includes('create_deployment')) {
+            try {
+                vercelPreview = await describeVercelDeployment(actualArgs, context.workspace);
+            }
+            catch (error) {
+                const err = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+                globalGroundingLedger.recordToolResult(toolName, args, err, false);
+                return err;
+            }
+            if (vercelPreview.blocked) {
+                globalGroundingLedger.recordToolResult(toolName, args, vercelPreview.blocked, false);
+                return vercelPreview.blocked;
+            }
+        }
         if (isApprovalRequired) {
             const description = remote
                 ? `Allow remote MCP tool ${actualCall.name} with the supplied arguments.`
@@ -479,11 +574,15 @@ export async function executeTool(call, context) {
                             ? `Run the project's declared verification scripts: ${Array.isArray(actualArgs.commands) ? actualArgs.commands.join(', ') : 'typecheck/check/lint/test (auto-detected)'}. The scripts execute with your user permissions.`
                             : actualCall.name === 'skill_create'
                                 ? `Save ${actualArgs.scope === 'global' ? 'global instructions for future tasks across workspaces' : 'project instructions for future tasks'}; review the complete skill content before approving.`
-                                : sensitiveReadPath !== undefined
-                                    ? `Read the protected file "${String(actualArgs.path)}"; it may contain credentials or private keys.`
-                                    : `Allow ${actualCall.name} with the supplied arguments.`;
+                                : globalMemoryNeedsApproval
+                                    ? `Save "${String(actualArgs.key ?? '').slice(0, 200)}" to GLOBAL memory. Global memory persists across workspaces and can act as a persistent instruction vector; review the exact key and value before approving.`
+                                    : sensitiveReadPath !== undefined
+                                        ? `Read the protected file "${String(actualArgs.path)}"; it may contain credentials or private keys.`
+                                        : `Allow ${actualCall.name} with the supplied arguments.`;
             const approvalDescription = [
                 description,
+                vercelPreview?.text ? `[Vercel deployment preview]\n${vercelPreview.text}` : '',
+                gitPreview?.description ? `[Git preview]\n${gitPreview.description}` : '',
                 sensitiveShellCommand ? '[Sensitive path warning: this command references a credential-like file. Confirm that reading or changing it is intended.]' : '',
                 taintSensitive ? '[Untrusted content warning: this argument repeats text from a web, MCP, browser or desktop result. Confirm it matches your intent.]' : '',
             ].filter(Boolean).join('\n');
@@ -529,7 +628,9 @@ export async function executeTool(call, context) {
         }
         else if (toolName.startsWith('memory_')) {
             try {
-                output = await handleMemoryTool(toolName, actualArgs, context);
+                // `approvedGlobal` is only set after the approval gate above succeeded;
+                // rememberFact() still rejects unapproved global writes (fail-closed).
+                output = await handleMemoryTool(toolName, actualArgs, globalMemoryNeedsApproval ? { ...context, approvedGlobal: true } : context);
             }
             catch (err) {
                 if (toolName === 'memory_forget' && err instanceof Error && err.message.startsWith('Unknown memory tool:')) {

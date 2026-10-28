@@ -34,6 +34,12 @@ export type StreamEvent = ProviderEvent;
 export interface ProviderStreamOptions {
   signal?: AbortSignal;
   effort?: EffortLevel;
+  /**
+   * Optional output cap for this request. Adapters keep their existing
+   * defaults when it is omitted. Agent/model-profile integration is owned by
+   * the agent layer.
+   */
+  maxOutputTokens?: number;
 }
 
 export interface Provider {
@@ -51,7 +57,7 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_start'; call: ToolCall }
-  | { type: 'tool_end'; call: ToolCall; result: string; durationMs?: number }
+  | { type: 'tool_end'; call: ToolCall; result: string; durationMs?: number; outcome?: { ok: boolean; status: string; summary: string; durationMs?: number } }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number; savedTokens?: number; savingsPercent?: number }
   | { type: 'error'; error: string; code?: 'authentication' }
   | { type: 'status'; message: string };

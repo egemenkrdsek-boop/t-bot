@@ -16,6 +16,8 @@ export interface AppConfig {
   guiMode?: 'live' | 'headless';
   telegramBotToken?: boolean;
   telegramAllowedChatIds?: string[];
+  /** Telegram user IDs allowed to approve tool actions (especially in groups). */
+  telegramAllowedUserIds?: string[];
 }
 export type Config = AppConfig;
 
@@ -83,6 +85,11 @@ export function normalizeConfig(rawInput: Partial<AppConfig> | Record<string, un
   }
   if (Array.isArray(input.telegramAllowedChatIds)) {
     result.telegramAllowedChatIds = input.telegramAllowedChatIds.filter((id): id is string => typeof id === 'string');
+  }
+  if (Array.isArray(input.telegramAllowedUserIds)) {
+    result.telegramAllowedUserIds = input.telegramAllowedUserIds
+      .filter((id): id is string => typeof id === 'string' && /^\d{1,20}$/.test(id.trim()))
+      .map(id => id.trim());
   }
   return result;
 }
@@ -165,7 +172,8 @@ export async function saveConfig(config: AppConfig): Promise<void> {
       efforts: config.efforts ?? {},
       ...(config.guiMode ? { guiMode: config.guiMode } : {}),
       ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
-      ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
+      ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {}),
+      ...(config.telegramAllowedUserIds ? { telegramAllowedUserIds: config.telegramAllowedUserIds } : {})
     };
     const contents = JSON.stringify(value, null, 2) + '\n';
     await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });

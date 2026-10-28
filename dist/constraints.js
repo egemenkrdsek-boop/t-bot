@@ -6,6 +6,7 @@
  * the approval layer; a guessed constraint is worse than no constraint.
  */
 import { isAbsolute, join, resolve } from 'node:path';
+import { shellWrites } from './core/tool-effect.js';
 const MAX_VALUE = 220;
 const MAX_SOURCE = 240;
 const MAX_CONSTRAINTS = 32;
@@ -221,9 +222,11 @@ export function constraintViolation(call, constraints, workspace) {
     const rawTarget = argumentPath(args);
     const target = rawTarget ? normalizedTarget(workspace, rawTarget) : '';
     const rawCommand = typeof args.command === 'string' ? args.command.toLowerCase() : '';
-    const shellWrites = /(?:^|[^<>\-=])>{1,2}|set-content|out-file|add-content|remove-item|\b(?:rm|del|erase|mv|move|copy|cp|tee|sed\s+-i)\b/iu.test(rawCommand);
+    // One shared shell-write classification (core/tool-effect) for phase gates,
+    // user constraints and the tool dispatcher.
+    const shellWritesCommand = typeof args.command === 'string' && shellWrites(args.command);
     for (const constraint of constraints) {
-        if (constraint.kind === 'no-write' && (WRITE_TOOLS.has(name) || (name === 'shell' && shellWrites))) {
+        if (constraint.kind === 'no-write' && (WRITE_TOOLS.has(name) || (name === 'shell' && shellWritesCommand))) {
             return `Tool error: user constraint blocks file writes: "${constraint.source}".`;
         }
         if (constraint.kind === 'no-command' && COMMAND_TOOLS.has(name)) {
@@ -251,10 +254,10 @@ export function constraintViolation(call, constraints, workspace) {
             }
         }
         // Do not let a model bypass a protected path by asking the shell to write it.
-        if (constraint.kind === 'forbid-path' && shellWrites && rawCommand.includes(constraint.value.toLowerCase())) {
+        if (constraint.kind === 'forbid-path' && shellWritesCommand && rawCommand.includes(constraint.value.toLowerCase())) {
             return `Tool error: user constraint blocks commands that reference "${constraint.value}": "${constraint.source}".`;
         }
-        if (constraint.kind === 'only-path' && name === 'shell' && shellWrites) {
+        if (constraint.kind === 'only-path' && name === 'shell' && shellWritesCommand) {
             return `Tool error: user constraint allows file changes only under "${constraint.value}"; use the file tools inside that boundary: "${constraint.source}".`;
         }
     }

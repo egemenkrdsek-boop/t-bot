@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -8,26 +7,41 @@ import type { ToolDefinition } from '../types.js';
 import { executeDesktopRequest } from './desktop-request.js';
 import { windowsSystemExecutable } from '../windows-system.js';
 import { GUI_WARM_IDLE_MS, guiObservation, MAX_BATCH_STEPS, validateBatchSteps } from './gui-policy.js';
+import { createScreenshotPath } from './screenshot-store.js';
 
 export const computerToolDefinitions: ToolDefinition[] = [{
   name: 'computer',
-  description: 'Control the local desktop GUI with semantic UI Automation. Returns lightweight window state by default; screenshots and UIA trees require an explicit observation. Coordinates are absolute physical desktop pixels.',
+  description: 'Control the local desktop GUI. Windows get stable session ids (w1, w2) that can be used as "handle" in later calls; a title or process-name substring also works. With no handle, the active/foreground window is used. Returns compact window state; screenshots and UIA trees require an explicit observation.',
   parameters: {
     type: 'object',
     required: ['action'],
     properties: {
       action: {
         type: 'string',
-        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll', 'move', 'drag', 'open', 'wait'],
-        description: 'Action to perform on the desktop.'
+        enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'click_text', 'type', 'key', 'scroll', 'move', 'drag', 'open', 'wait', 'wait_for_window'],
+        description: 'Action to perform. windows lists session window ids; click_text clicks a visible UI label; wait_for_window waits for a new window.'
       },
       handle: {
         type: 'string',
-        description: 'Decimal or hex handle from windows, or window title.'
+        description: 'Session window id from windows (e.g. "w1"), a decimal/hex HWND, or a window title/process substring (e.g. "Notepad", "chrome"). Optional: the active window is used when omitted.'
       },
       target: {
         type: 'string',
-        description: 'UI element ID (e.g. u1, u2), button/text label (e.g. Save, Search), landmark (e.g. bottom_input_bar, bottom_send_button, left_search_box), or application/window title. Always prefer target over raw coordinates.'
+        description: 'UI element ID (e.g. u1), button/text label (e.g. Save, Search), or window title. Prefer target over coordinates.'
+      },
+      title: {
+        type: 'string',
+        description: 'For wait_for_window: window title substring to wait for.'
+      },
+      process: {
+        type: 'string',
+        description: 'For wait_for_window: process name substring to wait for (e.g. "notepad").'
+      },
+      timeout_ms: {
+        type: 'integer',
+        minimum: 500,
+        maximum: 30000,
+        description: 'For wait_for_window: maximum wait in milliseconds; defaults to 10000.'
       },
       auto_screenshot: {
         type: 'boolean',
@@ -40,7 +54,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       },
       press_enter: {
         type: 'boolean',
-        description: 'Metni yazdıktan sonra otomatik olarak Enter tuşuna bas (mesaj gönderme ve arama için).'
+        description: 'Press Enter after typing (send a message or submit a search).'
       },
       x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
       y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
@@ -51,7 +65,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
         enum: ['left', 'right', 'double', 'middle'],
         description: 'Mouse button to click (left, right, double, middle).'
       },
-      text: { type: 'string', description: 'Text to type into the foreground window.' },
+      text: { type: 'string', description: 'Text to type into the focused field, or the visible label for click_text.' },
       key: {
         type: 'string',
         description: 'Key or key combination to press (e.g. ENTER, ESC, TAB, CTRL+C, CTRL+V, ALT+F4, WIN+R).'
@@ -61,7 +75,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
   }
 }, {
   name: 'computer_batch',
-  description: 'Run up to 12 desktop steps (focus, click, type, key, scroll, wait, move) under one approval, then return one final observation. Stops at the first failed step.',
+  description: 'Run up to 12 desktop steps (focus, click, click_text, type, key, scroll, wait, move) under one approval, then return one final observation. Stops at the first failed step.',
   parameters: {
     type: 'object',
     required: ['steps'],
@@ -79,7 +93,7 @@ export const computerToolDefinitions: ToolDefinition[] = [{
         items: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['focus', 'click', 'type', 'key', 'scroll', 'wait', 'move'] },
+            action: { type: 'string', enum: ['focus', 'click', 'click_text', 'type', 'key', 'scroll', 'wait', 'move'] },
             target: { type: 'string' },
             handle: { type: 'string' },
             text: { type: 'string' },
@@ -371,9 +385,7 @@ async function handleUnixComputer(args: Record<string, unknown>, context: { work
   const platform = process.platform;
 
   if (action === 'screenshot') {
-    const dir = join(context.workspace, '.tbot', 'screenshots');
-    await mkdir(dir, { recursive: true });
-    const screenshotPath = join(dir, `screenshot-${randomUUID()}.png`);
+    const screenshotPath = await createScreenshotPath(context.workspace, 'desktop');
 
     if (platform === 'darwin') {
       await execUnix('screencapture', ['-x', screenshotPath], context.signal);
@@ -508,24 +520,122 @@ function isKillSwitchError(err: unknown): boolean {
   );
 }
 
+export const MAX_INSPECT_ELEMENTS = 80;
+
+export interface SessionWindow {
+  id: string;
+  handle: string;
+  title: string;
+  process: string;
+}
+
+// Stable session window ids: a handle keeps its id while it stays open, so the
+// model can say handle: "w1" instead of inventing decimal HWNDs.
+const sessionWindows = new Map<string, SessionWindow>();
+let nextWindowNumber = 1;
+let lastForegroundHandle: string | undefined;
+
+function ingestWindows(rawWindows: unknown): SessionWindow[] {
+  const previousByHandle = new Map<string, string>();
+  for (const [id, win] of sessionWindows) previousByHandle.set(win.handle, id);
+  const next = new Map<string, SessionWindow>();
+  if (Array.isArray(rawWindows)) {
+    for (const raw of rawWindows) {
+      if (!raw || typeof raw !== 'object') continue;
+      const record = raw as Record<string, unknown>;
+      const handle = String(record.handle ?? record.hwnd ?? '').trim();
+      if (!/^\d+$/.test(handle)) continue;
+      const title = String(record.title ?? '').trim();
+      const processName = String(record.process ?? record.processName ?? '').trim();
+      const id = previousByHandle.get(handle) ?? `w${nextWindowNumber++}`;
+      next.set(id, { id, handle, title, process: processName });
+    }
+  }
+  sessionWindows.clear();
+  for (const [id, win] of next) sessionWindows.set(id, win);
+  return [...next.values()];
+}
+
+function rememberWindow(handle: unknown, title: unknown, processName: unknown): SessionWindow | undefined {
+  const value = String(handle ?? '').trim();
+  if (!/^\d+$/.test(value) || value === '0') return undefined;
+  for (const win of sessionWindows.values()) {
+    if (win.handle === value) {
+      if (typeof title === 'string' && title.trim()) win.title = title.trim();
+      if (typeof processName === 'string' && processName.trim()) win.process = processName.trim();
+      return win;
+    }
+  }
+  const id = `w${nextWindowNumber++}`;
+  const win: SessionWindow = {
+    id,
+    handle: value,
+    title: typeof title === 'string' ? title.trim() : '',
+    process: typeof processName === 'string' ? processName.trim() : '',
+  };
+  sessionWindows.set(id, win);
+  return win;
+}
+
+function windowLabel(win: SessionWindow | undefined): string {
+  if (!win) return 'the active window';
+  const title = win.title ? ` "${win.title.slice(0, 70)}"` : '';
+  const processName = win.process ? ` [${win.process}]` : '';
+  return `${win.id}${title}${processName}`;
+}
+
+function windowListText(): string {
+  const windows = [...sessionWindows.values()];
+  if (!windows.length) return 'no visible windows';
+  return windows.map(win => windowLabel(win)).join('; ');
+}
+
+function sessionWindowList(): Array<Pick<SessionWindow, 'id' | 'handle' | 'title' | 'process'>> {
+  return [...sessionWindows.values()].map(({ id, handle, title, process: processName }) => ({
+    id, handle, title, process: processName,
+  }));
+}
+
+function foregroundWindow(): SessionWindow | undefined {
+  if (!lastForegroundHandle) return undefined;
+  for (const win of sessionWindows.values()) {
+    if (win.handle === lastForegroundHandle) return win;
+  }
+  return undefined;
+}
+
 function formatElementsSummary(elements: unknown): string {
   if (!Array.isArray(elements) || elements.length === 0) {
-    return 'Görünür etkileşimli öğe bulunamadı.';
+    return 'No visible interactive UI elements.';
   }
-  return elements.slice(0, 40).map((el: any) => {
-    const label = el.name ? ` "${el.name}"` : '';
+  return elements.slice(0, MAX_INSPECT_ELEMENTS).map((el: any) => {
+    const label = el.name ? ` "${String(el.name).slice(0, 70)}"` : '';
     return `[${el.id}] ${el.type}${label} (${el.x}, ${el.y})`;
   }).join('\n');
 }
+
+function compactElements(elements: unknown): Array<{ id: string; role: string; name: string; bounds: unknown }> {
+  if (!Array.isArray(elements)) return [];
+  return elements.slice(0, MAX_INSPECT_ELEMENTS).map((el: any) => ({
+    id: String(el.id ?? ''),
+    role: String(el.type ?? ''),
+    name: String(el.name ?? '').slice(0, 80),
+    bounds: el.rect ?? { x: el.x, y: el.y },
+  }));
+}
+
 
 /**
  * Flexible normalizer for model arguments.
  * Eliminates strict errors and accommodates all LLM variations.
  */
-function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
+export function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   action: string;
   handle?: string;
   target?: string;
+  windowTitle?: string;
+  processName?: string;
+  timeoutMs?: number;
   auto_screenshot?: boolean;
   x?: number;
   y?: number;
@@ -591,6 +701,10 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     action = 'wait';
   } else if (['get_windows', 'list_windows'].includes(rawAction)) {
     action = 'windows';
+  } else if (['click_text', 'click_by_text', 'click_label', 'click_name'].includes(rawAction)) {
+    action = 'click_text';
+  } else if (['wait_for_window', 'wait_window', 'wait_window_open'].includes(rawAction)) {
+    action = 'wait_for_window';
   } else if (['get_elements', 'ui_tree', 'elements'].includes(rawAction)) {
     action = 'inspect';
   } else if (['capture', 'screen', 'take_screenshot'].includes(rawAction)) {
@@ -646,20 +760,31 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     if (!Number.isNaN(numToY)) to_y = Math.round(numToY);
   }
 
-  // handle resolution
+  // handle resolution: a session id (w1), decimal/hex HWND or title/process
+  // substring is kept as-is; window resolution happens against the live map.
   let handle: string | undefined;
   if (rawArgs.handle !== undefined && rawArgs.handle !== null) {
     const hStr = String(rawArgs.handle).trim();
     if (/^0x[0-9a-fA-F]+$/.test(hStr)) {
       handle = String(parseInt(hStr, 16));
-    } else if (/^\d+$/.test(hStr)) {
+    } else if (hStr) {
       handle = hStr;
-    } else {
-      if (!target) {
-        target = hStr;
-      }
     }
   }
+
+  // wait_for_window targets
+  const rawWindowTitle = rawArgs.title ?? rawArgs.window_title ?? rawArgs.windowTitle ?? (action === 'wait_for_window' ? rawArgs.target : undefined);
+  const windowTitle = rawWindowTitle !== undefined && rawWindowTitle !== null
+    ? String(rawWindowTitle).trim() || undefined
+    : undefined;
+  const rawProcess = rawArgs.process ?? rawArgs.processName ?? rawArgs.process_name;
+  const processName = rawProcess !== undefined && rawProcess !== null
+    ? String(rawProcess).trim() || undefined
+    : undefined;
+  const timeoutRaw = rawArgs.timeout_ms ?? rawArgs.timeoutMs ?? rawArgs.timeout;
+  const timeoutMs = action === 'wait_for_window'
+    ? Math.min(30000, Math.max(500, Number(timeoutRaw ?? 10000) || 10000))
+    : undefined;
 
   // delta resolution
   let delta: number | undefined;
@@ -679,6 +804,9 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     action,
     handle,
     target,
+    windowTitle,
+    processName,
+    timeoutMs,
     auto_screenshot: autoScreenshot,
     x,
     y,
@@ -702,11 +830,198 @@ export async function executeComputerTool(
   return handleComputerTool(name, args, { workspace });
 }
 
+interface DesktopContext { workspace: string; signal?: AbortSignal }
+
+async function desktopCall(request: Record<string, unknown>, context: DesktopContext): Promise<Record<string, unknown>> {
+  const raw = await executeDesktopRequest(request, {
+    daemon: sendDaemonRequest, standalone: runStandalonePs, close: closeIdleDesktopDaemon,
+  }, context.signal);
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : { raw };
+  } catch {
+    return { raw };
+  }
+}
+
+async function refreshWindows(context: DesktopContext): Promise<SessionWindow[]> {
+  let data: Record<string, unknown>;
+  try {
+    data = await desktopCall({ action: 'windows' }, context);
+  } catch (error) {
+    throw new Error(`Could not list desktop windows: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (data.ok === false) {
+    throw new Error(`Could not list desktop windows: ${String(data.warning ?? data.error ?? 'desktop error')}`);
+  }
+  const windows = ingestWindows(data.windows);
+  const foreground = String(data.foreground ?? '').trim();
+  if (/^\d+$/.test(foreground) && foreground !== '0') lastForegroundHandle = foreground;
+  return windows;
+}
+
+function matchingWindows(reference: string): SessionWindow[] {
+  const needle = reference.trim().toLowerCase();
+  if (!needle) return [];
+  return [...sessionWindows.values()].filter(win =>
+    win.title.toLowerCase().includes(needle) || win.process.toLowerCase().includes(needle)
+  );
+}
+
+function chooseWindow(matches: SessionWindow[], reference: string): SessionWindow | undefined {
+  if (matches.length <= 1) return matches[0];
+  const needle = reference.trim().toLowerCase();
+  const exact = matches.filter(win =>
+    win.title.toLowerCase() === needle || win.process.toLowerCase() === needle
+  );
+  if (exact.length === 1) return exact[0];
+  const prefixed = matches.filter(win =>
+    win.title.toLowerCase().startsWith(needle) || win.process.toLowerCase().startsWith(needle)
+  );
+  if (prefixed.length === 1) return prefixed[0];
+  return undefined;
+}
+
+function unknownWindowError(reference: string): Error {
+  const windows = windowListText();
+  return new Error(
+    `Window "${reference}" is not open. Open windows: ${windows}. ` +
+    'Call computer with action "windows" to refresh, then pass a session id like "w1" or a title/process substring.'
+  );
+}
+
+/**
+ * Resolve a model-supplied window reference (session id, HWND or title/process
+ * substring) against the live session map. `undefined` means "use the active
+ * window", which needs no numeric handle at all.
+ */
+async function resolveHandle(reference: string | undefined, context: DesktopContext): Promise<{ handle?: string; window?: SessionWindow }> {
+  if (!reference || !reference.trim()) return {};
+  const value = reference.trim();
+  const idMatch = /^w\d+$/i.test(value) ? value.toLowerCase() : undefined;
+  const hexMatch = /^0x[0-9a-f]+$/i.test(value);
+  const decimal = hexMatch ? String(parseInt(value, 16)) : (/^\d+$/.test(value) ? value : undefined);
+
+  if (idMatch || decimal) {
+    const locate = (): SessionWindow | undefined => {
+      if (idMatch) return sessionWindows.get(idMatch);
+      for (const win of sessionWindows.values()) if (win.handle === decimal) return win;
+      return undefined;
+    };
+    let match = locate();
+    if (!match) {
+      await refreshWindows(context);
+      match = locate();
+    }
+    if (match) return { handle: match.handle, window: match };
+    // A literal HWND that is hidden (not in the visible list) is still valid.
+    if (decimal) return { handle: decimal };
+    throw unknownWindowError(value);
+  }
+
+  let candidates = matchingWindows(value);
+  if (!candidates.length) {
+    await refreshWindows(context);
+    candidates = matchingWindows(value);
+  }
+  if (!candidates.length) throw unknownWindowError(value);
+  const chosen = chooseWindow(candidates, value);
+  if (!chosen) {
+    throw new Error(
+      `Window reference "${value}" matches several windows: ${candidates.map(win => windowLabel(win)).join('; ')}. ` +
+      'Use the session id (e.g. handle "w1") or a longer title.'
+    );
+  }
+  return { handle: chosen.handle, window: chosen };
+}
+
+async function actionableFailure(
+  data: Record<string, unknown>,
+  action: string,
+  context: DesktopContext,
+  extra: Record<string, unknown> = {}
+): Promise<string> {
+  let windows: SessionWindow[] = [];
+  try {
+    windows = await refreshWindows(context);
+  } catch { /* keep the original failure */ }
+  const error = String(data.error ?? data.warning ?? 'Desktop action failed.');
+  const next = windows.length
+    ? 'Call action "windows" to see live ids, then retry with handle "w1" (or a title/process substring) or action "inspect" for element ids.'
+    : 'No visible windows. Call action "open" with target "notepad" (or another app) first.';
+  return JSON.stringify({
+    ok: false,
+    action,
+    error,
+    windows: sessionWindowList(),
+    ...(extra.available ? { available: extra.available } : {}),
+    next,
+  });
+}
+
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('Operation cancelled'));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('Operation cancelled'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function waitForWindow(
+  normalized: ReturnType<typeof normalizeComputerArgs>,
+  context: DesktopContext
+): Promise<string> {
+  const title = normalized.windowTitle ?? normalized.target;
+  const processName = normalized.processName;
+  if (!title && !processName) {
+    throw new Error(
+      'wait_for_window needs "title" or "process". Example: {"action":"wait_for_window","title":"Notepad","timeout_ms":10000}. ' +
+      'Call action "windows" to see what is currently open.'
+    );
+  }
+  const timeout = normalized.timeoutMs ?? 10000;
+  const started = Date.now();
+  for (;;) {
+    const windows = await refreshWindows(context);
+    const match = windows.find(win =>
+      (!title || win.title.toLowerCase().includes(title.toLowerCase())) &&
+      (!processName || win.process.toLowerCase().includes(processName.toLowerCase()))
+    );
+    if (match) {
+      lastForegroundHandle = match.handle;
+      return JSON.stringify({
+        ok: true,
+        action: 'wait_for_window',
+        waitedMs: Date.now() - started,
+        window: match,
+        windows: sessionWindowList(),
+        next: `Call another action with handle "${match.id}" (or omit handle to use the active window).`,
+      });
+    }
+    if (Date.now() - started >= timeout) {
+      throw new Error(
+        `No window matching ${title ? `title "${title}"` : ''}${title && processName ? ' and ' : ''}${processName ? `process "${processName}"` : ''} ` +
+        `appeared within ${timeout}ms. Open windows: ${windowListText()}. ` +
+        'Call action "open" to launch the app, or raise timeout_ms (max 30000).'
+      );
+    }
+    await sleepWithSignal(400, context.signal);
+  }
+}
+
+
 async function handleComputerBatch(
   args: Record<string, unknown>,
   context: { workspace: string; signal?: AbortSignal }
 ): Promise<string> {
-  const steps = validateBatchSteps(args.steps, ['focus', 'click', 'type', 'key', 'scroll', 'wait', 'move']);
+  const steps = validateBatchSteps(args.steps, ['focus', 'click', 'click_text', 'type', 'key', 'scroll', 'wait', 'move']);
   const completed: string[] = [];
   for (const [index, step] of steps.entries()) {
     context.signal?.throwIfAborted();
@@ -747,12 +1062,18 @@ export async function handleComputerTool(
   const normalized = normalizeComputerArgs(args);
 
   if (process.platform !== 'win32') {
+    if (normalized.action === 'click_text') {
+      throw new Error('click_text uses Windows UI Automation. On this platform call action "inspect" and then action "click" with x/y coordinates.');
+    }
+    if (normalized.action === 'wait_for_window') {
+      throw new Error('wait_for_window is Windows-only. Poll action "windows" instead; browser_wait_for handles web pages.');
+    }
     return await handleUnixComputer(normalized as unknown as Record<string, unknown>, context);
   }
 
   const action = normalized.action;
 
-  // Handle 'wait' directly in Node.js
+  // 'wait' is handled in Node.js; the optional visual observation follows below.
   if (action === 'wait') {
     const duration = normalized.waitDurationMs || 1000;
     await new Promise(r => setTimeout(r, duration));
@@ -761,9 +1082,23 @@ export async function handleComputerTool(
     }
   }
 
+  if (action === 'wait_for_window') return await waitForWindow(normalized, context);
+
+  let resolved = action === 'windows' || action === 'open'
+    ? {}
+    : await resolveHandle(normalized.handle, context);
+
+  // `focus` without a handle means "focus the active window". Fill the
+  // foreground handle so the result carries a real window instead of failing.
+  if (action === 'focus' && !normalized.handle) {
+    if (!sessionWindows.size) await refreshWindows(context).catch(() => []);
+    const foreground = foregroundWindow() ?? [...sessionWindows.values()][0];
+    if (foreground) resolved = { handle: foreground.handle, window: foreground };
+  }
+
   const request: Record<string, unknown> = {
     action,
-    handle: normalized.handle,
+    handle: resolved.handle,
     target: normalized.target,
     x: normalized.x,
     y: normalized.y,
@@ -776,11 +1111,10 @@ export async function handleComputerTool(
     press_enter: normalized.press_enter,
   };
 
-  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot === true)) {
+  const wantsScreenshot = action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot === true);
+  if (wantsScreenshot) {
     request.action = 'screenshot';
-    const directory = join(context.workspace, '.tbot', 'screenshots');
-    await mkdir(directory, { recursive: true });
-    request.screenshotPath = join(directory, `screenshot-${randomUUID()}.png`);
+    request.screenshotPath = await createScreenshotPath(context.workspace, 'desktop');
   }
 
   // Retry only observations: a lost action response may follow a successful click/type.
@@ -801,57 +1135,123 @@ export async function handleComputerTool(
     data = { raw: rawRes };
   }
 
-  if (data.ok === false) return JSON.stringify(data);
+  if (data.ok === false) return await actionableFailure(data, action, context);
+
+  if (action === 'windows') {
+    const windows = ingestWindows(data.windows);
+    const foregroundRaw = String(data.foreground ?? '').trim();
+    if (/^\d+$/.test(foregroundRaw) && foregroundRaw !== '0') lastForegroundHandle = foregroundRaw;
+    const foreground = foregroundWindow();
+    return JSON.stringify({
+      ok: true,
+      action: 'windows',
+      foreground: foreground?.id,
+      windows: sessionWindowList(),
+      ...(data.screen ? { screen: data.screen } : {}),
+      next: windows.length
+        ? 'Pass handle "w1" (or a title/process substring) to focus/click/type; omit handle to use the active window.'
+        : 'No visible windows. Call action "open" with target "notepad" (or another app) first.',
+    });
+  }
 
   if (action === 'inspect') {
-    const elements = (data.elements as any[]) || [];
-    const elementsSummary = formatElementsSummary(elements);
+    const win = rememberWindow(data.handle, data.windowTitle, data.processName);
+    const rawElements = Array.isArray(data.elements) ? data.elements : [];
+    const elements = compactElements(rawElements);
     return JSON.stringify({
-      ...data,
-      summary: `Active Window: "${data.windowTitle || ''}" (Handle: ${data.handle})\n\n[Etkileşimli UI Öğeleri]:\n${elementsSummary}`,
+      ok: true,
+      action: 'inspect',
+      window: win,
+      elementCount: rawElements.length,
+      elements,
+      truncated: rawElements.length > MAX_INSPECT_ELEMENTS,
+      summary: `Window ${windowLabel(win)}. Interactive elements (${rawElements.length}):\n${formatElementsSummary(rawElements)}`,
+      next: elements.length
+        ? 'Use target "u1" (element id) or click_text with the visible label in the next call.'
+        : 'No interactive elements found. Use observe "visual" for a screenshot, or target by window title/coordinates.',
     });
   }
 
-  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot === true)) {
-    const shotPath = request.screenshotPath as string;
-    const elements = (data.elements as any[]) || [];
-    const elementsSummary = formatElementsSummary(elements);
+  if (action === 'focus') {
+    const win = rememberWindow(data.handle, data.windowTitle, data.processName);
+    if (data.focused === false && normalized.handle) {
+      return JSON.stringify({
+        ok: false,
+        action: 'focus',
+        error: `Windows did not allow focus to change to ${windowLabel(win)}.`,
+        windows: sessionWindowList(),
+        next: 'Click the window first, or retry once; Windows blocks focus changes from background processes.',
+      });
+    }
     return JSON.stringify({
-      ...data,
+      ok: true,
+      action: 'focus',
+      focused: true,
+      window: win,
+      windows: sessionWindowList(),
+      next: win ? `Pass handle "${win.id}" to the next action (typing goes to the focused field).` : undefined,
+    });
+  }
+
+  if (action === 'open') {
+    if (data.attempted === false) return await actionableFailure(data, action, context);
+    const win = rememberWindow(data.handle ?? data.foreground, data.windowTitle, data.processName);
+    return JSON.stringify({
+      ok: true,
+      action: 'open',
+      target: data.target,
+      window: win,
+      windows: sessionWindowList(),
+      next: win
+        ? `Use handle "${win.id}" for focus/inspect/click_text, or action "wait_for_window" with its title.`
+        : 'Call action "windows" to see the new window id.',
+    });
+  }
+
+  if (action === 'click_text') {
+    if (data.attempted === false) {
+      return await actionableFailure(data, action, context, { available: data.available });
+    }
+    const win = rememberWindow(data.handle, data.windowTitle, data.processName);
+    return JSON.stringify({
+      ok: true,
+      action: 'click_text',
+      window: win,
+      element: data.element,
+      windows: sessionWindowList(),
+      next: 'Call action "inspect" or "windows" to verify the result.',
+    });
+  }
+
+  if (wantsScreenshot) {
+    const shotPath = request.screenshotPath as string;
+    const elements = compactElements(data.elements);
+    return JSON.stringify({
+      ok: true,
+      action: 'screenshot',
       path: shotPath,
       screenshotPath: shotPath,
-      message: `Screenshot saved: ${shotPath}\n\n[Aktif Pencere Etkileşimli Öğeleri (Set-of-Marks)]:\n${elementsSummary}`,
+      window: rememberWindow(data.handle, data.windowTitle, data.processName),
       elements,
+      message: `Screenshot saved: ${shotPath}\n\n[Active window interactive elements (Set-of-Marks)]:\n${formatElementsSummary(data.elements)}`,
     });
   }
 
-  // Otomatik Gözlem -> Eylem -> Görsel Doğrulama Döngüsü
-  const shouldAutoScreenshot = normalized.auto_screenshot === true && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move', 'drag'].includes(action);
+  // Optional visual verification after a mutation.
+  const shouldAutoScreenshot = normalized.auto_screenshot === true &&
+    ['focus', 'click', 'click_text', 'type', 'key', 'scroll', 'open', 'move', 'drag'].includes(action);
   if (shouldAutoScreenshot) {
     try {
       await new Promise(r => setTimeout(r, 220));
-
-      const directory = join(context.workspace, '.tbot', 'screenshots');
-      await mkdir(directory, { recursive: true });
-      const shotPath = join(directory, `screenshot-${randomUUID()}.png`);
-
-      const shotRaw = await executeDesktopRequest({ action: 'screenshot', screenshotPath: shotPath }, {
-        daemon: sendDaemonRequest, standalone: runStandalonePs, close: closeIdleDesktopDaemon,
-      }, context.signal);
-
-      let shotData: Record<string, unknown> = {};
-      try { shotData = JSON.parse(shotRaw); } catch {}
-
+      const shotPath = await createScreenshotPath(context.workspace, 'desktop');
+      const shotData = await desktopCall({ action: 'screenshot', screenshotPath: shotPath }, context);
       if (shotData.ok === false) throw new Error(String(shotData.warning || shotData.error || 'Desktop screenshot failed.'));
-      const elements = (shotData.elements as any[]) || [];
-      const elementsSummary = formatElementsSummary(elements);
-
       return JSON.stringify({
         ...data,
         path: shotPath,
         screenshotPath: shotPath,
-        message: `Screenshot saved: ${shotPath}\n\n[Aktif Pencere Etkileşimli Öğeleri (Set-of-Marks)]:\n${elementsSummary}`,
-        elements,
+        message: `Screenshot saved: ${shotPath}\n\n[Active window interactive elements (Set-of-Marks)]:\n${formatElementsSummary(shotData.elements)}`,
+        elements: compactElements(shotData.elements),
       });
     } catch (shotErr: any) {
       if (isKillSwitchError(shotErr)) {

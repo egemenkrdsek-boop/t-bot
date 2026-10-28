@@ -72,6 +72,11 @@ export function normalizeConfig(rawInput) {
     if (Array.isArray(input.telegramAllowedChatIds)) {
         result.telegramAllowedChatIds = input.telegramAllowedChatIds.filter((id) => typeof id === 'string');
     }
+    if (Array.isArray(input.telegramAllowedUserIds)) {
+        result.telegramAllowedUserIds = input.telegramAllowedUserIds
+            .filter((id) => typeof id === 'string' && /^\d{1,20}$/.test(id.trim()))
+            .map(id => id.trim());
+    }
     return result;
 }
 // Remove malformed or credential-bearing endpoints without ever including their values in errors.
@@ -178,7 +183,8 @@ export async function saveConfig(config) {
             efforts: config.efforts ?? {},
             ...(config.guiMode ? { guiMode: config.guiMode } : {}),
             ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
-            ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
+            ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {}),
+            ...(config.telegramAllowedUserIds ? { telegramAllowedUserIds: config.telegramAllowedUserIds } : {})
         };
         const contents = JSON.stringify(value, null, 2) + '\n';
         await writeFile(temp, contents, { mode: 0o600, flag: 'wx' });

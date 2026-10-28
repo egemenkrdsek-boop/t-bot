@@ -113,14 +113,19 @@ test('agent reports oversized indivisible input but still calls a fixture provid
   const workspace = await mkdtemp(join(tmpdir(), 'tbot-context-'));
   const events: AgentEvent[] = [];
   const request = '漢字🚀 '.repeat(9500).trimEnd();
-  let sent = '';
+  const sent: string[] = [];
   const provider: Provider = { id: 'fixture', label: 'fixture', async *stream(messages) {
-    sent = messages.findLast(message => message.role === 'user')!.content;
+    sent.push(messages.findLast(message => message.role === 'user')!.content);
     yield { type: 'text', text: 'Acknowledged.' };
   } };
   try {
     await runAgent({ message: request, history: [], workspace, provider, approve: async () => false, onEvent: event => events.push(event) }, { maxRounds: 1 });
-    assert.ok(sent === request, 'fixture provider must receive the complete indivisible user request');
+    // C4 now treats an unrecognized command as an edit contract, so the
+    // completion gate may append a correction user message on a later stream.
+    // C9 also prepends [LIVE CONTEXT] to the current user message, so the
+    // indivisible request must survive as the complete tail of that message.
+    assert.ok(sent[0]!.endsWith(request), 'fixture provider must receive the complete indivisible user request');
+    assert.ok(sent[0]!.length >= request.length);
     assert.ok(events.some(event => event.type === 'status' && event.message.includes('yumuşak optimizasyon')));
     assert.ok(!events.some(event => event.type === 'error'));
   } finally { await rm(workspace, { recursive: true, force: true }); }

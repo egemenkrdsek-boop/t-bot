@@ -1,9 +1,29 @@
 import { describeEffort } from './effort.js';
-import { sse } from './providers.js';
+import { fetchWithRetry, sse } from './providers.js';
+import { redactSecrets } from './security/redact.js';
+function outputTokenLimit(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+/**
+ * A 400 is not automatically an unsupported /v1/responses endpoint: the request
+ * itself may be invalid. Only fall back when the response clearly describes an
+ * unknown/unsupported endpoint; otherwise surface the real provider error.
+ */
+async function describeResponsesFailure(response) {
+    let raw = '';
+    try {
+        raw = (await response.text()).slice(0, 4000);
+    }
+    catch { /* body is optional */ }
+    const detail = redactSecrets(raw).replace(/\s+/g, ' ').trim().slice(0, 300);
+    const endpointPattern = /(?:invalid url|unknown (?:url|endpoint|route|path)|(?:url|endpoint|route|path)[^.]{0,80}(?:not found|unknown|unsupported|does not exist|not supported))/i;
+    return { unsupported: response.status === 404 || endpointPattern.test(detail), detail };
+}
 /** Stateless Responses API adapter for models that require it for function calls. */
 export function createOpenAIResponsesProvider(config) {
     return { id: 'openai', label: 'OpenAI', model: config.model, async *stream(messages, tools, options = {}) {
             const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]) : AbortSignal.timeout(config.timeoutMs ?? 120_000);
+            const maxOutput = outputTokenLimit(options.maxOutputTokens);
             try {
                 const input = [];
                 let pendingImages = [];
@@ -32,16 +52,38 @@ export function createOpenAIResponsesProvider(config) {
                         input.push({ role: message.role, content: message.content });
                 }
                 flushImages();
-                const effort = describeEffort('openai', config.model, options.effort ?? config.effort).effective;
-                const body = { model: config.model, input, store: false, stream: true, ...(effort ? { reasoning: { effort } } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) } : {}) };
-                let response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(body), signal, redirect: 'error' });
+                const effortFor = (model) => describeEffort('openai', model, options.effort ?? config.effort).effective;
+                const responsesBody = (model) => {
+                    const effort = effortFor(model);
+                    return { model, input, store: false, stream: true, ...(effort ? { reasoning: { effort } } : {}), ...(maxOutput ? { max_output_tokens: maxOutput } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) } : {}) };
+                };
+                const fallbackModel = (config.fallbackModel?.trim() || process.env.TBOT_FALLBACK_MODEL?.trim() || '').trim();
+                let activeModel = config.model;
+                let response = await fetchWithRetry('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(responsesBody(activeModel)), signal, redirect: 'error' }, { signal });
+                if (response.status === 402 && fallbackModel && fallbackModel !== activeModel) {
+                    await response.body?.cancel().catch(() => { });
+                    const from = activeModel;
+                    activeModel = fallbackModel;
+                    config.onFallback?.({ provider: 'openai', from, to: activeModel, status: 402 });
+                    console.warn(`[openai-responses] OpenAI: ${from} -> ${activeModel} (HTTP 402).`);
+                    response = await fetchWithRetry('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(responsesBody(activeModel)), signal, redirect: 'error' }, { signal });
+                }
                 if (response.status === 401) {
                     yield { type: 'error', code: 'authentication', error: 'OpenAI kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden API anahtarını kontrol edin.' };
                     return;
                 }
-                // /v1/responses 404 veya 400 dönerse standart /v1/chat/completions SSE akışına otomatik fallback yap
+                if (response.status === 402) {
+                    yield { type: 'error', error: `OpenAI / ${activeModel}: kredi veya kota yetersiz (HTTP 402). /model ile başka bir model seçin veya sağlayıcı hesabınızın kredisini/kotasını kontrol edin.` };
+                    return;
+                }
+                // /v1/responses 404 veya açıkça desteklenmeyen uç nokta hatasında standart
+                // /v1/chat/completions SSE akışına fallback yap. Gerçek bir 400 gizlenmez.
                 if (response.status === 404 || response.status === 400) {
-                    await response.body?.cancel();
+                    const failure = await describeResponsesFailure(response);
+                    if (!failure.unsupported) {
+                        throw new Error(`Provider request failed (HTTP ${response.status})${failure.detail ? `: ${failure.detail}` : '.'}`);
+                    }
+                    console.warn(`[openai-responses] /v1/responses kullanılamıyor (HTTP ${response.status}${failure.detail ? `: ${failure.detail}` : ''}); chat/completions fallback başlatıldı.`);
                     const chatMessages = [];
                     let pendingImages = [];
                     const flushImages = () => {
@@ -98,10 +140,11 @@ export function createOpenAIResponsesProvider(config) {
                     }
                     flushImages();
                     const chatBody = {
-                        model: config.model,
+                        model: activeModel,
                         messages: chatMessages,
                         stream: true,
                         stream_options: { include_usage: true },
+                        ...(maxOutput ? { max_completion_tokens: maxOutput } : {}),
                         ...(tools.length
                             ? {
                                 tools: tools.map((t) => ({
@@ -111,7 +154,7 @@ export function createOpenAIResponsesProvider(config) {
                             }
                             : {}),
                     };
-                    const chatRes = await fetch('https://api.openai.com/v1/chat/completions', {
+                    const chatRes = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
                         method: 'POST',
                         headers: {
                             authorization: `Bearer ${config.apiKey}`,
@@ -121,12 +164,19 @@ export function createOpenAIResponsesProvider(config) {
                         body: JSON.stringify(chatBody),
                         signal,
                         redirect: 'error',
-                    });
+                    }, { signal });
                     if (chatRes.status === 401) {
                         yield {
                             type: 'error',
                             code: 'authentication',
                             error: 'OpenAI kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden API anahtarını kontrol edin.',
+                        };
+                        return;
+                    }
+                    if (chatRes.status === 402) {
+                        yield {
+                            type: 'error',
+                            error: `OpenAI / ${activeModel}: kredi veya kota yetersiz (HTTP 402). /model ile başka bir model seçin veya sağlayıcı hesabınızın kredisini/kotasını kontrol edin.`,
                         };
                         return;
                     }
@@ -138,6 +188,7 @@ export function createOpenAIResponsesProvider(config) {
                     let chatUsage;
                     let chatFinished = false;
                     let safeToolFinish = false;
+                    let chatTruncated = false;
                     for await (const payload of sse(chatRes.body)) {
                         if (payload === '[DONE]') {
                             chatFinished = true;
@@ -151,8 +202,11 @@ export function createOpenAIResponsesProvider(config) {
                         const choice = parsed.choices?.[0];
                         if (!choice)
                             continue;
-                        if (choice.finish_reason)
+                        if (choice.finish_reason) {
                             safeToolFinish = ['stop', 'tool_calls'].includes(choice.finish_reason);
+                            if (choice.finish_reason === 'length')
+                                chatTruncated = true;
+                        }
                         const delta = choice.delta;
                         if (delta?.content && typeof delta.content === 'string') {
                             yield { type: 'text', text: delta.content };
@@ -171,6 +225,8 @@ export function createOpenAIResponsesProvider(config) {
                             }
                         }
                     }
+                    if (chatTruncated)
+                        throw new Error('Provider response was truncated at the max output token limit; it was not treated as success.');
                     if (!chatFinished || (toolCallsMap.size && !safeToolFinish))
                         throw new Error('Incomplete provider stream; tool calls discarded.');
                     const resolvedCalls = [];
@@ -214,8 +270,14 @@ export function createOpenAIResponsesProvider(config) {
                     if (!payload || payload === '[DONE]')
                         continue;
                     const event = JSON.parse(payload);
-                    if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete')
+                    if (event.type === 'error' || event.type === 'response.failed')
                         throw new Error('Provider reported a stream error.');
+                    if (event.type === 'response.incomplete') {
+                        const reason = event.response?.incomplete_details?.reason;
+                        throw new Error(reason === 'max_output_tokens'
+                            ? 'Provider response was truncated at the max output token limit; it was not treated as success.'
+                            : 'Incomplete provider stream.');
+                    }
                     if (event.type === 'response.output_text.delta' && typeof event.delta === 'string')
                         yield { type: 'text', text: event.delta };
                     if (event.type === 'response.output_item.done' && typeof event.output_index === 'number' && event.item && typeof event.item === 'object' && !Array.isArray(event.item))

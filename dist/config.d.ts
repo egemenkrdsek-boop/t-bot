@@ -9,6 +9,8 @@ export interface AppConfig {
     guiMode?: 'live' | 'headless';
     telegramBotToken?: boolean;
     telegramAllowedChatIds?: string[];
+    /** Telegram user IDs allowed to approve tool actions (especially in groups). */
+    telegramAllowedUserIds?: string[];
 }
 export type Config = AppConfig;
 export interface ResolvedProviderConfig {

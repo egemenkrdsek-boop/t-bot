@@ -94,12 +94,14 @@ test('the agent blocks a violating tool call before approval and persists the bo
     await writeFile(join(workspace, 'README.md'), 'original\n', 'utf8');
     let round = 0;
     let approvals = 0;
-    const prompts: string[] = [];
+    const systemPrompts: string[] = [];
+    const userPrompts: string[] = [];
     const provider: Provider = {
       id: 'unit',
       label: 'unit',
       async *stream(messages) {
-        prompts.push(messages[0]?.content || '');
+        systemPrompts.push(messages[0]?.content || '');
+        userPrompts.push(messages.findLast(message => message.role === 'user')?.content || '');
         if (round++ === 0) {
           yield { type: 'tool_calls', calls: [{ id: 'write-1', name: 'file_write', arguments: { path: 'README.md', content: 'changed' } }] };
         } else {
@@ -117,8 +119,11 @@ test('the agent blocks a violating tool call before approval and persists the bo
     }, { maxRounds: 2 });
     assert.equal(await readFile(join(workspace, 'README.md'), 'utf8'), 'original\n');
     assert.equal(approvals, 0);
-    assert.match(prompts[0] || '', /USER CONSTRAINTS/);
-    assert.match(prompts[0] || '', /README\.md/);
+    // C9: the volatile constraint block rides on the current user message so
+    // the system prefix stays cache-stable.
+    assert.doesNotMatch(systemPrompts[0] || '', /USER CONSTRAINTS/);
+    assert.match(userPrompts[0] || '', /USER CONSTRAINTS/);
+    assert.match(userPrompts[0] || '', /README\.md/);
     assert.ok(history.some(message => message.role === 'tool' && /constraint blocks changes/.test(message.content)));
   } finally {
     await rm(workspace, { recursive: true, force: true });

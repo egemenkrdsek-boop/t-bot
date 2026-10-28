@@ -6,10 +6,12 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, copyFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname, delimiter, isAbsolute } from 'node:path';
+import { join, dirname, delimiter, isAbsolute, relative, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveGitExecutable, handleGitTool } from '../src/tools/git.js';
+import { handleFileTool } from '../src/tools/files.js';
+import { pruneScreenshots } from '../src/tools/screenshot-store.js';
 import { handleSkillTool, loadCustomSkills, buildSkillPrompt, autoDistillSkillFromTurn } from '../src/skills.js';
 import { windowsSystemExecutable } from '../src/windows-system.js';
 import { fetchPublicText, isPrivateOrLocalHost, publicLookup, validatePublicUrl } from '../src/tools/public-network.js';
@@ -124,15 +126,36 @@ test('browser and desktop tools require approval by default before any GUI acces
   }
 });
 
-test('shell environment preserves runtime paths and omits inherited credentials', () => {
-  const env = shellEnvironment({ PATH: 'runtime-path', SystemRoot: 'windows', OPENAI_API_KEY: 'sensitive',
+test('shell environment preserves runtime paths, fronts System32 and omits inherited credentials', () => {
+  const originalPath = ['C:\\Tools\\bin', 'C:\\Windows\\System32', 'C:\\Windows\\System32\\',
+    'c:\\WINDOWS\\system32', 'C:\\Other'].join(';');
+  const env = shellEnvironment({
+    PATH: originalPath, SystemRoot: 'C:\\Windows', OPENAI_API_KEY: 'sensitive',
     TELEGRAM_BOT_TOKEN: 'sensitive', TBOT_API_KEY: 'sensitive', AWS_SECRET_ACCESS_KEY: 'sensitive',
-    CUSTOM_PASSWORD: 'sensitive', CI: 'false' });
-  // The allowlist now forwards only safe runtime variables and adds the
-  // Windows cwd-hardening flag; no inherited credential survives.
-  assert.deepEqual(env, { PATH: 'runtime-path', SystemRoot: 'windows',
-    ...(process.platform === 'win32' ? { NoDefaultCurrentDirectoryInExePath: '1' } : {}),
-    CI: 'true', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' });
+    CUSTOM_PASSWORD: 'sensitive', CI: 'false',
+  });
+
+  // No inherited credential survives; safe runtime defaults are still applied.
+  for (const key of ['OPENAI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TBOT_API_KEY', 'AWS_SECRET_ACCESS_KEY', 'CUSTOM_PASSWORD']) {
+    assert.equal(env[key], undefined, key);
+  }
+  assert.equal(env.CI, 'true');
+  assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(env.GCM_INTERACTIVE, 'never');
+  assert.equal(env.NPM_CONFIG_YES, 'true');
+
+  const pathValue = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')![1]!;
+  if (process.platform === 'win32') {
+    // System32 is authoritative first, duplicates (case/trailing-slash) removed,
+    // and every other original entry is preserved in order.
+    assert.equal(env.NoDefaultCurrentDirectoryInExePath, '1');
+    const entries = pathValue.split(';');
+    assert.equal(entries[0], 'C:\\Windows\\System32');
+    assert.deepEqual(entries.slice(1), ['C:\\Tools\\bin', 'C:\\Other']);
+    assert.equal(entries.filter(entry => /[\\/]system32[\\/]?$/i.test(entry)).length, 1);
+  } else {
+    assert.equal(pathValue, originalPath);
+  }
 });
 
 test('Windows system helper selection ignores cwd and PATH and requires an absolute OS root', () => {
@@ -269,17 +292,34 @@ test('project skill overwrite replaces a hard link without changing the outside 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('read-only Git operations use installed Git despite a planted Windows git.exe', async () => {
+test('read-only Git operations use installed Git and ignore a planted Windows git.exe', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'tbot-git-read-'));
   const run = promisify(execFile);
   try {
-    const executable = await resolveGitExecutable(dir);
+    // The product contract is: Git comes only from an absolute PATH entry
+    // outside the workspace. Without such an installation there is nothing to
+    // characterize, so skip instead of asserting a machine-specific binary.
+    let executable: string;
+    try {
+      executable = await resolveGitExecutable(dir);
+    } catch {
+      t.skip('Git is not installed outside the workspace on this machine.');
+      return;
+    }
+    assert.equal(isAbsolute(executable), true);
+    const outside = relative(dir, executable);
+    assert.ok(isAbsolute(outside) || outside === '..' || outside.startsWith(`..${sep}`),
+      `Git must resolve outside the workspace, got ${outside}`);
+
     await run(executable, ['init', dir], { windowsHide: true });
     if (process.platform === 'win32') {
-      // Trusted Node --version safely demonstrates the original cwd lookup.
-      await copyFile(process.execPath, join(dir, 'git.exe'));
-      const original = await run('git', ['--version'], { cwd: dir, windowsHide: true });
-      assert.equal(original.stdout.trim(), process.version);
+      // Planted executables inside the workspace must never be selected, even
+      // though a bare `git` lookup while cwd is the workspace would find them.
+      const planted = join(dir, 'git.exe');
+      await copyFile(process.execPath, planted);
+      assert.equal(await resolveGitExecutable(dir), executable);
+      assert.notEqual(await realpath(planted), await realpath(executable));
+      await assert.rejects(resolveGitExecutable(dir, { PATH: dir }), /outside the workspace/);
     }
     await writeFile(join(dir, 'sample.txt'), 'sample\n');
     assert.match(await handleGitTool('git_status', {}, { workspace: dir }), /sample.txt/);
@@ -293,4 +333,38 @@ test('read-only Git operations use installed Git despite a planted Windows git.e
     await assert.rejects(handleGitTool('git_status', {}, { workspace: dir, signal: controller.signal }));
     assert.equal(await realpath(executable), executable);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('file_search skips .env and .ssh and keeps credential lines as valid redacted JSON', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tbot-search-sensitive-'));
+  try {
+    await writeFile(join(dir, 'visible.ts'), 'export const SECRET_TOKEN = "visible-value";\nexport const note = "SECRET marker";\n');
+    await writeFile(join(dir, '.env'), 'SECRET_TOKEN=hidden-env-value\n');
+    await mkdir(join(dir, '.ssh'), { recursive: true });
+    await writeFile(join(dir, '.ssh', 'id_rsa'), 'SECRET hidden-key\n');
+
+    const raw = await handleFileTool('file_search', { query: 'SECRET' }, dir);
+    const parsed = JSON.parse(raw) as { matches: string[]; sensitive_skipped: number };
+    assert.ok(parsed.matches.length >= 1);
+    assert.ok(parsed.matches.some(match => /visible\.ts/.test(match)));
+    assert.ok(parsed.sensitive_skipped >= 2, `sensitive_skipped=${parsed.sensitive_skipped}`);
+    assert.match(raw, /\[REDACTED\]/);
+    assert.doesNotMatch(raw, /visible-value|hidden-env-value|hidden-key/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('screenshot pruning never follows a .tbot junction outside the workspace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tbot-prune-'));
+  const workspace = join(root, 'workspace');
+  const outside = join(root, 'outside');
+  try {
+    await mkdir(workspace);
+    await mkdir(outside);
+    const external = join(outside, 'old-screenshot.png');
+    await writeFile(external, 'outside sentinel');
+    await symlink(outside, join(workspace, '.tbot'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    assert.equal(await pruneScreenshots(workspace), 0);
+    assert.equal(await readFile(external, 'utf8'), 'outside sentinel');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

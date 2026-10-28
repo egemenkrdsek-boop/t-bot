@@ -1,8 +1,34 @@
 import { createHash } from 'node:crypto';
+import { appendFile, mkdir } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { createVercelAdapter } from './mcp-local-vercel.js';
+import { isAllowedStdioCommand, stdioCommandAllowlist } from './mcp-config.js';
+import { configDirectory } from './config.js';
+let registeredStdioApprover;
+/**
+ * Hosts (desktop/main, CLI) register their approval dialog here. A stdio MCP
+ * server is never spawned without either this callback, a per-call approver or
+ * a persisted `stdioApproved` flag the user set explicitly.
+ */
+export function registerMcpStdioApproval(approver) {
+    registeredStdioApprover = approver;
+}
+async function logMcpConnection(entry) {
+    try {
+        const directory = configDirectory();
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        // Command basename and argument count only: argv may contain tokens.
+        await appendFile(join(directory, 'mcp-connections.log'), `${JSON.stringify({
+            time: new Date().toISOString(), ...entry,
+        })}\n`, { mode: 0o600 });
+    }
+    catch {
+        // Connection logging must never block or leak into the tool result.
+    }
+}
 const TIMEOUT = 30_000;
 export function parseStdioCommand(raw) {
     const tokens = [];
@@ -22,6 +48,7 @@ export function parseStdioCommand(raw) {
 export async function connectMcp(service, token, options = {}) {
     let stdioUrl;
     let serviceName = 'mcp';
+    let stdioApproved = options.stdioApproved === true;
     if (typeof service === 'string') {
         serviceName = service;
         if (service.startsWith('stdio:')) {
@@ -36,6 +63,9 @@ export async function connectMcp(service, token, options = {}) {
             serviceName = service.name;
         if (typeof service.url === 'string' && service.url.startsWith('stdio:')) {
             stdioUrl = service.url;
+        }
+        if (typeof service.stdioApproved === 'boolean') {
+            stdioApproved = service.stdioApproved === true;
         }
     }
     if (!stdioUrl && typeof options.url === 'string' && options.url.startsWith('stdio:')) {
@@ -55,7 +85,30 @@ export async function connectMcp(service, token, options = {}) {
             const { command, args } = parseStdioCommand(stdioUrl.slice('stdio:'.length).trim());
             if (!command)
                 throw new Error('Invalid stdio MCP command.');
-            const transport = new StdioClientTransport({ command, args });
+            if (!isAllowedStdioCommand(command)) {
+                await logMcpConnection({ service: serviceName, command: basename(command) || '(empty)', argumentCount: args.length, decision: 'denied-allowlist' });
+                throw new Error(`MCP stdio command "${command}" is not allowlisted. Allowed launchers: ${stdioCommandAllowlist().join(', ')}.`);
+            }
+            const cwd = resolve(options.workspace || process.cwd());
+            const approvalRequest = { service: serviceName, command, args, cwd };
+            const approver = options.approve ?? registeredStdioApprover;
+            let approved = stdioApproved;
+            if (!approved && approver) {
+                try {
+                    approved = (await approver(approvalRequest)) === true;
+                }
+                catch {
+                    approved = false;
+                }
+            }
+            if (!approved) {
+                await logMcpConnection({ service: serviceName, command: basename(command), argumentCount: args.length, cwd, decision: 'denied-approval' });
+                throw new Error(approver
+                    ? 'MCP stdio connection was not approved by the user.'
+                    : 'MCP stdio servers require explicit user approval; automatic startup is disabled. Approve this connection in the host UI (registerMcpStdioApproval) or set stdioApproved for this service.');
+            }
+            await logMcpConnection({ service: serviceName, command: basename(command), argumentCount: args.length, cwd, decision: 'allowed' });
+            const transport = new StdioClientTransport({ command, args, cwd });
             const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(TIMEOUT)]) : AbortSignal.timeout(TIMEOUT);
             const abort = () => { void client.close(); };
             signal.addEventListener('abort', abort, { once: true });

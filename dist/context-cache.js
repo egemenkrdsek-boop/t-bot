@@ -203,8 +203,9 @@ export class ContextReadCache {
                 this.entries.delete(oldest);
         }
         const hash = createHash('sha256').update(fullContent, 'utf8').digest('hex');
-        const lines = fullContent.length === 0 ? [] : fullContent.split(/\r?\n/);
-        const totalLines = lines.length;
+        // Only the count is retained; keeping a full line array per entry doubled
+        // the cache's memory footprint without a reader.
+        const totalLines = fullContent.length === 0 ? 0 : (fullContent.match(/\r?\n/g)?.length ?? 0) + 1;
         const effStart = Math.max(1, startLine || 1);
         const effEnd = Math.max(effStart, endLine || totalLines || 1);
         const existing = this.entries.get(key);
@@ -250,7 +251,6 @@ export class ContextReadCache {
                     const savedTokens = Math.max(0, fullTokens - diffTokens);
                     if (savedTokens > 0) {
                         existing.hash = hash;
-                        existing.lines = lines;
                         existing.totalLines = totalLines;
                         existing.lastContent = fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined;
                         existing.reads = [];
@@ -268,7 +268,6 @@ export class ContextReadCache {
                 workspace: normalizeWorkspace(workspace),
                 normalizedPath: normalizeRelPath(relPath),
                 hash,
-                lines,
                 totalLines,
                 lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
                 reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],
@@ -284,7 +283,6 @@ export class ContextReadCache {
             workspace: normalizeWorkspace(workspace),
             normalizedPath: normalizeRelPath(relPath),
             hash,
-            lines,
             totalLines,
             lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
             reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],

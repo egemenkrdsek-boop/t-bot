@@ -1,5 +1,62 @@
 # Changelog
 
+## 5.0.0 "Sinyal"
+
+### Security
+
+- `file_search` now screens every result through the shared sensitive-file policy; matching files are skipped and returned content is redacted. Telegram final messages and approval payloads are redacted before delivery.
+- Screenshot storage is confined to the workspace state directory with realpath containment and UUID names; external PNG/JPG files reached through junctions/symlinks are no longer deleted or uploaded.
+- Vercel workspace packing uses the shared deny-list, shows the packed file list with digests in approval, and keeps `auto_pack` off by default.
+- Telegram tool approvals are bound to a user ID allowlist (`TELEGRAM_ALLOWED_USERS`); group approvals stay closed unless the approving user is listed. Legacy private-chat pairing still works.
+- MCP stdio connections require explicit approval, run with the workspace as cwd, and reject commands outside the configured allowlist.
+- Global memory writes require approval and are framed as untrusted context.
+- Session saves enforce a total size ceiling with an explicit error instead of writing an unreadable transcript.
+- The memory-trim helper verifies its DLL/in-memory compilation path instead of loading an unverified binary from `%APPDATA%`.
+
+### Correctness
+
+- Tool definitions are deduplicated through a single registry; `todo_manage` and `goal_manage` are no longer sent twice.
+- Tool names are canonicalized once at the start of a turn. Alias normalization after phase/constraint gates is gone, so `write_file`, `edit_file` and `bash` cannot slip past `no-write`.
+- Read-only phases reject shell write patterns, making the inspect/conversation contract actually read-only.
+- A deterministic request brief (`core/lexicon`, `core/request-brief`) classifies intent and explicit boundaries without calling a model. Ambiguity is fail-open for writes and fail-closed for security; `continue` inherits the previous contract.
+- Cancelled, aborted or failed turns leave a complete tool message for every tool call ID, so the next request keeps valid tool-result pairing.
+- Final synthesis and fallback now pass through the completion gate; an unverified result must say it was not verified.
+- Model profiles (`small`, `standard`, `reasoning`) set rounds, calls, history and parallelism. The small profile allows one call per round; `flash`-class tool-capable models are not treated as weak. `/effort` remains the override.
+- Active skill identities persist across turns, so a read-only skill keeps its constraint after "continue".
+- The system prompt is split into a byte-stable cached block and volatile context.
+- Provider requests use bounded retry/backoff with `Retry-After`, do not retry after streaming starts, allow one model switch on HTTP 402/404, and treat a `max_tokens` finish distinctly.
+- Ultracode runs an independent post-repair check or explicitly reports that the repair is unverified.
+- The full J-Space text loads only through `/jspace` or an explicit trigger; normal turns keep the compact kernel.
+
+### Tools
+
+- `computer` resolves session window ids (`w1`), titles or process names, defaults to the active window, adds `click_text`, `wait_for_window` and compact inspect, and returns actionable errors instead of demanding a raw HWND.
+- Browser calls fall back to the active tab, accept `selector`/`ref`/visible text, re-inspect once on a stale ref, and add `wait_for`, `read`, `console`, `download` and `upload`.
+- Git approvals preview the staged files and diff summary; a missing repository returns guidance instead of a bare failure.
+- `file_search` uses `git grep` in repositories with bounded Node fallback, regex time limits and full-file binary checks.
+
+### Interface
+
+- Desktop turns persist partial messages, half-written answers and tool results when a turn is aborted or the window closes; a bounded flush runs before quit.
+- The command palette no longer steals focus on every `/` keystroke, so argument-bearing commands can be typed.
+- Accent and secondary text meet AA contrast; motion stays on opacity/transform and `prefers-reduced-motion` disables it.
+- Screenshot previews use a workspace-scoped path protocol instead of accumulating base64 images in the main process.
+- Desktop visual refresh is completed in Emre's workstream; this section will be updated with the final surface changes when that slice lands.
+
+### Installation and distribution
+
+- Installers default to the `release` branch instead of `main`. Every ref is verified against `refs/remotes/origin/<ref>` (or `refs/tags/<ref>`); unverifiable refs fail closed.
+- Before a global install, the previous `t-bot-cli` package directory and bin shims are backed up. A failed install or `--version` mismatch restores them; the limits are documented in `docs/install.md`.
+- `dist/**/*.map` is excluded from the npm package and the desktop payload.
+- CI actions are pinned to immutable commit SHAs, and CI/release run `npm audit --audit-level=high` with tolerance only for registry/network unavailability.
+- `THIRD_PARTY_DEPENDENCIES.md` and the README are updated for 5.0.0.
+
+### Verification limits
+
+- Unit/component tests and static checks only; no E2E, live provider, real browser/computer or real Telegram task was run.
+- Final test, build, package and install numbers are recorded in `docs/verification.md` by the release owner; this changelog does not claim unpublished results.
+- No competitor benchmark, "world #1" or percentage-savings claim is made. Token values remain local estimates.
+
 ## 4.1.0
 
 ### Default reasoning and token discipline

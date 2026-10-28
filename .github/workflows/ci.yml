@@ -16,14 +16,31 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to immutable commit SHAs (release tags in comments).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Dependency audit (high and above)
+        shell: bash
+        run: |
+          set +e
+          output=$(npm audit --audit-level=high 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then exit 0; fi
+          # A missing registry/network must not fail unrelated builds; real
+          # advisories still fail the job.
+          if printf '%s' "$output" | grep -qiE 'ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|registry.*(unavailable|failed|error)'; then
+            echo "::warning::npm audit could not reach the registry; dependency audit skipped for this run."
+            exit 0
+          fi
+          exit "$status"
       - run: npm run typecheck
       - run: npm run check:layers
       - run: npm test
@@ -39,10 +56,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: Install exact source revision into an isolated npm prefix

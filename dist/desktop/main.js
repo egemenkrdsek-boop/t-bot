@@ -1,8 +1,9 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, globalShortcut, protocol, net } from 'electron';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { existsSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { freemem, homedir, tmpdir, totalmem } from 'node:os';
 import { randomUUID } from 'node:crypto';
 // V8 and Chromium low-RAM switches (must be appended before app.whenReady())
 app.commandLine.appendSwitch('js-flags', '--expose-gc');
@@ -11,15 +12,15 @@ app.commandLine.appendSwitch('disable-spell-checking');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
 // Core T Bot 3.0 modules
 import { runTurnMode } from '../turn-runner.js';
-import { loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, configDirectory, } from '../config.js';
+import { loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, setWorkspacePermission, configDirectory, } from '../config.js';
 import { getCustomSecret, prepareApiKey, setCustomSecret } from '../secrets.js';
 import { listProviderModels, resolveImageProviderConfig, storeProviderApiKey } from '../host-services.js';
 import { SessionStore, createSession } from '../sessions.js';
 import { getGoal, getTodos, getActiveFocusSummary, executeWorkflowTool } from '../workflows.js';
 import { BUILTIN_SKILLS, loadCustomSkills } from '../skills.js';
-import { loadConnections, getMcpToken, saveConnection, setMcpToken, removeConnection } from '../mcp-config.js';
+import { loadConnections, getMcpToken, saveConnection, setMcpToken, removeConnection, approveStdioConnection } from '../mcp-config.js';
 import { getTelegramBotStatus, startTelegramBotBridge, stopTelegramBotBridge } from '../bot.js';
-import { connectMcp } from '../mcp.js';
+import { connectMcp, registerMcpStdioApproval } from '../mcp.js';
 import { listCheckpoints, restoreCheckpoint } from '../checkpoints.js';
 import { sandboxStatus } from '../security/sandbox.js';
 import { MCP_PRESETS } from '../mcp-presets.js';
@@ -28,6 +29,7 @@ import { TOOL_TITLE_MAP, formatToolTitle } from '../theme.js';
 import { commandCatalog, commandsFor, helpFor } from '../commands.js';
 import { globalTokenTracker } from '../token-optimizer.js';
 import { recallFacts, rememberFact, forgetFact } from '../memory.js';
+import { getStatus as getGroundingStatus } from '../grounding.js';
 import { trimDesktopMemory, trimDesktopMemoryUnderPressure, getDesktopMemoryStats } from './memory-trimmer.js';
 import { registerDesktopQuitCleanup } from './quit-cleanup.js';
 import { closeBrowser } from '../tools/browser.js';
@@ -41,9 +43,159 @@ if (!gotSingleInstanceLock) {
     app.quit();
     process.exit(0);
 }
+// The renderer loads screenshots through a dedicated, read-only scheme. The
+// registration itself must happen before `app.whenReady()`.
+protocol.registerSchemesAsPrivileged([
+    {
+        scheme: 'tbot-file',
+        privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
+    },
+]);
+const SCREENSHOT_MIME = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+};
+// Workspaces the renderer is allowed to reference. Session/workspace switching
+// adds entries; the oldest entry is evicted so the set stays tiny.
+const viewableWorkspaces = new Set();
+const VIEWABLE_WORKSPACE_LIMIT = 8;
+function workspaceKey(workspace) {
+    const absolute = resolve(workspace);
+    return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+}
+function rememberWorkspace(workspace) {
+    if (!workspace)
+        return;
+    try {
+        viewableWorkspaces.add(workspaceKey(workspace));
+        if (viewableWorkspaces.size > VIEWABLE_WORKSPACE_LIMIT) {
+            const oldest = viewableWorkspaces.values().next().value;
+            if (oldest)
+                viewableWorkspaces.delete(oldest);
+        }
+    }
+    catch {
+        // An unusable path is simply not registered.
+    }
+}
+/**
+ * Resolve a requested screenshot path to a readable file inside the canonical
+ * `workspace/.tbot/screenshots` directory. Rejects unknown workspaces, lexical
+ * or canonical escapes, symbolic links and non-image files.
+ */
+export async function resolveScreenshotFile(workspace, requestedPath) {
+    if (!workspace || !requestedPath)
+        throw new Error('Screenshot path is required.');
+    if (requestedPath.length > 4096 || workspace.length > 4096)
+        throw new Error('Screenshot path is too long.');
+    const lexicalWorkspace = resolve(workspace);
+    if (!viewableWorkspaces.has(workspaceKey(lexicalWorkspace)))
+        throw new Error('Workspace is not viewable.');
+    const target = resolve(requestedPath);
+    const lexicalRelative = relative(lexicalWorkspace, target);
+    if (!lexicalRelative || lexicalRelative === '..' || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+        throw new Error('Screenshot must stay inside the workspace.');
+    }
+    const segments = lexicalRelative.split(sep);
+    if (segments.length !== 3 || segments[0].toLowerCase() !== '.tbot' || segments[1].toLowerCase() !== 'screenshots') {
+        throw new Error('Screenshot must live in .tbot/screenshots.');
+    }
+    const contentType = SCREENSHOT_MIME[extname(target).toLowerCase()];
+    if (!contentType)
+        throw new Error('Unsupported screenshot type.');
+    const info = await lstat(target);
+    if (info.isSymbolicLink() || !info.isFile())
+        throw new Error('Screenshot must be a regular file.');
+    const canonicalRoot = await realpath(lexicalWorkspace);
+    const stateDirectory = join(lexicalWorkspace, '.tbot');
+    const screenshotDirectory = join(stateDirectory, 'screenshots');
+    for (const directory of [stateDirectory, screenshotDirectory]) {
+        const directoryInfo = await lstat(directory);
+        if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()) {
+            throw new Error('Screenshot directory cannot use symbolic links or junctions.');
+        }
+    }
+    const canonicalDirectory = await realpath(screenshotDirectory);
+    const directoryRelative = relative(canonicalRoot, canonicalDirectory);
+    if (!directoryRelative || directoryRelative === '..' || directoryRelative.startsWith(`..${sep}`) || isAbsolute(directoryRelative)) {
+        throw new Error('Screenshot directory must stay inside the workspace.');
+    }
+    const canonicalTarget = await realpath(target);
+    const canonicalRelative = relative(canonicalDirectory, canonicalTarget);
+    if (!canonicalRelative || canonicalRelative === '..' || canonicalRelative.startsWith(`..${sep}`)
+        || isAbsolute(canonicalRelative) || canonicalRelative.includes(sep)) {
+        throw new Error('Screenshot must stay inside the workspace.');
+    }
+    return { path: canonicalTarget, contentType };
+}
+function registerScreenshotProtocol() {
+    protocol.handle('tbot-file', async (request) => {
+        try {
+            const url = new URL(request.url);
+            if (url.hostname !== 'shot')
+                return new Response('Not found', { status: 404 });
+            const file = await resolveScreenshotFile(url.searchParams.get('workspace') || '', url.searchParams.get('path') || '');
+            const data = await readFile(file.path);
+            return new Response(data, {
+                status: 200,
+                headers: {
+                    'content-type': file.contentType,
+                    'cache-control': 'no-store',
+                    'x-content-type-options': 'nosniff',
+                },
+            });
+        }
+        catch (error) {
+            const forbidden = error instanceof Error && /viewable/i.test(error.message);
+            return new Response(forbidden ? 'Forbidden' : 'Not found', { status: forbidden ? 403 : 404 });
+        }
+    });
+}
+/** Real-file smoke check for the screenshot protocol, used by --headless-verify. */
+async function smokeScreenshotProtocol() {
+    const root = join(tmpdir(), `tbot-protocol-smoke-${randomUUID()}`);
+    const directory = join(root, '.tbot', 'screenshots');
+    try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+        const allowedPath = join(directory, 'smoke.png');
+        const outsidePath = join(root, 'outside.png');
+        await writeFile(allowedPath, png);
+        await writeFile(outsidePath, png);
+        rememberWorkspace(root);
+        const allowed = await net.fetch(`tbot-file://shot/?workspace=${encodeURIComponent(root)}&path=${encodeURIComponent(allowedPath)}`);
+        const allowedBytes = (await allowed.arrayBuffer()).byteLength;
+        const outside = await net.fetch(`tbot-file://shot/?workspace=${encodeURIComponent(root)}&path=${encodeURIComponent(outsidePath)}`);
+        const unknownWorkspace = await net.fetch(`tbot-file://shot/?workspace=${encodeURIComponent(join(root, 'other'))}&path=${encodeURIComponent(allowedPath)}`);
+        let symlinkStatus = 'skipped';
+        try {
+            const linkPath = join(directory, 'link.png');
+            await symlink(outsidePath, linkPath, 'file');
+            const linked = await net.fetch(`tbot-file://shot/?workspace=${encodeURIComponent(root)}&path=${encodeURIComponent(linkPath)}`);
+            symlinkStatus = linked.status;
+        }
+        catch {
+            symlinkStatus = 'unavailable';
+        }
+        return {
+            allowedStatus: allowed.status,
+            allowedContentType: allowed.headers.get('content-type'),
+            allowedBytes,
+            outsideWorkspaceStatus: outside.status,
+            unregisteredWorkspaceStatus: unknownWorkspace.status,
+            symlinkEscapeStatus: symlinkStatus,
+        };
+    }
+    finally {
+        await rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
+}
 let mainWindow = null;
 let tray = null;
 let memoryInterval = null;
+let trayHintShownThisRun = false;
 const isHeadlessVerify = process.argv.includes('--headless-verify');
 let activeTurnContext = null;
 let turnInProgress = false;
@@ -64,29 +216,124 @@ async function closeDesktopMcp(connection) {
         clearTimeout(deadline);
     }
 }
+// Local stdio MCP servers spawn a child process. They are never auto-approved
+// by YOLO; the user sees the exact command and cwd. The "always" action records
+// a per-service stdio approval that is the only path to silent startup.
+const pendingStdioApprovals = new Map();
+function settleStdioApprovals(approved = false) {
+    for (const resolve of pendingStdioApprovals.values())
+        resolve(approved, false);
+    pendingStdioApprovals.clear();
+}
+async function approveMcpStdio(request) {
+    if (!mainWindow || mainWindow.isDestroyed())
+        return false;
+    const requestId = randomUUID();
+    return new Promise(resolveApproval => {
+        const timer = setTimeout(() => {
+            pendingStdioApprovals.delete(requestId);
+            resolveApproval(false);
+            try {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('agent:approval-expired', { requestId, reason: 'timeout', timeoutMs: 120_000 });
+                }
+            }
+            catch {
+                // The request has already failed closed.
+            }
+        }, 120_000);
+        pendingStdioApprovals.set(requestId, (approved, always) => {
+            clearTimeout(timer);
+            pendingStdioApprovals.delete(requestId);
+            if (approved && always) {
+                void approveStdioConnection(request.service, true).catch(() => undefined);
+            }
+            resolveApproval(approved);
+        });
+        const commandLine = [request.command, ...request.args].join(' ');
+        try {
+            mainWindow.webContents.send('agent:approval-request', {
+                requestId,
+                tool: 'mcp_stdio',
+                toolTitle: 'MCP Sunucusu (stdio)',
+                description: `${request.service} sunucusu yerel bir komut çalıştıracak.\n\nKomut: ${commandLine}\nÇalışma dizini: ${request.cwd}\n\nYalnızca güvendiğiniz sunucuları onaylayın.`,
+                arguments: { service: request.service, command: request.command, args: request.args, cwd: request.cwd },
+            });
+        }
+        catch {
+            clearTimeout(timer);
+            pendingStdioApprovals.delete(requestId);
+            resolveApproval(false);
+        }
+    });
+}
+if (typeof registerMcpStdioApproval === 'function')
+    registerMcpStdioApproval(approveMcpStdio);
 registerDesktopQuitCleanup(app, () => {
     desktopQuitting = true;
-    turnAbortController?.abort();
+    settleStdioApprovals(false);
+    // Quit already flushed pending checkpoints; cancel once and let the turn
+    // persist its partial conversation before resource cleanup finishes.
+    const turn = activeTurnContext;
+    if (!turn || !turn.abortIssued) {
+        if (turn)
+            turn.abortIssued = true;
+        turnAbortController?.abort();
+    }
     for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
         resolver(false);
     activeTurnContext?.pendingApprovals.clear();
     stopAllBackgroundProcesses();
     stopTelegramBotBridge();
+    return turn?.settled;
 }, async () => {
     await Promise.allSettled([
         Promise.resolve().then(closeBrowser),
         Promise.resolve().then(closeIdleDesktopDaemon),
         ...Array.from(activeMcpConnections, closeDesktopMcp),
     ]);
-});
+}, 5_000, () => activeTurnContext?.flush() ?? Promise.resolve(), 3_000);
 /** Installed launches start in the user's home, never an installation directory. */
 export function getDefaultWorkspace() {
     const cwd = process.cwd();
     const lowerCwd = cwd.toLowerCase();
-    if (app.isPackaged || lowerCwd.includes('appdata') || lowerCwd.includes('programs')) {
-        return homedir();
+    const workspace = app.isPackaged || lowerCwd.includes('appdata') || lowerCwd.includes('programs')
+        ? homedir()
+        : cwd;
+    rememberWorkspace(workspace);
+    return workspace;
+}
+/** The single telemetry shape sent to every renderer surface. */
+export function composeDesktopTelemetry() {
+    const stats = getDesktopMemoryStats(mainWindow || undefined);
+    const telemetry = { ...stats };
+    try {
+        if (typeof globalTokenTracker !== 'undefined' && globalTokenTracker) {
+            const report = globalTokenTracker.getReport();
+            telemetry.savingsPercent = Number(report?.savingsPercent || 0);
+            telemetry.savedTokens = Number(report?.totalSavedTokens || 0);
+        }
     }
-    return cwd;
+    catch { /* Token telemetry is best effort. */ }
+    try {
+        if (typeof getGroundingStatus === 'function') {
+            const grounding = getGroundingStatus();
+            telemetry.groundedStatus = grounding?.verified
+                ? 'Doğrulandı'
+                : (grounding?.warnings?.length ? `${grounding.warnings.length} uyarı` : 'Kanıtsız');
+            telemetry.grounding = grounding;
+        }
+    }
+    catch { /* Grounding telemetry is best effort. */ }
+    try {
+        if (typeof totalmem === 'function' && typeof freemem === 'function') {
+            const total = totalmem();
+            if (total > 0)
+                telemetry.systemUsedPercent = Math.round(((total - freemem()) / total) * 100);
+        }
+    }
+    catch { /* System memory is optional. */ }
+    return telemetry;
 }
 function getAppIconPath() {
     const candidates = [
@@ -111,12 +358,12 @@ function getAppIconPath() {
 function createMainWindow() {
     const iconPath = getAppIconPath();
     mainWindow = new BrowserWindow({
-        width: 1220,
-        height: 820,
-        minWidth: 860,
-        minHeight: 600,
+        width: 1280,
+        height: 860,
+        minWidth: 760,
+        minHeight: 560,
         frame: false,
-        backgroundColor: '#F8FAF7',
+        backgroundColor: '#0a0f0b',
         show: !isHeadlessVerify,
         icon: iconPath,
         webPreferences: {
@@ -132,10 +379,18 @@ function createMainWindow() {
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     mainWindow.webContents.on('will-navigate', event => event.preventDefault());
     mainWindow.webContents.on('render-process-gone', () => {
-        turnAbortController?.abort();
+        const turn = activeTurnContext;
+        if (turn && !turn.abortIssued) {
+            turn.abortIssued = true;
+            turnAbortController?.abort();
+        }
+        else if (!turn) {
+            turnAbortController?.abort();
+        }
         for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
             resolver(false);
         activeTurnContext?.pendingApprovals.clear();
+        settleStdioApprovals(false);
     });
     mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     const rendererPath = join(__dirname, 'renderer', 'index.html');
@@ -151,11 +406,11 @@ function createMainWindow() {
         <meta charset="UTF-8">
         <title>T Bot</title>
         <style>
-          body { margin:0; background:#F8FAF7; color:#111A14; font-family:system-ui,-apple-system,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; flex-direction:column; gap:16px; user-select:none; }
-          .spinner { width:36px; height:36px; border:3px solid #DCE6D9; border-top-color:#4D9A0F; border-radius:50%; animation:spin 0.9s linear infinite; }
+          body { margin:0; background:#0a0f0b; color:#edf5ea; font-family:system-ui,-apple-system,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; flex-direction:column; gap:16px; user-select:none; }
+          .spinner { width:36px; height:36px; border:3px solid #223126; border-top-color:#9be33d; border-radius:50%; animation:spin 0.9s linear infinite; }
           @keyframes spin { to { transform:rotate(360deg); } }
-          .title { font-weight:600; font-size:18px; color:#4D9A0F; }
-          .sub { font-size:13px; color:#6C8074; }
+          .title { font-weight:600; font-size:18px; color:#9be33d; }
+          .sub { font-size:13px; color:#93a68d; }
         </style>
       </head>
       <body>
@@ -166,10 +421,77 @@ function createMainWindow() {
       </html>
     `)}`);
     }
+    // Closing the window is a hide, not a quit: the tray keeps the agent alive.
+    // A running turn still gets a bounded chance to persist its partial messages
+    // and is cancelled before the window is hidden.
+    let closeFlushRunning = false;
+    mainWindow.on('close', event => {
+        if (desktopQuitting)
+            return;
+        const turn = activeTurnContext;
+        if (!turn) {
+            if (!tray)
+                return; // Without a tray an invisible window would be unreachable.
+            event.preventDefault();
+            hideMainWindowToTray();
+            return;
+        }
+        event.preventDefault();
+        if (closeFlushRunning)
+            return;
+        closeFlushRunning = true;
+        void (async () => {
+            let flushDeadline;
+            await Promise.race([
+                Promise.resolve().then(() => turn.flush()).catch(() => undefined),
+                new Promise(resolve => { flushDeadline = setTimeout(resolve, 3_000); }),
+            ]);
+            if (flushDeadline)
+                clearTimeout(flushDeadline);
+            if (!turn.abortIssued) {
+                turn.abortIssued = true;
+                turnAbortController?.abort();
+            }
+            for (const resolver of turn.pendingApprovals.values())
+                resolver(false);
+            turn.pendingApprovals.clear();
+            settleStdioApprovals(false);
+            let settleDeadline;
+            await Promise.race([
+                turn.settled.catch(() => undefined),
+                new Promise(resolve => { settleDeadline = setTimeout(resolve, 2_000); }),
+            ]);
+            if (settleDeadline)
+                clearTimeout(settleDeadline);
+            closeFlushRunning = false;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                if (tray)
+                    hideMainWindowToTray();
+                else
+                    mainWindow.destroy();
+            }
+        })().catch(() => {
+            closeFlushRunning = false;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                if (tray)
+                    hideMainWindowToTray();
+                else
+                    mainWindow.destroy();
+            }
+        });
+    });
     mainWindow.on('closed', () => {
-        turnAbortController?.abort();
+        const turn = activeTurnContext;
+        if (turn && !turn.abortIssued) {
+            turn.abortIssued = true;
+            turnAbortController?.abort();
+        }
+        else if (!turn) {
+            turnAbortController?.abort();
+        }
         for (const resolver of activeTurnContext?.pendingApprovals.values() || [])
             resolver(false);
+        settleStdioApprovals(false);
         mainWindow = null;
     });
     return mainWindow;
@@ -190,7 +512,7 @@ function createTray() {
         tray.setToolTip(`T Bot ${app.getVersion()} Desktop`);
         const contextMenu = Menu.buildFromTemplate([
             {
-                label: 'T Bot\'u Göster / Gizle',
+                label: 'T Bot Penceresini Göster / Gizle',
                 click: () => toggleWindowVisibility(),
             },
             {
@@ -198,14 +520,14 @@ function createTray() {
                 click: async () => {
                     await trimDesktopMemory(mainWindow || undefined, true);
                     if (mainWindow && !mainWindow.isDestroyed()) {
-                        const stats = getDesktopMemoryStats(mainWindow);
+                        const stats = composeDesktopTelemetry();
                         mainWindow.webContents.send('sys:memory-update', stats);
                     }
                 },
             },
             { type: 'separator' },
             {
-                label: 'Çıkış',
+                label: 'Çıkış (Uygulamayı Kapat)',
                 click: () => {
                     app.quit();
                 },
@@ -234,6 +556,40 @@ function toggleWindowVisibility() {
         mainWindow.focus();
     }
 }
+function markTrayHintShown() {
+    if (trayHintShownThisRun)
+        return false;
+    trayHintShownThisRun = true;
+    const marker = join(configDirectory(), 'desktop-tray-hint');
+    try {
+        if (existsSync(marker))
+            return false;
+        void writeFile(marker, '1\n', { mode: 0o600 }).catch(() => undefined);
+        return true;
+    }
+    catch {
+        return true;
+    }
+}
+/** Closing the window keeps the agent alive in the system tray. */
+function hideMainWindowToTray() {
+    if (!mainWindow || mainWindow.isDestroyed())
+        return;
+    mainWindow.hide();
+    if (!markTrayHintShown())
+        return;
+    try {
+        const notifier = tray;
+        notifier?.displayBalloon?.({
+            title: 'T Bot arka planda çalışıyor',
+            content: 'Pencereyi kapatmak uygulamayı sonlandırmaz. Tamamen çıkmak için sistem tepsisindeki menüden “Çıkış”ı seçin.',
+            iconType: 'info',
+        });
+    }
+    catch {
+        // Balloons are optional on some Windows configurations.
+    }
+}
 function registerIpcHandlers() {
     // Reject subframes and documents other than our own renderer for every handler.
     const handle = (channel, listener) => {
@@ -243,6 +599,23 @@ function registerIpcHandlers() {
             }
             return listener(event, ...args);
         });
+    };
+    // One telemetry shape for every renderer surface. The typeof guard lets
+    // isolated host harnesses transpile this function without module helpers.
+    const readTelemetry = () => {
+        if (typeof composeDesktopTelemetry === 'function')
+            return composeDesktopTelemetry();
+        return { ...getDesktopMemoryStats(mainWindow || undefined) };
+    };
+    const publishGrounding = () => {
+        if (!mainWindow || mainWindow.isDestroyed())
+            return;
+        try {
+            if (typeof getGroundingStatus !== 'function')
+                return;
+            mainWindow.webContents.send('sys:grounding', getGroundingStatus());
+        }
+        catch { /* HUD grounding is cosmetic. */ }
     };
     // Approval attention helpers: a hidden or unfocused window still needs to
     // tell the user that a tool is blocked. Fail-closed is preserved; visibility
@@ -381,12 +754,26 @@ function registerIpcHandlers() {
         });
         if (result.canceled || !result.filePaths.length)
             return null;
+        rememberWorkspace(result.filePaths[0]);
         return result.filePaths[0];
     });
-    handle('workspace:open-path', async (_event, targetPath) => {
-        if (!targetPath)
+    // Only http(s) links from the transcript are handed to the OS browser.
+    handle('shell:open-external', async (_event, targetUrl) => {
+        if (typeof targetUrl !== 'string' || !targetUrl || targetUrl.length > 2048)
             return false;
-        return (await shell.openPath(targetPath)) === '';
+        let parsed;
+        try {
+            parsed = new URL(targetUrl);
+        }
+        catch {
+            return false;
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+            return false;
+        if (parsed.username || parsed.password)
+            return false;
+        await shell.openExternal(parsed.toString());
+        return true;
     });
     handle('workspace:default', () => getDefaultWorkspace());
     // Sessions handlers
@@ -408,8 +795,8 @@ function registerIpcHandlers() {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const session = createSession(resolvedWorkspace);
         const store = new SessionStore(configDirectory());
-        await store.save(session);
-        return session;
+        const saved = await store.save(session);
+        return saved?.warning ? { ...session, warning: saved.warning } : session;
     });
     // Real conversation reset: an empty history is persisted so the next turn
     // cannot reload the previous session.messages from disk.
@@ -431,8 +818,12 @@ function registerIpcHandlers() {
         }
         session.messages = [];
         session.updatedAt = new Date().toISOString();
-        await store.save(session);
-        return { ok: true, session: { id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: [] } };
+        const saved = await store.save(session);
+        return {
+            ok: true,
+            session: { id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: [] },
+            ...(saved?.warning ? { warning: saved.warning } : {}),
+        };
     });
     // Bounded history pages keep the full transcript out of a single IPC payload.
     handle('sessions:messages', async (_event, { sessionId, workspace, offset, limit }) => {
@@ -523,7 +914,7 @@ function registerIpcHandlers() {
             hasApiKey = Boolean(resolved?.apiKey);
         }
         catch { }
-        const memoryStats = getDesktopMemoryStats(mainWindow || undefined);
+        const memoryStats = readTelemetry();
         return {
             nodeVersion: process.version,
             electronVersion: process.versions.electron,
@@ -542,7 +933,15 @@ function registerIpcHandlers() {
         };
     });
     handle('sys:mem-stats', () => {
-        return getDesktopMemoryStats(mainWindow || undefined);
+        return readTelemetry();
+    });
+    handle('sys:grounding', () => {
+        try {
+            return typeof getGroundingStatus === 'function' ? getGroundingStatus() : null;
+        }
+        catch {
+            return null;
+        }
     });
     handle('checkpoints:list', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
@@ -645,7 +1044,7 @@ function registerIpcHandlers() {
     });
     handle('sys:trim-memory', async () => {
         const result = await trimDesktopMemory(mainWindow || undefined, true);
-        const stats = getDesktopMemoryStats(mainWindow || undefined);
+        const stats = readTelemetry();
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('sys:memory-update', stats);
         }
@@ -671,6 +1070,16 @@ function registerIpcHandlers() {
     });
     // Agent turn execution & approvals
     handle('agent:approval-response', (_event, { requestId, approved, alwaysAllowSession }) => {
+        // `pendingStdioApprovals` is part of the host approval registry. The typeof
+        // guard keeps isolated host harnesses (which transpile this function alone)
+        // working without the module's registry.
+        const stdioResolver = typeof pendingStdioApprovals !== 'undefined'
+            ? pendingStdioApprovals.get(requestId)
+            : undefined;
+        if (stdioResolver) {
+            stdioResolver(approved === true, alwaysAllowSession === true);
+            return { handled: true };
+        }
         if (!activeTurnContext) {
             return { handled: false, error: 'Aktif bir çalışan tur bulunmuyor.' };
         }
@@ -702,14 +1111,39 @@ function registerIpcHandlers() {
         activeTurnContext.yolo = yolo === true;
         return { updated: true, yolo: activeTurnContext.yolo };
     });
+    // `/yolo always|ask` persists (or clears) the workspace-wide approval. This
+    // is the only renderer path that writes a workspace permission.
+    handle('agent:set-workspace-permission', async (_event, { workspace, permission } = {}) => {
+        if (permission !== 'allow' && permission !== 'ask') {
+            return { ok: false, error: 'Geçersiz izin. "allow" veya "ask" bekleniyor.' };
+        }
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        const config = await loadConfig();
+        setWorkspacePermission(config, resolvedWorkspace, permission);
+        await saveConfig(config);
+        if (activeTurnContext)
+            activeTurnContext.alwaysAllowSession = permission === 'allow';
+        return {
+            ok: true,
+            workspace: resolvedWorkspace,
+            workspacePermission: permission,
+            effectiveAuto: permission === 'allow',
+        };
+    });
     handle('agent:abort-turn', () => {
-        turnAbortController?.abort();
-        if (activeTurnContext) {
-            activeTurnContext.abortController.abort();
-            for (const [, resolver] of activeTurnContext.pendingApprovals) {
+        if (typeof settleStdioApprovals === 'function')
+            settleStdioApprovals(false);
+        const turn = activeTurnContext;
+        if (turn) {
+            if (!turn.abortIssued) {
+                turn.abortIssued = true;
+                turn.abortController.abort();
+                turnAbortController?.abort();
+            }
+            for (const [, resolver] of turn.pendingApprovals) {
                 resolver(false);
             }
-            activeTurnContext.pendingApprovals.clear();
+            turn.pendingApprovals.clear();
             clearApprovalIndicators();
             return { aborted: true };
         }
@@ -730,10 +1164,14 @@ function registerIpcHandlers() {
         turnInProgress = true;
         const abortController = new AbortController();
         turnAbortController = abortController;
+        let settleTurn;
+        const turnSettled = new Promise(resolve => { settleTurn = resolve; });
         try {
             const targetWorkspace = resolve(payload.workspace || getDefaultWorkspace());
             if (!statSync(targetWorkspace).isDirectory())
                 return { ok: false, error: 'Çalışma alanı bir klasör olmalıdır.' };
+            if (typeof rememberWorkspace === 'function')
+                rememberWorkspace(targetWorkspace);
             const store = new SessionStore(configDirectory());
             let session;
             if (payload.sessionId) {
@@ -752,6 +1190,164 @@ function registerIpcHandlers() {
             }
             if (abortController.signal.aborted)
                 return { ok: false, aborted: true, sessionId: session.id };
+            // U0: persist the user's message before provider, MCP or workspace work.
+            // A crash or a failed start must never discard a submitted turn.
+            const history = [...session.messages];
+            const draftUser = {
+                role: 'user',
+                content: payload.message,
+                ...(payload.images?.length ? { images: payload.images } : {}),
+            };
+            session.messages = [...history, draftUser];
+            let saveTarget = session;
+            let updatedMessages;
+            let checkpointsEnabled = false;
+            let checkpointTimer = null;
+            let checkpointChain = Promise.resolve();
+            let streamText = '';
+            // U0: completed tool exchanges are kept for the partial snapshot so an
+            // aborted turn persists its user message, half reply and tool results.
+            const partialTranscript = [];
+            const openToolCalls = new Map();
+            const PARTIAL_TOOL_LIMIT = 40;
+            const PARTIAL_RESULT_CHARS = 50_000;
+            const trimPartialTranscript = () => {
+                // Tool exchanges are stored as (call, result) pairs; drop pairs so the
+                // partial history never starts with an orphan tool result.
+                while (partialTranscript.length > PARTIAL_TOOL_LIMIT * 2)
+                    partialTranscript.splice(0, 2);
+            };
+            const logPersistence = (stage, error) => {
+                // Never log message content: session text may contain secrets.
+                const detail = error instanceof Error ? error.message : String(error);
+                console.error(`[desktop-turn] ${stage} persistence failed: ${detail}`);
+            };
+            const mergePersistedMessages = (disk, ours) => {
+                const key = (message) => `${message.role}\u0000${message.toolCallId || ''}\u0000${message.content}`;
+                let index = 0;
+                while (index < disk.length && index < ours.length && key(disk[index]) === key(ours[index]))
+                    index++;
+                if (index === disk.length)
+                    return ours;
+                if (index === ours.length)
+                    return disk;
+                // A divergence inside this turn is an older partial snapshot (for
+                // example a shorter streamed reply); the in-memory turn is newer.
+                if (index >= history.length)
+                    return ours;
+                return [...disk, ...ours.slice(index)];
+            };
+            // Session persistence never loses history silently: a budget-trimmed
+            // checkpoint is surfaced as a transcript notice exactly once per turn.
+            let lastSaveWarning = '';
+            const publishSaveWarning = (result) => {
+                const warning = result?.warning;
+                if (typeof warning !== 'string' || !warning.trim() || warning === lastSaveWarning)
+                    return;
+                lastSaveWarning = warning;
+                if (!mainWindow || mainWindow.isDestroyed())
+                    return;
+                try {
+                    mainWindow.webContents.send('agent:event', { type: 'warning', message: warning });
+                }
+                catch { /* The notice is best effort. */ }
+            };
+            const saveTurnMessages = async (messages, stage) => {
+                if (typeof store.save !== 'function')
+                    return false;
+                try {
+                    saveTarget.messages = messages;
+                    const result = await store.save(saveTarget);
+                    publishSaveWarning(result);
+                    return true;
+                }
+                catch (error) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    if (!/conflict/i.test(detail)) {
+                        logPersistence(stage, error);
+                        return false;
+                    }
+                    // Another writer advanced the session revision. Reload, merge this
+                    // turn's newer messages in and retry exactly once.
+                    try {
+                        const fresh = await store.get(session.id, targetWorkspace);
+                        if (!fresh) {
+                            logPersistence(stage, error);
+                            return false;
+                        }
+                        fresh.messages = mergePersistedMessages(fresh.messages, messages);
+                        const result = await store.save(fresh);
+                        publishSaveWarning(result);
+                        saveTarget = fresh;
+                        return true;
+                    }
+                    catch (retryError) {
+                        logPersistence(`${stage} (retry)`, retryError);
+                        return false;
+                    }
+                }
+            };
+            const buildPartialMessages = (base = session.messages) => {
+                const messages = [...base, ...partialTranscript];
+                if (!streamText)
+                    return messages;
+                const last = messages[messages.length - 1];
+                // The agent pushes the completed round as an assistant message; only
+                // keep a synthetic message for text still streaming at crash/abort.
+                if (last?.role === 'assistant' && last.content === streamText)
+                    return messages;
+                return [...messages, { role: 'assistant', content: streamText }];
+            };
+            const scheduleCheckpoint = () => {
+                if (!checkpointsEnabled || desktopQuitting || checkpointTimer)
+                    return;
+                // Coalesce bursts of streaming/tool events into one bounded write.
+                checkpointTimer = setTimeout(() => {
+                    checkpointTimer = null;
+                    if (!checkpointsEnabled)
+                        return;
+                    checkpointChain = checkpointChain.then(async () => {
+                        if (!checkpointsEnabled)
+                            return;
+                        await saveTurnMessages(buildPartialMessages(), 'checkpoint');
+                    }).catch(() => undefined);
+                }, 750);
+                try {
+                    checkpointTimer.unref?.();
+                }
+                catch { /* Timer cleanup is best effort. */ }
+            };
+            // One-shot flush (used by close/quit) does not stop checkpoints while
+            // the turn is still running; `stopCheckpoints` is the terminal switch.
+            const flushCheckpoints = async (stop = false) => {
+                if (stop)
+                    checkpointsEnabled = false;
+                if (checkpointTimer) {
+                    clearTimeout(checkpointTimer);
+                    checkpointTimer = null;
+                }
+                await checkpointChain.catch(() => undefined);
+                // A one-shot flush during a still-running turn leaves checkpointing
+                // enabled; re-arm when text is pending so close does not pause writes.
+                if (!stop && checkpointsEnabled && streamText)
+                    scheduleCheckpoint();
+            };
+            checkpointsEnabled = true;
+            const pendingApprovals = new Map();
+            activeTurnContext = {
+                abortController,
+                workspace: targetWorkspace,
+                sessionId: session.id,
+                session,
+                pendingApprovals,
+                alwaysAllowSession: false,
+                yolo: payload.yolo === true,
+                abortIssued: false,
+                settled: turnSettled,
+                flush: () => flushCheckpoints(false),
+            };
+            // Deliberately awaited: the draft must exist on disk before anything else can fail.
+            await saveTurnMessages(session.messages, 'draft');
             const config = await loadConfig();
             if (payload.provider && payload.provider !== config.provider) {
                 config.provider = payload.provider;
@@ -775,16 +1371,6 @@ function registerIpcHandlers() {
             }
             if (abortController.signal.aborted)
                 return { ok: false, aborted: true, sessionId: session.id };
-            const pendingApprovals = new Map();
-            activeTurnContext = {
-                abortController,
-                workspace: targetWorkspace,
-                sessionId: session.id,
-                session,
-                pendingApprovals,
-                alwaysAllowSession: false,
-                yolo: payload.yolo === true,
-            };
             const approve = async (request) => {
                 if (abortController.signal.aborted)
                     return false;
@@ -835,7 +1421,45 @@ function registerIpcHandlers() {
                     }
                 });
             };
+            const finalizeOpenToolCalls = (reason) => {
+                for (const call of openToolCalls.values()) {
+                    partialTranscript.push({ role: 'assistant', content: '', toolCalls: [{ ...call }] });
+                    partialTranscript.push({ role: 'tool', toolCallId: call.id, content: reason });
+                }
+                openToolCalls.clear();
+                trimPartialTranscript();
+            };
             const onEvent = (event) => {
+                // Partial-turn checkpoints: tool results are already final, text is
+                // buffered until the agent pushes its assistant message.
+                if (event.type === 'text') {
+                    streamText += event.text;
+                    scheduleCheckpoint();
+                }
+                else if (event.type === 'tool_start') {
+                    // Preserve text emitted before this tool, then remember the open call.
+                    if (streamText)
+                        partialTranscript.push({ role: 'assistant', content: streamText });
+                    streamText = '';
+                    openToolCalls.set(event.call.id, event.call);
+                    trimPartialTranscript();
+                }
+                else if (event.type === 'tool_end') {
+                    const call = openToolCalls.get(event.call.id) || event.call;
+                    // A completed exchange is part of the turn's durable record: the
+                    // call itself and its bounded result (never the full output).
+                    partialTranscript.push({ role: 'assistant', content: '', toolCalls: [{ ...call }] });
+                    partialTranscript.push({
+                        role: 'tool',
+                        toolCallId: call.id,
+                        content: String(event.result ?? '').slice(0, PARTIAL_RESULT_CHARS),
+                    });
+                    openToolCalls.delete(call.id);
+                    trimPartialTranscript();
+                    streamText = '';
+                    scheduleCheckpoint();
+                    publishGrounding();
+                }
                 if (!mainWindow || mainWindow.isDestroyed())
                     return;
                 let enrichedEvent = event;
@@ -874,7 +1498,6 @@ function registerIpcHandlers() {
                         onEvent({ type: 'status', message: `${service} MCP bağlantısı kurulamadı; CLI üzerinden yapılandırmayı kontrol edin.` });
                     }
                 }
-                const history = [...session.messages];
                 const imageProvider = await resolveImageProviderConfig(config);
                 const input = {
                     processOwner: `desktop:${session.id}`,
@@ -889,7 +1512,7 @@ function registerIpcHandlers() {
                     mcpTools,
                     imageProvider,
                 };
-                const updatedMessages = await runTurnMode(input, {
+                updatedMessages = await runTurnMode(input, {
                     mode: payload.mode,
                     plan: payload.plan,
                     workerProvider: provider,
@@ -897,15 +1520,19 @@ function registerIpcHandlers() {
                     workspace: targetWorkspace,
                     onEvent,
                 });
+                // Stop background checkpoint writes before the authoritative save so a
+                // stale snapshot can never land after the final conversation.
+                await flushCheckpoints(true);
                 session.messages = updatedMessages;
-                await store.save(session);
+                await saveTurnMessages(updatedMessages, 'turn');
                 const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
                 const lastAssistantText = lastAssistant?.content || '';
                 // Measure actual memory. Working-set trimming is an explicit user action.
-                const memStats = getDesktopMemoryStats(mainWindow || undefined);
+                const memStats = readTelemetry();
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('sys:memory-update', memStats);
                 }
+                publishGrounding();
                 // The full message history stays in the session store; the renderer
                 // fetches bounded pages through sessions:messages instead.
                 return {
@@ -918,6 +1545,15 @@ function registerIpcHandlers() {
             }
             catch (err) {
                 const isAborted = abortController.signal.aborted;
+                // U0: an aborted or failed turn still persists its user message,
+                // partial assistant text and completed tool results. A persistence
+                // failure is logged but never masks the real turn error.
+                await flushCheckpoints(true);
+                finalizeOpenToolCalls(isAborted ? 'Araç çalışırken tur durduruldu.' : 'Araç çalışırken tur hata ile sona erdi.');
+                const partial = updatedMessages ?? buildPartialMessages(session.messages);
+                if (partial.length > history.length) {
+                    await saveTurnMessages(partial, isAborted ? 'abort' : 'error');
+                }
                 return {
                     ok: false,
                     aborted: isAborted,
@@ -926,11 +1562,19 @@ function registerIpcHandlers() {
                 };
             }
             finally {
+                checkpointsEnabled = false;
+                if (checkpointTimer) {
+                    clearTimeout(checkpointTimer);
+                    checkpointTimer = null;
+                }
+                openToolCalls.clear();
+                partialTranscript.length = 0;
                 await Promise.allSettled(mcpTools.map(closeDesktopMcp));
                 for (const resolver of pendingApprovals.values())
                     resolver(false);
                 pendingApprovals.clear();
                 clearApprovalIndicators();
+                publishGrounding();
                 // ALWAYS emit turn_end to ensure the renderer UI never gets stuck in thinking state
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('agent:event', { type: 'turn_end' });
@@ -946,6 +1590,9 @@ function registerIpcHandlers() {
         finally {
             turnInProgress = false;
             turnAbortController = null;
+            if (activeTurnContext?.abortController === abortController)
+                activeTurnContext = null;
+            settleTurn?.();
         }
     });
 }
@@ -959,7 +1606,7 @@ function startPeriodicMemoryUpdater() {
         const stats = getDesktopMemoryStats(window);
         void trimDesktopMemoryUnderPressure(window, stats).catch(() => undefined);
         if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-            mainWindow.webContents.send('sys:memory-update', stats);
+            mainWindow.webContents.send('sys:memory-update', composeDesktopTelemetry());
         }
     }, 15_000);
 }
@@ -983,6 +1630,7 @@ app.whenReady().then(async () => {
     catch {
         // A damaged config must not prevent the desktop from opening.
     }
+    registerScreenshotProtocol();
     registerIpcHandlers();
     createMainWindow();
     if (isHeadlessVerify) {
@@ -991,6 +1639,7 @@ app.whenReady().then(async () => {
             const trimRes = await trimDesktopMemory(mainWindow || undefined, true);
             const memStatsAfter = getDesktopMemoryStats(mainWindow || undefined);
             const config = await loadConfig();
+            const screenshotProtocol = await smokeScreenshotProtocol().catch(error => ({ error: error instanceof Error ? error.message : String(error) }));
             const verifyReport = {
                 status: 'ok',
                 mode: 'headless-verify',
@@ -1007,6 +1656,7 @@ app.whenReady().then(async () => {
                 },
                 ipcHandlersRegistered: true,
                 singleInstanceLock: gotSingleInstanceLock,
+                screenshotProtocol,
                 config: {
                     provider: config.provider,
                     model: config.model,
@@ -1033,7 +1683,9 @@ app.whenReady().then(async () => {
     startPeriodicMemoryUpdater();
 });
 app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    // With a tray the window is only hidden; a real quit closes it while
+    // desktopQuitting is set. Without a tray, preserve the normal behavior.
+    if (process.platform !== 'darwin' && !tray) {
         app.quit();
     }
 });

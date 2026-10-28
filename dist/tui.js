@@ -1,11 +1,13 @@
 import { createInterface } from 'node:readline';
-import { formatDuration, formatToolTitle, renderCyberWave, renderProgressBar, symbols, theme, truncateAnsi, unicode, } from './theme.js';
+import { fitLine, formatDuration, formatToolTitle, renderCyberWave, renderProgressBar, symbols, theme, truncateAnsi, unicode, visibleLength, wrapLine, } from './theme.js';
 import { isWorkflowInvocation, COMMAND_GROUPS } from './commands.js';
 import { animateLogo, logo } from './logo.js';
+import { APP_VERSION } from './version.js';
 import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
 import { getMemoryStats } from './memory-guard.js';
 import { getTelegramBotStatus } from './bot.js';
+import { registerMcpStdioApproval } from './mcp.js';
 import { registerGuiKillSwitch } from './tools/index.js';
 export { logo };
 function renderMiniSavingsBar(percent, cells = 5) {
@@ -18,32 +20,87 @@ function renderMiniSavingsBar(percent, cells = 5) {
 /**
  * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
  * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
+ *
+ * `width` verilmezse terminal genişliği kullanılır. Sığmayan düşük öncelikli
+ * segmentler (tasarruf → bot → doğrulama) sırayla kısaltılır/atılır; model ve
+ * bellek her zaman görünür kalır.
  */
-export function renderHudBar(config) {
+export function renderHudBar(config, width = process.stdout.columns || 100) {
+    const target = Math.max(20, Math.floor(Number.isFinite(width) ? width : 100));
     const model = safe(config.model || 'Model');
     const effort = safe(config.effort || 'Normal');
     const report = globalTokenTracker.getReport();
     const savingsPct = report.savingsPercent || 0;
     const savedTokens = report.totalSavedTokens > 0 ? report.totalSavedTokens.toLocaleString() : '0';
     const miniBar = renderMiniSavingsBar(savingsPct, 5);
-    const savingsStr = `${theme.brightMint(`Tasarruf: %${savingsPct}`)} ${miniBar} ${theme.dim(`(${savedTokens} Tok)`)}`;
+    const savingsFull = `${theme.brightMint(`Tasarruf: %${savingsPct}`)} ${miniBar} ${theme.dim(`(${savedTokens} Tok)`)}`;
+    const savingsCompact = theme.brightMint(`Tasarruf: %${savingsPct}`);
     const gStatus = globalGroundingLedger.getStatus();
     const groundingStr = gStatus.warnings.length === 0
         ? theme.success('Doğrulama: Uyarı Yok')
         : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
     const mem = getMemoryStats();
     const ramStatusDot = mem.pressure === 'high' ? theme.danger('▲') : (mem.pressure === 'moderate' ? theme.amber('■') : theme.success('●'));
-    const ramStr = `${theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB`)} ${ramStatusDot} ${theme.dim(`(Sistem: %${mem.systemUsedPercent})`)}`;
+    const memoryFull = `${theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB`)} ${ramStatusDot} ${theme.dim(`(Sistem: %${mem.systemUsedPercent})`)}`;
+    const memoryCompact = `${theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB`)} ${ramStatusDot}`;
+    const memoryMin = theme.crystalCyan(`RAM: ${mem.heapUsedMB}MB`);
     const botStatus = getTelegramBotStatus();
     const botPart = botStatus.running
         ? theme.success(`Bot: ${botStatus.username ? `@${safe(botStatus.username)}` : 'Aktif'}`)
         : (config.mcpCount && config.mcpCount > 0
             ? theme.softLavender(`MCP: ${config.mcpCount}`)
             : theme.dim('Bot: Pasif'));
-    const sep = theme.dim(symbols.hudSep);
+    const effortFull = theme.amber(`Efor: ${effort}`);
+    const effortCompact = theme.amber(`Efor:${effort}`);
     const left = theme.muted(unicode ? '╭─[' : '[[');
     const right = theme.muted(unicode ? ']─╮' : ']]');
-    return `${left} ${theme.cyan(`Model: ${model}`)}${sep}${theme.amber(`Efor: ${effort}`)}${sep}${savingsStr}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${right}`;
+    const sep = theme.dim(symbols.hudSep);
+    const sepWidth = visibleLength(symbols.hudSep);
+    const frameWidth = visibleLength(unicode ? '╭─[' : '[[') + 2 + visibleLength(unicode ? ']─╮' : ']]');
+    const modelLabel = `Model: ${model}`;
+    const modelMinimum = 9; // "Model: …"
+    const levels = [
+        { savings: 2, bot: true, grounding: true, effort: 2, memory: 2 },
+        { savings: 1, bot: true, grounding: true, effort: 2, memory: 2 },
+        { savings: 0, bot: true, grounding: true, effort: 2, memory: 2 },
+        { savings: 0, bot: false, grounding: true, effort: 2, memory: 2 },
+        { savings: 0, bot: false, grounding: true, effort: 1, memory: 2 },
+        { savings: 0, bot: false, grounding: true, effort: 1, memory: 1 },
+        { savings: 0, bot: false, grounding: false, effort: 1, memory: 1 },
+        { savings: 0, bot: false, grounding: false, effort: 0, memory: 1 },
+        { savings: 0, bot: false, grounding: false, effort: 0, memory: 0 },
+    ];
+    for (const level of levels) {
+        const parts = [];
+        if (level.effort === 2)
+            parts.push(effortFull);
+        else if (level.effort === 1)
+            parts.push(effortCompact);
+        if (level.savings === 2)
+            parts.push(savingsFull);
+        else if (level.savings === 1)
+            parts.push(savingsCompact);
+        if (level.grounding)
+            parts.push(groundingStr);
+        parts.push(level.memory === 2 ? memoryFull : level.memory === 1 ? memoryCompact : memoryMin);
+        if (level.bot)
+            parts.push(botPart);
+        const fixedWidth = parts.reduce((sum, part) => sum + visibleLength(part), 0);
+        const modelWidth = target - frameWidth - fixedWidth - parts.length * sepWidth;
+        if (modelWidth < modelMinimum)
+            continue;
+        const modelSegment = truncateAnsi(theme.cyan(modelLabel), modelWidth);
+        const line = `${left} ${modelSegment}${sep}${parts.join(sep)} ${right}`;
+        if (visibleLength(line) <= target)
+            return line;
+    }
+    // Son çare: çerçeveyi koru, modeli ve belleği kısaltarak taşmayı engelle.
+    const narrowedModel = truncateAnsi(theme.cyan(modelLabel), Math.max(7, Math.floor(target / 2)));
+    return truncateAnsi(`${left} ${narrowedModel}${sep}${memoryMin} ${right}`, target);
+}
+/** Terminal width with a sane floor; never trusts a zero/undefined column count. */
+function terminalColumns() {
+    return Math.max(20, Math.floor(process.stdout.columns || 80));
 }
 function extractToolTarget(args) {
     if (!args)
@@ -219,6 +276,35 @@ export function createEventPrinter(options) {
     let cursorHidden = false;
     let toolStartTime = 0;
     let stepCount = 0;
+    // Block boundaries: separate consecutive assistant/tool blocks with one blank line.
+    let blockOpen = false;
+    let freshBlock = true;
+    const beginBlock = () => {
+        if (blockOpen) {
+            // Close an unterminated block before opening the next one.
+            write('\n');
+            blockOpen = false;
+        }
+        if (!freshBlock) {
+            // Every closed block already ends with a newline; one more gives a blank separator.
+            write('\n');
+        }
+        freshBlock = false;
+        blockOpen = true;
+    };
+    const endBlock = () => {
+        blockOpen = false;
+        freshBlock = false;
+    };
+    /** Truncate a single-line status/tool row to the terminal width. */
+    const writeFitted = (text) => {
+        write(`${fitLine(text, terminalColumns())}\n`);
+    };
+    /** Wrap a status row instead of letting it run past the terminal edge. */
+    const writeWrapped = (text, indent = '  ') => {
+        const parts = wrapLine(text, terminalColumns());
+        write(`${parts.map((part, index) => (index === 0 ? part : `${indent}${part}`)).join('\n')}\n`);
+    };
     const renderSpinnerLine = () => {
         const elapsed = formatDuration(Date.now() - thinkingStartedAt);
         const stepPrefix = stepCount > 0 ? `${theme.softLavender(`[Adım ${stepCount}]`)} ` : '';
@@ -251,13 +337,20 @@ export function createEventPrinter(options) {
             process.stdout.write(`\x1b[?2026h\r\x1b[2K${line}\x1b[?2026l`);
         }
     };
+    /** Re-render the live spinner line after SIGWINCH so it uses the new width. */
+    const redraw = () => {
+        if (!options.interactive || !spinnerTimer)
+            return;
+        process.stdout.write(`\x1b[?2026h\r\x1b[2K${renderSpinnerLine()}\x1b[?2026l`);
+    };
     const printPermanentLine = (text) => {
+        const fitted = wrapLine(text, terminalColumns()).join('\n');
         if (options.interactive && spinnerTimer) {
             const currentSpinner = renderSpinnerLine();
-            process.stdout.write(`\x1b[?2026h\r\x1b[2K${text}\n${currentSpinner}\x1b[?2026l`);
+            process.stdout.write(`\x1b[?2026h\r\x1b[2K${fitted}\n${currentSpinner}\x1b[?2026l`);
         }
         else {
-            write(`${text}\n`);
+            write(`${fitted}\n`);
         }
     };
     const startThinking = (label = 'Düşünülüyor…') => {
@@ -329,8 +422,10 @@ export function createEventPrinter(options) {
             inCodeBlock = false;
             write('\n\n');
             streaming = false;
+            blockOpen = false;
+            freshBlock = true;
             // Tekilleştirilmiş zarif Cyber-HUD çubuğu (mükerrer footer kaldırıldı)
-            write(`  ${renderHudBar(options.getHudConfig())}\n\n`);
+            write(`  ${renderHudBar(options.getHudConfig(), terminalColumns())}\n\n`);
         }
     };
     const emit = (event) => {
@@ -338,7 +433,8 @@ export function createEventPrinter(options) {
             case 'text':
                 stopThinking();
                 if (!streaming) {
-                    write(`\n${theme.brightMint(symbols.prompt)} ${theme.iceWhite('T Bot')}\n\n`);
+                    beginBlock();
+                    write(`${theme.brightMint(symbols.prompt)} ${theme.iceWhite('T Bot')}\n\n`);
                     streaming = true;
                 }
                 lineBuffer += safe(event.text);
@@ -357,7 +453,8 @@ export function createEventPrinter(options) {
                 const toolTitle = safe(formatToolTitle(event.call.name));
                 const targetInfo = safe(extractToolTarget(event.call.arguments));
                 const targetSuffix = targetInfo ? ` ${theme.dim('›')} ${theme.crystalCyan(targetInfo)}` : '';
-                write(`\n  ${theme.muted('╭─')} ${theme.brightMint('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}\n`);
+                beginBlock();
+                writeFitted(`  ${theme.muted('╭─')} ${theme.brightMint('◈')} ${theme.bold('Araç Çalıştırılıyor')} ${theme.dim('·')} ${theme.text(toolTitle)}${targetSuffix}`);
                 startThinking(`${toolTitle} Çalıştırılıyor`);
                 break;
             }
@@ -369,13 +466,14 @@ export function createEventPrinter(options) {
                 const { isError, astBadge } = result;
                 const summary = safe(result.summary);
                 if (isError) {
-                    write(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}\n`);
+                    writeFitted(`  ${theme.muted('╰─')} ${theme.danger(symbols.cross)} ${theme.danger(`${toolTitle} Başarısız Oldu`)} ${theme.dim(`(${elapsed})`)} ${theme.dim('·')} ${theme.error(summary)}`);
                 }
                 else {
                     const badgePart = astBadge ? ` ${theme.dim('·')} ${astBadge}` : '';
                     const summaryStr = summary ? ` ${theme.dim('·')} ${theme.muted(summary)}` : '';
-                    write(`  ${theme.muted('╰─')} ${theme.success(symbols.check)} ${theme.text(`${toolTitle} Tamamlandı`)} ${theme.dim(`(${elapsed})`)}${badgePart}${summaryStr}\n`);
+                    writeFitted(`  ${theme.muted('╰─')} ${theme.success(symbols.check)} ${theme.text(`${toolTitle} Tamamlandı`)} ${theme.dim(`(${elapsed})`)}${badgePart}${summaryStr}`);
                 }
+                endBlock();
                 startThinking('Yanıt Hazırlanıyor…');
                 break;
             }
@@ -425,10 +523,10 @@ export function createEventPrinter(options) {
                 else {
                     const isWorkflowStatus = /Ultracode|Aşama|Adım|Hedef|Plan|MCP|Alt Ajan/i.test(msg);
                     if (isWorkflowStatus) {
-                        write(`  ├─ ${theme.badge('◈ AKIŞ')} ${theme.text(msg)}\n`);
+                        writeWrapped(`  ├─ ${theme.badge('◈ AKIŞ')} ${theme.text(msg)}`);
                     }
                     else {
-                        write(`${theme.muted(msg)}\n`);
+                        writeWrapped(theme.muted(msg), '');
                     }
                 }
                 break;
@@ -436,20 +534,24 @@ export function createEventPrinter(options) {
             case 'error':
                 stopThinking();
                 finishStream();
-                write(`${theme.error(`Hata: ${safe(event.error)}`)}\n`);
+                beginBlock();
+                writeWrapped(theme.error(`Hata: ${safe(event.error)}`), '');
+                endBlock();
                 break;
             case 'usage':
                 // globalTokenTracker.recordTurn src/agent.ts içinde kaydediliyor. Çift sayımı önlemek için burada çağırmıyoruz.
                 break;
         }
     };
-    return { emit, finishStream, startThinking, stopThinking, stopSpinner, isThinking };
+    return { emit, finishStream, startThinking, stopThinking, stopSpinner, isThinking, redraw };
 }
 /** Print the shared CLI command catalog with terminal styling. */
-export function printHelp() {
-    const rule = symbols.rule.repeat(72);
+export function printHelp(width = process.stdout.columns || 80) {
+    const cols = Math.max(40, Math.floor(Number.isFinite(width) ? width : 80));
+    const rule = symbols.rule.repeat(Math.max(10, cols));
     const title = `${theme.brightMint('T Bot')} ${theme.muted('─ Terminal Komutları')}`;
-    let out = `\n${title}\n${theme.dim(rule)}\n`;
+    const compact = cols < 64;
+    let out = `\n${fitLine(title, cols)}\n${theme.dim(rule)}\n`;
     for (const group of COMMAND_GROUPS) {
         const commands = group.commands.filter(command => command.surfaces.includes('cli'));
         if (!commands.length)
@@ -457,10 +559,26 @@ export function printHelp() {
         out += `\n  ${theme.brightMint(group.name)}\n`;
         for (const command of commands) {
             const aliases = command.aliases?.length ? `  (${command.aliases.join(', ')})` : '';
-            out += `    ${theme.crystalCyan(command.usage.padEnd(34))} ${theme.text(command.description)}${theme.dim(aliases)}\n`;
+            if (compact) {
+                out += `    ${fitLine(theme.crystalCyan(command.usage), cols - 4)}${theme.dim(aliases)}\n`;
+                for (const line of wrapLine(theme.text(command.description), Math.max(10, cols - 6))) {
+                    out += `      ${line}\n`;
+                }
+            }
+            else {
+                const usageWidth = Math.min(34, Math.max(18, Math.floor(cols * 0.38)));
+                const descriptionWidth = Math.max(10, cols - 4 - usageWidth - 1);
+                const wrapped = wrapLine(theme.text(`${command.description}${aliases}`), descriptionWidth);
+                out += `    ${theme.crystalCyan(fitLine(command.usage, usageWidth).padEnd(usageWidth))} ${wrapped[0] ?? ''}\n`;
+                for (const line of wrapped.slice(1))
+                    out += `    ${' '.repeat(usageWidth)} ${line}\n`;
+            }
         }
     }
-    out += `\n${theme.dim('  Not: Çok satırlı girdiler için satır sonuna \\ koyarak devam edebilirsiniz.')}\n${theme.dim(rule)}\n\n`;
+    for (const line of wrapLine(theme.dim('  Not: Çok satırlı girdiler için satır sonuna \\ koyarak devam edebilirsiniz.'), cols)) {
+        out += `${line}\n`;
+    }
+    out += `${theme.dim(rule)}\n\n`;
     process.stdout.write(out);
 }
 export async function startTui(options) {
@@ -522,21 +640,59 @@ export async function startTui(options) {
     if (interactive && process.stdin.isTTY) {
         process.stdin.on('data', onKeyData);
     }
+    /** SIGWINCH: refresh the live spinner and reprint the HUD at the new width. */
+    const onResize = () => {
+        if (!interactive)
+            return;
+        eventPrinter.redraw();
+        if (!waiting && !eventPrinter.isThinking()) {
+            write(`\n  ${renderHudBar(getHudContext(), terminalColumns())}\n`);
+        }
+    };
+    if (interactive)
+        process.stdout.on('resize', onResize);
+    const PASTE_START = '\x1b[200~';
+    const PASTE_END = '\x1b[201~';
+    let pasteBuffer = null;
+    const deliverLine = (line) => {
+        if (waiting) {
+            const resolve = waiting;
+            waiting = undefined;
+            resolve(line);
+            return;
+        }
+        // Spinner dönerken kullanıcı yanlışlıkla Enter'a basarsa boş satırların lines kuyruğunda birikip sonraki turda kendi kendine mesaj göndermesini önle
+        if (eventPrinter.isThinking() && !line.trim())
+            return;
+        lines.push(line);
+    };
+    /**
+     * Bracketed paste keeps multi-line clipboard content inside one turn.
+     * The terminal wraps the block in \x1b[200~ … \x1b[201~; readline still emits
+     * one `line` event per newline, so buffer until the closing marker arrives.
+     */
+    const handleLineInput = (rawLine) => {
+        if (pasteBuffer) {
+            pasteBuffer.push(rawLine);
+            if (rawLine.includes(PASTE_END)) {
+                const joined = pasteBuffer.join('\n').replaceAll(PASTE_START, '').replaceAll(PASTE_END, '');
+                pasteBuffer = null;
+                deliverLine(joined);
+            }
+            return;
+        }
+        if (rawLine.includes(PASTE_START)) {
+            const opened = rawLine.replaceAll(PASTE_START, '');
+            if (opened.includes(PASTE_END))
+                deliverLine(opened.replaceAll(PASTE_END, ''));
+            else
+                pasteBuffer = [opened];
+            return;
+        }
+        deliverLine(rawLine.includes(PASTE_END) ? rawLine.replaceAll(PASTE_END, '') : rawLine);
+    };
     const attach = () => {
-        rl.on('line', line => {
-            if (waiting) {
-                const resolve = waiting;
-                waiting = undefined;
-                resolve(line);
-            }
-            else {
-                // Spinner dönerken kullanıcı yanlışlıkla Enter'a basarsa boş satırların lines kuyruğunda birikip sonraki turda kendi kendine mesaj göndermesini önle
-                if (eventPrinter.isThinking() && !line.trim()) {
-                    return;
-                }
-                lines.push(line);
-            }
-        });
+        rl.on('line', handleLineInput);
         rl.on('close', () => {
             closed = true;
             if (!isSuspended)
@@ -581,15 +737,63 @@ export async function startTui(options) {
         lines.length = 0;
         eventPrinter.stopThinking();
         eventPrinter.finishStream();
-        write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n${safe(request.description)}\n`);
-        write(`${theme.muted(safe(JSON.stringify(request.arguments, null, 2)))}\n`);
+        const cols = terminalColumns();
+        write(`\n${theme.warning('Onay Gerekli:')} ${theme.bold(safe(request.tool))}\n`);
+        for (const line of wrapLine(theme.text(safe(request.description)), Math.max(10, cols - 2))) {
+            write(`  ${line}\n`);
+        }
+        // Page the arguments so a large file_write does not flood the scrollback.
+        const PAGE_SIZE = 20;
+        const MAX_ARG_LINES = 120;
+        const display = [];
+        let truncatedArgs = false;
+        for (const raw of safe(JSON.stringify(request.arguments ?? {}, null, 2)).split('\n')) {
+            const wrapped = wrapLine(raw, Math.max(10, cols - 4));
+            if (display.length + wrapped.length > MAX_ARG_LINES) {
+                truncatedArgs = true;
+                break;
+            }
+            for (const part of wrapped)
+                display.push(`  ${theme.muted(part)}`);
+        }
         if (!interactive || controller?.signal.aborted) {
+            write(`${display.slice(0, PAGE_SIZE).join('\n')}\n`);
+            const hidden = display.length - PAGE_SIZE + (truncatedArgs ? 1 : 0);
+            if (hidden > 0)
+                write(`${theme.dim(`… ${hidden} satır daha (sayfalanmadı)`)}\n`);
             write(`${theme.muted('Reddedildi (Etkileşimli Onay Gerekli).')}\n`);
             return false;
         }
+        for (let offset = 0; offset < display.length; offset += PAGE_SIZE) {
+            const page = display.slice(offset, offset + PAGE_SIZE);
+            write(`${page.join('\n')}\n`);
+            const remaining = display.length - offset - PAGE_SIZE;
+            if (remaining > 0) {
+                const prompt = `${theme.dim(`… ${remaining} satır daha · Enter devam / q iptal`)} `;
+                const answer = await read(prompt);
+                if (answer === undefined || /^q$/i.test(answer.trim())) {
+                    write(`${theme.muted('Onay iptal edildi.')}\n`);
+                    return false;
+                }
+            }
+        }
+        if (truncatedArgs)
+            write(`${theme.dim(`… argüman çıktısı ${MAX_ARG_LINES} satırda kısaltıldı`)}\n`);
         const answer = await read(`${theme.warning('İzin Verilsin mi?')} [E/H] `);
         return !controller?.signal.aborted && /^(e|evet|y|yes)$/i.test((answer ?? '').trim());
     };
+    // S6: the shared MCP layer asks this TUI before spawning any local stdio server.
+    registerMcpStdioApproval(request => approve({
+        tool: `mcp_stdio:${request.service}`,
+        description: [
+            'Yerel MCP stdio sunucusu başlatmak isteniyor.',
+            `Sunucu: ${request.service}`,
+            `Komut: ${[request.command, ...request.args].join(' ')}`,
+            `Dizin: ${request.cwd}`,
+            'Onay verilmezse bağlantı kurulmaz.',
+        ].join('\n'),
+        arguments: { command: request.command, args: request.args, cwd: request.cwd },
+    }));
     const suspendUi = async (action) => {
         isSuspended = true;
         eventPrinter.stopThinking();
@@ -602,6 +806,8 @@ export async function startTui(options) {
             }
         }
         rl.close();
+        if (interactive)
+            write('\x1b[?2004l');
         try {
             return await action();
         }
@@ -610,27 +816,31 @@ export async function startTui(options) {
             closed = false;
             rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
             attach();
+            if (interactive)
+                write('\x1b[?2004h');
         }
     };
     try {
         if (interactive) {
             const width = Math.max(24, Math.min(process.stdout.columns || 80, 84));
+            const cols = terminalColumns();
             await animateLogo(width, () => exiting, 55);
             const rule = symbols.rule.repeat(Math.max(20, width - 4));
-            write(`\n  ${theme.brand('T BOT')} ${theme.muted('3.0')}  ${theme.dim(symbols.bullet)}  ${theme.muted('Yerel Ajan')}\n`);
+            write(`\n  ${theme.brand('T BOT')} ${theme.muted(APP_VERSION)}  ${theme.dim(symbols.bullet)}  ${theme.muted('Yerel Ajan')}\n`);
             write(`  ${theme.dim(rule)}\n`);
-            write(`  ${theme.muted('Çalışma Alanı')}  ${theme.iceWhite(safe(options.workspace))}\n`);
-            write(`  ${theme.muted('Model')}  ${theme.brightMint(safe(options.provider.label))} / ${theme.iceWhite(safe(options.model))}  ${theme.dim(symbols.bullet)}  ${yolo ? theme.warning('YOLO') : theme.muted('Onaylı')}\n`);
+            write(`${fitLine(`  ${theme.muted('Çalışma Alanı')}  ${theme.iceWhite(safe(options.workspace))}`, cols)}\n`);
+            write(`${fitLine(`  ${theme.muted('Model')}  ${theme.brightMint(safe(options.provider.label))} / ${theme.iceWhite(safe(options.model))}  ${theme.dim(symbols.bullet)}  ${yolo ? theme.warning('YOLO') : theme.muted('Onaylı')}`, cols)}\n`);
             if (options.modeStatus)
-                write(`  ${theme.muted('Mod')}  ${theme.muted(safe(options.modeStatus()))}\n`);
+                write(`${fitLine(`  ${theme.muted('Mod')}  ${theme.muted(safe(options.modeStatus()))}`, cols)}\n`);
             write(`  ${theme.dim(rule)}\n`);
-            write(`  ${theme.muted('/plan Plan')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/ultracode Ultra')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/help Komutlar')}  ${theme.dim(symbols.bullet)}  ${theme.muted('Ctrl+C İptal')}\n\n`);
+            write(`${fitLine(`  ${theme.muted('/plan Plan')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/ultracode Ultra')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/help Komutlar')}  ${theme.dim(symbols.bullet)}  ${theme.muted('Ctrl+C İptal')}`, cols)}\n\n`);
+            write('\x1b[?2004h');
         }
         while (!exiting) {
             if (interactive) {
                 const width = Math.max(24, Math.min(process.stdout.columns || 80, 84));
                 write(`\n  ${theme.dim(symbols.rule.repeat(Math.max(20, width - 4)))}\n`);
-                write(`  ${renderHudBar(getHudContext())}\n`);
+                write(`  ${renderHudBar(getHudContext(), terminalColumns())}\n`);
             }
             const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
             const promptStr = interactive
@@ -661,7 +871,7 @@ export async function startTui(options) {
                     continue;
                 }
                 if (command === '/status') {
-                    write(`\n  ${renderHudBar(getHudContext())}\n\n`);
+                    write(`\n  ${renderHudBar(getHudContext(), terminalColumns())}\n\n`);
                     continue;
                 }
                 if (command === '/clear') {
@@ -730,10 +940,13 @@ export async function startTui(options) {
         if (interactive && process.stdin.isTTY) {
             process.stdin.off('data', onKeyData);
         }
+        if (interactive)
+            process.stdout.off('resize', onResize);
+        registerMcpStdioApproval(undefined);
         registerGuiKillSwitch(null);
         eventPrinter.stopThinking();
         if (interactive) {
-            process.stdout.write('\x1b[?25h');
+            process.stdout.write('\x1b[?2004l\x1b[?25h');
         }
         rl.close();
     }

@@ -45,7 +45,32 @@ const POWERSHELL_SYNTAX_REGEX = /(?:\b(?:Get-|Set-|New-|Remove-|Invoke-|Select-|
 /** Avoid implicitly giving model-launched programs provider and bridge secrets.
  * This is defense in depth; commands still run with the user's OS permissions. */
 export function shellEnvironment(source = process.env) {
-    return childEnvironment({}, source);
+    const env = childEnvironment({}, source);
+    if (process.platform !== 'win32')
+        return env;
+    // cmd.exe resolves `timeout`, `where`, `find`, `sort` and friends relative to
+    // PATH. Git/MSYS ships same-named POSIX tools; putting System32 first keeps
+    // Windows built-ins authoritative while preserving the rest of the PATH.
+    const root = source.SystemRoot || source.SYSTEMROOT || env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
+    if (!/^(?:[a-z]:[\\/]|\\\\)/i.test(root))
+        throw new Error('Windows SystemRoot must be an absolute path.');
+    const system32 = join(root, 'System32');
+    const system32Key = system32.replace(/[\\/]+$/u, '').toLowerCase();
+    const pathName = Object.keys(env).find(name => name.toUpperCase() === 'PATH') ?? 'PATH';
+    const seen = new Set();
+    const entries = [];
+    for (const raw of (env[pathName] ?? '').split(';')) {
+        const value = raw.trim();
+        if (!value)
+            continue;
+        const key = value.replace(/[\\/]+$/u, '').toLowerCase();
+        if (key === system32Key || seen.has(key))
+            continue;
+        seen.add(key);
+        entries.push(value);
+    }
+    env[pathName] = [system32, ...entries].join(';');
+    return env;
 }
 /** Resolve an absolute cmd.exe. Never search the untrusted launch directory or PATH. */
 function resolveCommandInterpreter(env) {
@@ -444,7 +469,10 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
     // Synchronous execution mode
     const timeout = typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms) ? Math.min(120000, Math.max(1000, args.timeout_ms)) : 30000;
     return new Promise((resolve, reject) => {
-        const child = spawnCommand(args.command, { cwd: workspace, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+        // Detached on Windows gives the hidden child its own console. Native
+        // `timeout.exe` (and other console-aware built-ins) refuse redirected stdin,
+        // so without this they fail even when System32 is first on PATH.
+        const child = spawnCommand(args.command, { cwd: workspace, windowsHide: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         let truncated = false;
         let settled = false;

@@ -8,6 +8,21 @@ export const toolTokenCache = new WeakMap();
 const minifiedToolCache = new WeakMap();
 export const compressedToolOutputCache = new WeakMap();
 /**
+ * The LRU key is a 64-bit FNV-style fingerprint plus the length, not the text
+ * itself. Keeping full strings as Map keys retained megabytes of duplicated
+ * source/evidence in the heap.
+ */
+function tokenCacheKey(text) {
+    let h1 = 0x811c9dc5;
+    let h2 = 0x01000193;
+    for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ code, 0x01000193);
+        h2 = Math.imul(h2 + code, 0x85ebca6b);
+    }
+    return `${(h1 >>> 0).toString(36)}.${(h2 >>> 0).toString(36)}.${text.length.toString(36)}`;
+}
+/**
  * Fast, dependency-free BPE token estimator with 600-entry LRU memoization and charCodeAt fast-paths.
  * Mimics modern LLM tokenizers (cl100k_base / o200k / Llama / Claude).
  */

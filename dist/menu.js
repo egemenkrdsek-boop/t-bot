@@ -1,4 +1,4 @@
-import { theme, unicode } from './theme.js';
+import { fitLine, theme, unicode, wrapLine } from './theme.js';
 import { StringDecoder } from 'node:string_decoder';
 /** Select a fixed choice with arrow keys. Returns undefined when cancelled or not a TTY. */
 export async function selectOption(title, choices) {
@@ -10,21 +10,59 @@ export async function selectOption(title, choices) {
     const borderChar = unicode ? '│' : '|';
     const arrowChar = unicode ? '❯' : '>';
     const draw = () => {
-        const safeRendered = Math.min(rendered, Math.max(1, (process.stdout.rows || 24) - 2));
+        const cols = Math.max(20, Math.floor(process.stdout.columns || 80));
+        const rows = Math.max(6, Math.floor(process.stdout.rows || 24));
+        const safeRendered = Math.min(rendered, Math.max(1, rows - 2));
         const clearSeq = rendered ? `\x1b[${safeRendered}A\x1b[J` : '';
-        const height = Math.max(1, Math.min(choices.length, Math.max(3, (process.stdout.rows || 24) - 6), 12));
-        const start = Math.max(0, Math.min(selected - Math.floor(height / 2), choices.length - height));
-        const rows = choices.slice(start, start + height).map((choice, offset) => {
-            const active = start + offset === selected;
+        const prefixWidth = 6; // "  │ ❯ "
+        const contentWidth = Math.max(8, cols - prefixWidth);
+        const choiceLines = choices.map((choice, index) => {
+            const active = index === selected;
+            const label = clean(choice.label);
             const desc = choice.description ? `  ${clean(choice.description)}` : '';
-            if (active) {
-                return `  ${theme.brightMint(borderChar)} ${theme.brightMint(arrowChar)} ${theme.iceWhite(clean(choice.label))}${desc ? theme.crystalCyan(desc) : ''}`;
-            }
-            return `  ${theme.dim(borderChar)}   ${theme.muted(clean(choice.label))}${desc ? theme.dim(desc) : ''}`;
+            const content = active
+                ? `${theme.iceWhite(label)}${desc ? theme.crystalCyan(desc) : ''}`
+                : `${theme.muted(label)}${desc ? theme.dim(desc) : ''}`;
+            return wrapLine(content, contentWidth);
         });
-        const footer = choices.length > height ? `  ${selected + 1}/${choices.length} · ` : '  ';
-        process.stdout.write(`\x1b[?2026h${clearSeq}${theme.iceWhite(clean(title))}\n${rows.join('\n')}\n${theme.muted(`${footer}↑/↓ Seç · Enter Onayla · Esc İptal`)}\n\x1b[?2026l`);
-        rendered = rows.length + 2;
+        const counts = choiceLines.map(lines => Math.max(1, lines.length));
+        // Fit as many whole choices as the terminal allows, keeping the selection visible.
+        const titleLine = fitLine(theme.iceWhite(clean(title)), cols);
+        const footerVisible = choices.length > 1;
+        const footerLine = fitLine(theme.muted(`${footerVisible ? `  ${selected + 1}/${choices.length} · ` : '  '}↑/↓ Seç · Enter Onayla · Esc İptal`), cols);
+        const budget = Math.max(1, rows - 3); // title + footer + one safety row
+        let start = selected;
+        let end = selected + 1;
+        let used = counts[selected];
+        for (;;) {
+            let grew = false;
+            if (start > 0 && used + counts[start - 1] <= budget) {
+                start--;
+                used += counts[start];
+                grew = true;
+            }
+            if (end < choices.length && used + counts[end] <= budget) {
+                used += counts[end];
+                end++;
+                grew = true;
+            }
+            if (!grew)
+                break;
+        }
+        const lines = [titleLine];
+        for (let index = start; index < end; index++) {
+            const active = index === selected;
+            const prefix = active
+                ? `  ${theme.brightMint(borderChar)} ${theme.brightMint(arrowChar)} `
+                : `  ${theme.dim(borderChar)}   `;
+            const pad = ' '.repeat(prefixWidth);
+            choiceLines[index].forEach((line, lineIndex) => {
+                lines.push(lineIndex === 0 ? `${prefix}${line}` : `${pad}${line}`);
+            });
+        }
+        lines.push(footerLine);
+        process.stdout.write(`\x1b[?2026h${clearSeq}${lines.join('\n')}\n\x1b[?2026l`);
+        rendered = lines.length;
     };
     return new Promise(resolve => {
         const stdin = process.stdin;

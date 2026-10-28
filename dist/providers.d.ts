@@ -7,6 +7,18 @@ export interface ProviderConfig {
     apiKey?: string;
     timeoutMs?: number;
     effort?: EffortLevel;
+    /**
+     * Optional one-shot model switch on HTTP 402/404. The config layer owns
+     * reading config.fallbackModel / TBOT_FALLBACK_MODEL and passing it here.
+     */
+    fallbackModel?: string;
+    /** Invoked once when fallbackModel is used; the caller can surface a status. */
+    onFallback?: (info: {
+        provider: string;
+        from: string;
+        to: string;
+        status: number;
+    }) => void;
 }
 export declare const PROVIDER_CATALOG: readonly [{
     readonly id: "gemini";
@@ -79,6 +91,22 @@ export declare const PROVIDER_CATALOG: readonly [{
     readonly baseUrl: "";
     readonly requiresApiKey: false;
 }];
+/** Retry policy for the initial HTTP request (before any stream body is read). */
+export interface FetchRetryOptions {
+    signal?: AbortSignal | null;
+    /** Additional attempts after the first one. Default 2 (three attempts total). */
+    maxRetries?: number;
+    baseDelayMs?: number;
+    maxDelayMs?: number;
+}
+/** Parse Retry-After as seconds or an HTTP date; returns milliseconds. */
+export declare function parseRetryAfter(value: string | null): number | undefined;
+/**
+ * Fetch with a bounded retry for 408/429/5xx and network failures. Retries
+ * stop when the caller aborts or the request timeout fires. Once a response
+ * body starts streaming the caller never re-issues the request.
+ */
+export declare function fetchWithRetry(input: string | URL | Request, init?: RequestInit, options?: FetchRetryOptions): Promise<Response>;
 /**
  * Deterministic JSON Repair Engine for LLM tool call arguments.
  * Repairs markdown code blocks, unescaped newlines/tabs inside string literals,

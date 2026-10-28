@@ -14,7 +14,6 @@ export interface CachedFileEntry {
   workspace: string;
   normalizedPath: string;
   hash: string;
-  lines: string[];
   totalLines: number;
   reads: ReadRangeRecord[];
   lastContent?: string;
@@ -251,8 +250,9 @@ export class ContextReadCache {
       if (oldest !== undefined) this.entries.delete(oldest);
     }
     const hash = createHash('sha256').update(fullContent, 'utf8').digest('hex');
-    const lines = fullContent.length === 0 ? [] : fullContent.split(/\r?\n/);
-    const totalLines = lines.length;
+    // Only the count is retained; keeping a full line array per entry doubled
+    // the cache's memory footprint without a reader.
+    const totalLines = fullContent.length === 0 ? 0 : (fullContent.match(/\r?\n/g)?.length ?? 0) + 1;
 
     const effStart = Math.max(1, startLine || 1);
     const effEnd = Math.max(effStart, endLine || totalLines || 1);
@@ -308,7 +308,6 @@ export class ContextReadCache {
 
           if (savedTokens > 0) {
             existing.hash = hash;
-            existing.lines = lines;
             existing.totalLines = totalLines;
             existing.lastContent = fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined;
             existing.reads = [];
@@ -329,7 +328,6 @@ export class ContextReadCache {
         workspace: normalizeWorkspace(workspace),
         normalizedPath: normalizeRelPath(relPath),
         hash,
-        lines,
         totalLines,
         lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
         reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],
@@ -347,7 +345,6 @@ export class ContextReadCache {
       workspace: normalizeWorkspace(workspace),
       normalizedPath: normalizeRelPath(relPath),
       hash,
-      lines,
       totalLines,
       lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
       reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn, output: formattedSlice }],

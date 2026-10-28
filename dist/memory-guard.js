@@ -1,7 +1,5 @@
-import os, { homedir } from 'node:os';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { closeIdleBrowser } from './tools/browser.js';
 import { closeIdleDesktopDaemon } from './tools/computer.js';
 import { pruneCompletedProcesses } from './tools/shell.js';
@@ -11,8 +9,10 @@ const TRIM_COOLDOWN_MS = 120_000;
 let guardTimer = null;
 /**
  * Trims physical working set memory of the current T Bot process using Win32 EmptyWorkingSet API on Windows.
- * Caches the compiled helper assembly on disk to avoid repeated csc.exe invocations.
- * Enforces a 120-second cooldown unless force is true.
+ * The helper is compiled in-memory by PowerShell on every call (`Add-Type`
+ * without `-OutputAssembly`) and is never loaded from a writable profile path,
+ * so a planted DLL cannot be executed. Enforces a 120-second cooldown unless
+ * force is true.
  */
 export async function trimWindowsWorkingSet(force = false) {
     if (process.platform !== 'win32') {
@@ -23,18 +23,11 @@ export async function trimWindowsWorkingSet(force = false) {
         return;
     }
     lastTrimAt = now;
-    const dllPath = join(process.env.APPDATA || homedir(), 'TBot', 'bin', 'tbot-wstrim-v2.dll');
-    await mkdir(dirname(dllPath), { recursive: true, mode: 0o700 }).catch(() => undefined);
     return new Promise((resolve) => {
         try {
             const curPid = process.pid;
-            const escapedDllPath = dllPath.replace(/'/g, "''");
             const script = `
-$dll = '${escapedDllPath}'
-if (Test-Path -LiteralPath $dll) {
-  [void][Reflection.Assembly]::LoadFrom($dll)
-} else {
-  $def = @'
+$def = @'
 using System;
 using System.Runtime.InteropServices;
 public static class WsTrim {
@@ -49,9 +42,7 @@ public static class WsTrim {
     }
 }
 '@
-  Add-Type -TypeDefinition $def -Language CSharp -OutputAssembly $dll
-  [void][Reflection.Assembly]::LoadFrom($dll)
-}
+Add-Type -TypeDefinition $def -Language CSharp
 [WsTrim]::Clean(${curPid})
 `;
             execFile(windowsSystemExecutable('powershell'), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {

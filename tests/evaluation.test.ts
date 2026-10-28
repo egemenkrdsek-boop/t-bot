@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import { evaluateComponents } from '../scripts/evaluate-components.mjs';
 
 test('offline evaluation is repeatable, discloses failures, and never fetches a provider', async () => {
   const previousFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error('Network forbidden in offline evaluation'); };
+  // The repo-map inventory/inspection budgets are wall-clock guards; under a
+  // loaded serial suite they can truncate the 92-file fixture differently on
+  // each call and make the determinism hash depend on machine load. Freeze the
+  // clock so this test measures repeatability, not scheduling.
+  const frozen = Date.now();
+  const clock = mock.method(Date, 'now', () => frozen);
   try {
     const first = await evaluateComponents();
     const second = await evaluateComponents();
@@ -31,5 +37,5 @@ test('offline evaluation is repeatable, discloses failures, and never fetches a 
     assert.ok(first.claimScope.includes('Does not establish world rank'));
     assert.ok(first.missingEvidence.length >= 5);
     assert.ok(sections.get('schema_selection')!.cases.every(item => item.baselineSerializedBytes > 0 && item.selectedSchemaTokenRatio > 0));
-  } finally { globalThis.fetch = previousFetch; }
+  } finally { globalThis.fetch = previousFetch; clock.mock.restore(); }
 });

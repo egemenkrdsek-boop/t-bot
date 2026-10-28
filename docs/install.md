@@ -12,18 +12,27 @@
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 -ErrorAction Stop | iex
+irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/release/scripts/install.ps1 -ErrorAction Stop | iex
 ```
 
 Linux/macOS:
 
 ```sh
-sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
+sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/release/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Bu betikler çalışma dizininizdeki yerel kopyayı seçmez; uzak `main` dalını benzersiz geçici dizine klonlar ve seçilen commit SHA'sını gösterir. `npm ci --global=false --include=dev --ignore-scripts=false` kilitli bağımlılıkları yerelde kurar ve `prepare` ile derler. Kaynak CLI yardım/sürüm kontrollerinden sonra tarball üretilir; ancak bundan sonra `npm install --global --ignore-scripts <tarball>` çalışır. Böylece kaynak derleme/paketleme hatası mevcut global CLI'yi değiştirmez. Global yazma işleminin disk/izin hatasında otomatik rollback garantisi yoktur. Geçici checkout işlem sonunda temizlenir.
+Bu betikler çalışma dizininizdeki yerel kopyayı seçmez; uzak `release` dalını benzersiz geçici dizine klonlar, `HEAD` değerini `refs/remotes/origin/release` (tag verilmişse `refs/tags/<tag>`) ile karşılaştırır ve seçilen commit SHA'sını gösterir. `main` dalına push yapılmaz; çalışma dalı `feat/5.0.0`, yayın dalı `release`'tir. `npm ci --global=false --include=dev --ignore-scripts=false` kilitli bağımlılıkları yerelde kurar ve `prepare` ile derler. Kaynak CLI yardım/sürüm kontrollerinden sonra tarball üretilir; ancak bundan sonra `npm install --global --ignore-scripts <tarball>` çalışır. Böylece kaynak derleme/paketleme hatası mevcut global CLI'yi değiştirmez. Geçici checkout işlem sonunda temizlenir.
 
-Host ortamındaki isteğe bağlı `TBOT_INSTALL_REVISION` tam 40 hex karakterli commit SHA'sı kabul eder. CI veya tekrarlanabilir kurulum için sabit aynı upstream'den bu commit shallow fetch edilip detached checkout yapılır; HEAD eşitliği doğrulanmadan derleme/global kurulum başlamaz. Branch/tag adı veya komut bayrağı kabul edilmez. Değişken boşsa varsayılan `main` ve `HEAD == origin/main` kontrolü korunur. Bu, modelin araç argümanı değildir; kullanıcı/CI host ortamı ayarıdır.
+Host ortamındaki isteğe bağlı `TBOT_INSTALL_REVISION` tam 40 hex karakterli commit SHA'sı kabul eder. CI veya tekrarlanabilir kurulum için sabit aynı upstream'den bu commit shallow fetch edilip detached checkout yapılır; HEAD eşitliği doğrulanmadan derleme/global kurulum başlamaz. Branch/tag adı veya komut bayrağı kabul edilmez. Değişken boşsa varsayılan `release` dalı ve `HEAD == origin/release` kontrolü uygulanır; `TBOT_INSTALL_REF` ile başka bir dal veya yayımlanmış tag seçilebilir ve aynı ref eşitliği doğrulanır. 5.0 için `v5.0.0` tag'i yalnızca açıkça yayımlanırsa oluşur; varsayılan kurulum `release` dalını kullanır. Bu, modelin araç argümanı değildir; kullanıcı/CI host ortamı ayarıdır.
+
+### Güncelleme ve geri alma (best effort)
+
+Global yazma öncesi mevcut `t-bot-cli` paket dizini (`<npm prefix>/node_modules/t-bot-cli` veya POSIX'te `<npm prefix>/lib/node_modules/t-bot-cli`) ve `tbot`, `t-bot`, `t-bot-cli` bin shim'leri geçici bir dizine kopyalanır. `npm install -g` sıfırdan farklı çıkış verirse, shim bulunamazsa veya kurulan `--version` beklenen sürümle eşleşmezse bu kopya geri yüklenir. Sınırlar:
+
+- Yedek yalnızca CLI paket dizini ve shim'leri kapsar; npm prefix kökündeki paylaşılan bağımlılıklar anlık görüntülenmez.
+- İşlem atomik değildir; disk/izin hatası geri yüklemeyi de etkileyebilir. Geri yükleme başarısızsa betik açık uyarı verir ve önceki sürümü `npm install -g t-bot-cli@<sürüm>` ile yeniden kurmanız gerekir.
+- Yedek dizini başarılı kurulumdan sonra ve hata yolunda geçici dizin sahiplik kontrolüyle silinir.
+
 
 Doğrudan `npm install -g git+...` npm 11 global Git hazırlığında yerel derleyici bağımlılıklarını bulamadığı için desteklenmez. Tekrarlanabilir kaynak kurulumu için doğruladığınız commit'i ayrı bir checkout'ta seçip `npm ci --global=false --include=dev --ignore-scripts=false`, `npm pack --ignore-scripts` ve üretilen tarball için `npm install -g --ignore-scripts <dosya>` kullanın. Kaynakta `prepare` derleme hatalarını korur; derleyici PATH shim'i yerine kurulu TypeScript modülünden çözülür. Hazır tarball'da kaynak yoksa gerekli dağıtım dosyaları denetlenir. `--ignore-scripts` kaynak derlemesinde kullanılmamalıdır. Betikler CLI kurulumu için Electron ikilisini indirmez.
 
@@ -51,6 +60,8 @@ Geliştirme: `npm run desktop`. Electron indirmesini önceki CLI kurulumunda atl
 ## Sorun giderme
 
 - `tbot` bulunamıyorsa npm global prefix ve PATH'i kontrol edip yeni terminal açın.
+- `release` dalı uzakta yoksa kurulum klonu başarısız olur. Dalın oluşturulduğunu doğrulayın; geçici olarak `TBOT_INSTALL_REF=main` veya doğrulanmış bir commit SHA'sı kullanılabilir. `main`e push yapılmaz.
+- Güncelleme sonrası `--version` uyuşmazlığında betik önceki CLI'yi geri yüklemeyi dener. "Previous CLI could not be restored automatically" uyarısı görürseniz önceki sürümü `npm install -g t-bot-cli@<sürüm>` ile yeniden kurun.
 - Derleme hatasında üstteki ilk TypeScript/asset hatasını düzeltin; betik artık hatayı yutmaz.
 - API `401` hatasında `tbot config` ile anahtarı yenileyin. Sağlayıcının model erişimini ayrıca kontrol edin.
 - `tbot doctor` ortam bilgisi sağlar; gerçek model, tarayıcı veya masaüstü akışının başarı testi değildir.

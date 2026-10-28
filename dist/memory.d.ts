@@ -12,12 +12,23 @@ export type MemoryEntry = MemoryFact;
 export interface ToolExecutionContext {
     workspace: string;
     signal?: AbortSignal;
+    /** Set only after the host obtained explicit user approval for a global write. */
+    approvedGlobal?: boolean;
 }
 export type ToolResult = string;
 /**
  * Persists a key-value fact into project or global memory with optional category and tags.
+ * Global scope is a persistent cross-project instruction vector and therefore
+ * requires `approvedGlobal` from the host's approval boundary.
  */
-export declare function rememberFact(workspace: string, key: string, value: string, scope?: 'project' | 'global', category?: MemoryCategory, tags?: string[]): Promise<string>;
+export declare function rememberFact(workspace: string, key: string, value: string, scope?: 'project' | 'global', category?: MemoryCategory, tags?: string[], options?: {
+    approvedGlobal?: boolean;
+}): Promise<string>;
+/**
+ * Dispatcher contract (tools/index.ts): approve the call before execution when
+ * this returns true, then pass `{ approvedGlobal: true }` in the tool context.
+ */
+export declare function requiresGlobalMemoryApproval(name: string, args: Record<string, unknown>): boolean;
 /**
  * Recalls facts from project and global memory, with BM25/TF lexical overlap,
  * Turkish/English technical synonym expansion, and recency scoring.

@@ -29,6 +29,7 @@ export interface PhaseState {
 export declare function createPhaseState(): PhaseState;
 export declare function isReadTool(name: string): boolean;
 export declare function isWriteTool(name: string): boolean;
+export declare function isFileWriteTool(name: string): boolean;
 export declare function isVerificationCall(name: string, args: Record<string, unknown>): boolean;
 export declare function phaseLabel(phase: AgentPhase): string;
 /**

@@ -16,8 +16,9 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to immutable commit SHAs (release tags in comments).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -28,6 +29,20 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and package version do not match.' }
       - run: npm ci
+      - name: Dependency audit (high and above)
+        shell: bash
+        run: |
+          set +e
+          output=$(npm audit --audit-level=high 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -eq 0 ]; then exit 0; fi
+          if printf '%s' "$output" | grep -qiE 'ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|network|registry.*(unavailable|failed|error)'; then
+            echo "::warning::npm audit could not reach the registry; dependency audit skipped for this run."
+            exit 0
+          fi
+          exit "$status"
       - run: npm run typecheck
       - run: npm test
       - run: npm run dist:win
@@ -38,7 +53,7 @@ jobs:
           $setup = "release/T-Bot-Setup-$version.exe"
           $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  T-Bot-Setup-$version.exe" | Set-Content -Encoding ascii "release/SHA256SUMS.txt"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-setup
           path: |

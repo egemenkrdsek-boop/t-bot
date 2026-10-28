@@ -9,6 +9,7 @@
  */
 import type { ToolCall } from '../types.js';
 import type { TaskContract } from './task-contract.js';
+import { classifyToolEffect } from './tool-effect.js';
 
 export type AgentPhase = 'intake' | 'locate' | 'plan' | 'act' | 'verify' | 'report';
 
@@ -47,6 +48,21 @@ const READ_TOOLS = new Set([
   'web_search',
   'diagnostics',
   'checkpoint_list',
+  // Observation-only browser tools added by the browser surface.
+  'browser_read',
+  'browser_wait_for',
+  'browser_console',
+]);
+
+/**
+ * Tools that actually change files. Completion and verification gates count
+ * only these; process input, todos, goals and GUI batch actions are side
+ * effects, not file writes.
+ */
+const FILE_WRITE_TOOLS = new Set([
+  'file_write',
+  'file_patch',
+  'checkpoint_restore',
 ]);
 
 const WRITE_TOOLS = new Set([
@@ -57,8 +73,7 @@ const WRITE_TOOLS = new Set([
   'git_commit',
   'git_push',
   'skill_create',
-  'process_write',
-  'process_stop',
+  'image_generate',
   'computer_batch',
   'browser_batch',
 ]);
@@ -92,6 +107,10 @@ export function isReadTool(name: string): boolean {
 
 export function isWriteTool(name: string): boolean {
   return WRITE_TOOLS.has(name);
+}
+
+export function isFileWriteTool(name: string): boolean {
+  return FILE_WRITE_TOOLS.has(name);
 }
 
 export function isVerificationCall(name: string, args: Record<string, unknown>): boolean {
@@ -128,11 +147,17 @@ export function phaseViolation(
   if (readOnly && !isReadTool(call.name)) {
     return 'Araç reddedildi: Bu ajan salt okunur araçlarla sınırlandırılmıştır.';
   }
-  if (contract.kind === 'inspect' && isWriteTool(call.name)) {
-    return 'Tool denied: this is an inspection-only task. Report findings instead of changing files.';
-  }
-  if (contract.kind === 'conversation' && isWriteTool(call.name)) {
-    return 'Tool denied: the request is conversational, not an edit request.';
+  if (contract.kind === 'inspect' || contract.kind === 'conversation') {
+    // C3: a read-only phase must also reject shell writes. Other mutating
+    // effects (browser navigation, desktop input) stay available for
+    // observation workflows; only `shell-write` is denied here.
+    const effect = classifyToolEffect(call.name, call.arguments ?? {});
+    const mutating = isWriteTool(call.name) || effect === 'shell-write';
+    if (mutating) {
+      return contract.kind === 'inspect'
+        ? 'Tool denied: this is an inspection-only task. Report findings instead of changing files.'
+        : 'Tool denied: the request is conversational, not an edit request.';
+    }
   }
   return undefined;
 }
@@ -154,11 +179,21 @@ export function recordPhaseToolResult(
     state.phase = 'verify';
     return;
   }
-  if (isWriteTool(call.name)) {
+  const effect = classifyToolEffect(call.name, args);
+  // A successful shell command that writes a file is a real file change for
+  // the completion gate. process_write/process_stop stay side effects.
+  if (isFileWriteTool(call.name) || (call.name === 'shell' && effect === 'shell-write')) {
     if (ok) {
       state.writes++;
       state.lastWriteSequence = state.sequence;
     }
+    state.phase = 'act';
+    return;
+  }
+  // Other mutations advance the phase but are not file writes: process
+  // input, todo/goal updates and GUI batch actions must not make the
+  // completion gate ask for verification of a file change that never happened.
+  if (isWriteTool(call.name) || effect === 'shell-write') {
     state.phase = 'act';
     return;
   }

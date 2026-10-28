@@ -1,60 +1,24 @@
 /**
  * Deterministic task contract derived from the current user request.
  *
- * This is deliberately conservative. It does not try to understand every
- * sentence; it records the few facts the turn loop can enforce: whether the
+ * The contract records the few facts the turn loop can enforce: whether the
  * user asked for a change, whether verification is expected, and which risk
- * class the task belongs to. Ambiguous language stays with the model.
+ * class the task belongs to. Intent comes from `request-brief.ts` so the same
+ * lexical rules are used everywhere.
+ *
+ * Policy: fail-open for write permission, fail-closed for security. Only an
+ * explicit no-write boundary, a read-only policy/skill, or a clear question
+ * blocks writing. Ambiguous commands become `mixed` with write + verification.
  */
-const EDIT_INTENT = /(?:\b(?:fix|implement|add|create|write|edit|patch|refactor|rename|remove|delete|update|change|migrate|repair|replace|insert|append|generate|scaffold|build|ship|düzelt|ekle|oluştur|yaz|düzenle|yamala|yeniden adlandır|kaldır|sil|güncelle|değiştir|taşı|onar|tamamla|uygula)\b)/iu;
-const VERIFY_INTENT = /(?:\b(?:test|tests|typecheck|type check|lint|verify|validation|check|diagnose|diagnostics|doğrula|denetle|test et|kontrol et|teşhis)\b)/iu;
-const INSPECT_INTENT = /(?:\b(?:review|inspect|analy[sz]e|explain|summari[sz]e|audit|read|find|locate|search|investigate|incele|analiz et|açıkla|özetle|denetle|bul|ara|araştır)\b)/iu;
-const BROWSER_INTENT = /(?:\b(?:browser|tarayıcı|playwright|web ?site|web ?sayfa|url|http|localhost|scrape|dom|form|click|tıkla|navigate|gezin)\b)/iu;
-const COMPUTER_INTENT = /(?:\b(?:computer|desktop|masaüstü|ekran|screenshot|ekran görüntüsü|mouse|fare|klavye|keyboard|window|pencere|uia|gui|arayüz)\b)/iu;
-const HIGH_RISK = /(?:\b(?:delete|remove|drop|truncate|force|push|deploy|publish|release|migration|credential|secret|password|token|rm -rf|format|sil|kaldır|zorla|yayınla|gönder|kimlik bilgisi|parola)\b)/iu;
-const QUESTION_START = /^\s*(?:why|how|what|when|where|who|which|is|are|was|were|does|did|should|would|explain|review|analy[sz]e|summari[sz]e|audit|inspect|tell me|neden|nasıl|ne|hangi|açıkla|incele|analiz et|özetle)\b/iu;
-const REQUEST_PREFIX = /^\s*(?:please|lütfen|can you|could you|would you|will you|benim için|bana)\b/iu;
-const EDIT_CONTINUATION = /(?:\b(?:and|then|also|sonra|ve|ayrıca)\s+(?:fix|implement|add|create|update|change|refactor|düzelt|ekle|oluştur|güncelle|değiştir)\b)/iu;
+import { HIGH_RISK } from './lexicon.js';
+import { deriveBrief } from './request-brief.js';
 function cleanObjective(input) {
     return String(input || '')
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, 400);
 }
-/**
- * Build the contract for one turn. `readOnly` always wins: an investigator
- * cannot be given a write contract.
- */
-export function buildTaskContract(message, options = {}) {
-    const text = String(message || '');
-    const objective = cleanObjective(text);
-    const hasEdit = EDIT_INTENT.test(text);
-    const isQuestion = QUESTION_START.test(text) && !REQUEST_PREFIX.test(text);
-    const isEditContinuation = EDIT_CONTINUATION.test(text);
-    const requiresWrite = !options.readOnly && hasEdit && (!isQuestion || isEditContinuation);
-    const browser = BROWSER_INTENT.test(text);
-    const computer = COMPUTER_INTENT.test(text);
-    const inspect = INSPECT_INTENT.test(text);
-    let kind;
-    if (options.readOnly)
-        kind = 'inspect';
-    else if (requiresWrite && (browser || computer))
-        kind = 'mixed';
-    else if (requiresWrite)
-        kind = 'edit';
-    else if (browser && computer)
-        kind = 'mixed';
-    else if (browser)
-        kind = 'browser';
-    else if (computer)
-        kind = 'computer';
-    else if (inspect)
-        kind = 'inspect';
-    else
-        kind = 'conversation';
-    const requiresVerification = !options.readOnly &&
-        (requiresWrite || VERIFY_INTENT.test(text));
-    const risk = HIGH_RISK.test(text) ? 'high' : requiresWrite ? 'medium' : 'low';
+function acceptanceFor(kind, requiresWrite, requiresVerification) {
     const acceptance = [];
     if (requiresWrite) {
         acceptance.push('Files are changed with file_patch or file_write, and the final response names the exact paths and changes.');
@@ -69,14 +33,107 @@ export function buildTaskContract(message, options = {}) {
         acceptance.push('Findings cite concrete file paths or symbols and separate verified facts from uncertainty.');
     }
     acceptance.push('Every success claim is backed by a tool result; user boundaries are respected without exception.');
+    return acceptance;
+}
+/**
+ * Build the contract for one turn. `readOnly` and an explicit no-write
+ * boundary always win: an investigator cannot be given a write contract.
+ */
+export function buildTaskContract(message, options = {}) {
+    const brief = deriveBrief(message);
+    const objective = cleanObjective(message);
+    const weakMode = options.weakMode === true;
+    // Security is fail-closed: an explicit boundary always produces an
+    // inspection contract, regardless of any write verb in the same message.
+    if (options.readOnly || brief.noWrite) {
+        return {
+            objective,
+            kind: 'inspect',
+            risk: brief.risk,
+            requiresWrite: false,
+            requiresVerification: options.readOnly ? false : brief.verificationHint,
+            weakMode,
+            acceptance: acceptanceFor('inspect', false, options.readOnly ? false : brief.verificationHint),
+        };
+    }
+    // "continue" / "devam et" inherits the previous contract when one exists.
+    if (brief.continuation && options.previousContract) {
+        return {
+            ...options.previousContract,
+            objective: options.previousContract.objective || objective,
+            weakMode,
+        };
+    }
+    // A command with no recognized action and no verification hint is
+    // ambiguous. Fail-open is deliberately narrow: short approvals stay chat,
+    // and a single unknown word does not demand a file change. Work-like
+    // objects (file/test/code/url/window) or high-risk verbs keep the old
+    // "allow writing" behavior.
+    const rawText = String(message || '').trim();
+    const tokenCount = rawText.split(/\s+/u).filter(Boolean).length;
+    const highRisk = HIGH_RISK.test(rawText);
+    const workLike = brief.objects.length > 0 || highRisk;
+    // Browser/computer actions are not file writes. Only an explicit file-like
+    // target makes a write verb a file-change contract.
+    const fileTarget = brief.objects.some(object => ['file', 'code', 'docs', 'config'].includes(object)) ||
+        /(?:\.(?:ts|tsx|js|jsx|json|md|py|css|html|ya?ml)\b|src[\\/]|\b(?:file|files|dosya|dosyaya|kod|kodu)\b)/iu.test(rawText);
+    const browserOrComputer = brief.browser || brief.computer;
+    const fileWriteIntent = brief.writeIntent && (!browserOrComputer || fileTarget);
+    // A real question ("kaç dosya var?") never becomes a write contract unless
+    // the same message contains an explicit file-edit order.
+    const questionOnly = brief.hasQuestion && !fileWriteIntent;
+    const ambiguousCommand = brief.speechAct === 'command' &&
+        !fileWriteIntent && !brief.inspection && !brief.browser && !brief.computer &&
+        !brief.operation && !brief.meta && !questionOnly &&
+        (highRisk || (tokenCount >= 2 && workLike));
+    const inheritedWrite = brief.continuation && !options.previousContract;
+    const requiresWrite = !questionOnly && (fileWriteIntent || inheritedWrite || (ambiguousCommand && !brief.verificationHint));
+    let kind;
+    if (fileWriteIntent) {
+        kind = brief.browser || brief.computer || brief.inspection ? 'mixed' : 'edit';
+    }
+    else if (brief.inspection) {
+        kind = 'inspect';
+    }
+    else if (brief.browser && brief.computer) {
+        kind = 'mixed';
+    }
+    else if (brief.browser) {
+        kind = 'browser';
+    }
+    else if (brief.computer) {
+        kind = 'computer';
+    }
+    else if (brief.speechAct === 'command' && brief.verificationHint &&
+        !/\b(?:start|serve|stop|launch|server|başlat|durdur|sunucu)\b/iu.test(rawText)) {
+        // "run the tests" verifies; it does not ask for a file change. A real
+        // start/stop/serve command keeps the operation contract below.
+        kind = 'inspect';
+    }
+    else if (brief.operation) {
+        // Start/run/stop/serve needs shell/process tools but implies no file change.
+        kind = 'mixed';
+    }
+    else if (ambiguousCommand || inheritedWrite) {
+        kind = 'mixed';
+    }
+    else if (brief.meta) {
+        // "introduce yourself", "tanıt", "anlat": conversation, never a work order.
+        kind = 'conversation';
+    }
+    else {
+        kind = 'conversation';
+    }
+    const requiresVerification = requiresWrite || brief.verificationHint;
+    const risk = HIGH_RISK.test(String(message || '')) ? 'high' : requiresWrite ? 'medium' : 'low';
     return {
         objective,
         kind,
         risk,
         requiresWrite,
         requiresVerification,
-        weakMode: options.weakMode === true,
-        acceptance,
+        weakMode,
+        acceptance: acceptanceFor(kind, requiresWrite, requiresVerification),
     };
 }
 /** Compact, cache-friendly contract block for the system prompt. */

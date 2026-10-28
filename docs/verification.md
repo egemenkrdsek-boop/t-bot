@@ -270,3 +270,27 @@ Bu sonuçlar gerçek GUI gecikmesini, model kalitesini, rakiplere göre token ta
 | Desktop yerel kurulum | `deploy-local.ps1` başarılı; ProductVersion `4.1.0.0`; kurulu `app.asar` SHA256 `6f2b11772366608e3188cf4ff149c8626759030893ac3f3df357e248e555b331` ile manifest eşleşti; uygulama açılmadı |
 | Global CLI kurulumu | `t-bot-cli-4.1.0.tgz` `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 4.1.0` |
 | Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar |
+
+## 5.0.0 "Sinyal" kaynak ve doğrulama kaydı (TASLAK)
+
+Bu bölüm 5.0.0 teslimi için açılmıştır. Şefin ilettiği güncel 5.0.0 statik/test kanıtları aşağıdadır. `dist:win`, global CLI, masaüstü kurulumu, temiz prefix kurulumu, rollback ve 12 canlı senaryo henüz işlenmemiştir; bu satırlar şef/Selin tarafından doldurulacak ve o zamana kadar tamamlanmış sayılmaz.
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm audit --json` | 383 bağımlılık (98 prod, 286 dev); bilinen açık: 0 (info/low/moderate/high/critical hepsi 0). Yalnızca o anki kayıt defteri bilgisidir; kaynak güvenlik denetimi değildir |
+| Kurulum betiği fixture'ları (`tests/install.test.cjs`) | 12/12 başarılı; sahte npm/git ile build failure, pin uyuşmazlığı, geçersiz SHA yolları. Gerçek global kurulum değildir |
+| `npm run typecheck` | Temiz (5.0.0) |
+| `npm run check:layers` | 84 TypeScript dosyası; katman yönü ihlali yok (5.0.0) |
+| `npm test` | **275 test / 275 pass / 0 fail / 0 skip**; serial (`--test-concurrency=1`) |
+| `npm run build` + renderer/preload `node --check` | Şef tarafından doldurulacak |
+| `npm pack --ignore-scripts` | Şef tarafından doldurulacak; `dist/**/*.map` paket dışı olmalı |
+| `npm run dist:win` + manifest | Şef tarafından doldurulacak |
+| Global CLI 5.0.0 kurulumu ve `tbot --version` | Şef tarafından doldurulacak |
+| Masaüstü 5.0.0 yerel kurulumu ve ProductVersion | Şef tarafından doldurulacak |
+| `release` dalından tek komut kurulum (temiz prefix) | Selin/şef tarafından doldurulacak; `main`e push yapılmaz |
+| 12 canlı kullanım senaryosu (hata oranı, tur, süre, RAM) | Selin tarafından doldurulacak |
+| Kurulum rollback (hata/sürüm uyuşmazlığı) | Şef tarafından doldurulacak; gerçek global prefix'te deneme |
+
+Şefin ilettiği ek bağlam (final kayıtla kesinleşecek): `npm run build` başarılı, `dist/index.js --version` → `T Bot 5.0.0`, `dist/tools/search-worker.js` üretildi; `npm pack --dry-run` 209 dosya, 0 `.map`, packed 630.401 byte.
+
+Sınırlar: yukarıdaki tablo doldurulmadan 5.0 için "tamamlandı", "dünya #1" veya rakiplere göre yüzde tasarruf iddiası yapılmaz. E2E, canlı sağlayıcı ve gerçek GUI/Telegram akışı birim testi yerine geçmez. `npm audit` sonucu belirli bir ana aittir; gelecekte açık bulunmayacağı garantisi değildir.

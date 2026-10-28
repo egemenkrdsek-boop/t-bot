@@ -67,7 +67,7 @@ export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
     title: 'Ultra J-Space Reasoning Engine',
     description: 'Dört lensli derin akıl yürütme, kanıt disiplini ve sistem orkestrasyonu',
     guidance: JSPACE_FULL,
-    triggers: ['jspace', 'j-space', 'ultra reasoning', 'deep reasoning', 'complex architecture', 'multi-stage', 'rigorous debugging', 'derin akil yurutme', 'karmasik mimari'],
+    triggers: ['jspace', 'j-space', 'ultra reasoning', 'deep reasoning', 'derin akil yurutme'],
     scope: 'builtin',
     hidden: true,
   },
@@ -248,7 +248,10 @@ export function resolveSkills(message: string, workspace?: string): SkillDefinit
     codereview: /\b(codereview|code review|review (?:the )?code|review (?:this |the )?(?:pr|pull request)|kod incele(?:mesi|me)?|kodu incele|kod (?:gozden gecir|gozden gecirme))\b/.test(normalized),
     debuganalysis: /\b(debuganalysis|debug analysis|debugging|debug|root cause|neden calismiyor|hata analizi|hatayi incele|hata ayikla|sorunu analiz)\b/.test(normalized),
     imagegen: /\b(imagegen|image generation|generate (?:an? |the )?(?:image|illustration|picture)|create (?:an? |the )?(?:image|illustration|picture)|edit (?:an? |the )?(?:image|picture)|gorsel (?:olustur|uret|duzenle)|resim (?:olustur|uret|duzenle))\b/.test(normalized),
-    jspace: /\b(jspace|j-space|ultra reasoning|deep reasoning|complex architecture|multi-stage|rigorous debugging|derin akil yurutme|karmasik mimari)\b/.test(normalized),
+    // The full J-Space text loads only on an explicit trigger. Generic task
+    // adjectives ("multi-stage", "complex architecture") keep the compact
+    // kernel and never load the full document.
+    jspace: /\b(jspace|j-space|ultra reasoning|deep reasoning|derin akil yurutme)\b/.test(normalized),
   };
 
   const resolvedBuiltin = BUILTIN_SKILLS.filter(
@@ -320,6 +323,56 @@ export function skillRequiresReadOnly(skills: readonly SkillDefinition[], messag
   if (!skills.some(s => s.id === 'codereview' || s.id === 'debuganalysis')) return false;
   // A combined request to implement a fix authorizes editing; pure analysis stays read-only.
   return !/\b(?:fix|implement|change|edit|patch)\s+(?:the\s+|this\s+|that\s+|these\s+|any\s+)?(?:bugs?|issues?|errors?|problems?|code|files?|it|them|changes|fixes|solution)\b|\b(?:duzelt|uygula|degistir|onar)(?:in|iniz|elim|ilsin|mek)?\b/.test(normalize(message));
+}
+
+/**
+ * C8: the same read-only answer as `skillRequiresReadOnly`, but for restored
+ * skill ids where the current message ("continue") no longer names the skill.
+ */
+export function skillIdsRequireReadOnly(ids: readonly string[], message: string): boolean {
+  const defs = ids
+    .map(id => BUILTIN_SKILLS.find(skill => skill.id === id))
+    .filter((skill): skill is SkillDefinition => Boolean(skill));
+  return skillRequiresReadOnly(defs, message);
+}
+
+/**
+ * Session-scoped active-skill memory. Bounded to 64 sessions with LRU
+ * eviction; this is deliberately in-process only and never persisted.
+ * A new non-continuation task or `/skills off` records an empty list, which
+ * releases the sticky read-only constraint.
+ */
+const SESSION_SKILL_LIMIT = 64;
+const sessionSkills = new Map<string, string[]>();
+
+export function rememberSessionSkills(sessionId: string | undefined, skillIds: readonly string[]): void {
+  const id = String(sessionId || '').trim();
+  if (!id) return;
+  const unique = [...new Set(skillIds.map(value => String(value || '').trim()).filter(Boolean))].slice(0, 16);
+  sessionSkills.delete(id);
+  sessionSkills.set(id, unique);
+  while (sessionSkills.size > SESSION_SKILL_LIMIT) {
+    const oldest = sessionSkills.keys().next().value;
+    if (oldest === undefined) break;
+    sessionSkills.delete(oldest);
+  }
+}
+
+export function recallSessionSkills(sessionId: string | undefined): string[] {
+  const id = String(sessionId || '').trim();
+  if (!id) return [];
+  const found = sessionSkills.get(id);
+  if (!found) return [];
+  // LRU touch: delete + reinsert as the most recently used session.
+  sessionSkills.delete(id);
+  sessionSkills.set(id, found);
+  return [...found];
+}
+
+export function clearSessionSkills(sessionId?: string): void {
+  const id = String(sessionId || '').trim();
+  if (id) sessionSkills.delete(id);
+  else sessionSkills.clear();
 }
 
 const STOPWORDS = new Set([

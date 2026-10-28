@@ -1,4 +1,4 @@
-import { cyberPulseBadge, theme, unicode } from './theme.js';
+import { cyberPulseBadge, theme, themeMode, unicode } from './theme.js';
 import { APP_VERSION } from './version.js';
 
 // Sol rozet (14x14 matris - assets/tabit.webp sol ikonundan örneklenmiştir):
@@ -97,6 +97,15 @@ function wordPixelColor(
   color256: boolean,
 ): string {
   if (trueColor) {
+    if (themeMode === 'light') {
+      // Dark ink for the "T BOT" wordmark so it stays readable on a white terminal.
+      if (highlight) return '1;38;2;8;18;12';
+      const t = Math.max(0, Math.min(1, (x / Math.max(1, totalWidth)) * 0.65 + (y / 14) * 0.35));
+      const r = lerp(34, 24, t);
+      const g = lerp(56, 84, t);
+      const b = lerp(38, 32, t);
+      return `1;38;2;${r};${g};${b}`;
+    }
     if (highlight) {
       return '1;38;2;255;255;255';
     }
@@ -116,9 +125,11 @@ function wordPixelColor(
   }
 
   if (color256) {
+    if (themeMode === 'light') return `1;38;5;${highlight ? '232' : '22'}`;
     return `1;38;5;${highlight ? '231' : '192'}`;
   }
 
+  if (themeMode === 'light') return highlight ? '1;30' : '1;32';
   return highlight ? '1;97' : '1;92';
 }
 

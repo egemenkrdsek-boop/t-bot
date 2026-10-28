@@ -3,6 +3,20 @@ import assert from 'node:assert/strict';
 import { getToolDefinitions } from '../src/tools/index.js';
 import { pruneToolDefinitions } from '../src/token-optimizer.js';
 
+test('canonical tool registry has no duplicate names across its 58 definitions', () => {
+  const definitions = getToolDefinitions();
+  const names = definitions.map(tool => tool.name);
+  assert.equal(definitions.length, 58);
+  assert.equal(new Set(names).size, 58);
+  assert.equal(names.filter(name => name === 'todo_manage').length, 1);
+  assert.equal(names.filter(name => name === 'goal_manage').length, 1);
+  for (const name of ['browser_read', 'browser_wait_for', 'browser_console', 'browser_download', 'browser_upload']) {
+    assert.ok(names.includes(name), `new browser tool missing: ${name}`);
+  }
+  // Repeated construction must not append workflow tools a second time.
+  assert.deepEqual(getToolDefinitions().map(tool => tool.name), names);
+});
+
 test('browser, computer and dev-server intents keep the tools needed to finish the job', () => {
   const all = getToolDefinitions();
   const select = (query: string) => new Set(pruneToolDefinitions(all, query).tools.map(tool => tool.name));

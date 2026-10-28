@@ -10,7 +10,13 @@ const queues = new Map();
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const SEGMENT_BYTES = 1024 * 1024;
-const DEFAULT_LOAD_BYTES = 256 * 1024 * 1024;
+/**
+ * One budget governs both the durable checkpoint and the default read path.
+ * A session saved at the limit must always be openable; keeping the two limits
+ * as the same constant prevents "saved but unreadable" records.
+ */
+const DEFAULT_SESSION_BYTES = 128 * 1024 * 1024;
+const DEFAULT_LOAD_BYTES = DEFAULT_SESSION_BYTES;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
 function redact(value) {
@@ -72,12 +78,16 @@ function metadataFor(session) {
 export class SessionStore {
     directory;
     maxLoadBytes;
+    maxSaveBytes;
     constructor(dataDir, options = {}) {
         // Resolve aliases synchronously before queueing, including when sessions/ does not yet exist.
         this.directory = canonicalDirectory(path.join(dataDir, 'sessions'));
         this.maxLoadBytes = options.maxLoadBytes ?? DEFAULT_LOAD_BYTES;
+        this.maxSaveBytes = options.maxSaveBytes ?? DEFAULT_SESSION_BYTES;
         if (!Number.isSafeInteger(this.maxLoadBytes) || this.maxLoadBytes <= 0)
             throw new Error('Invalid session load budget');
+        if (!Number.isSafeInteger(this.maxSaveBytes) || this.maxSaveBytes <= 0)
+            throw new Error('Invalid session save budget');
     }
     file(id) {
         if (!ID.test(id))
@@ -219,6 +229,7 @@ export class SessionStore {
         }
         // Capture message records before any await; a caller may append a new turn while this save runs.
         session = { ...session, messages: session.messages.map(({ images: _images, ...message }) => message) };
+        let result = { ok: true, truncatedMessages: 0, truncatedBytes: 0 };
         await this.locked(session.id, async () => {
             const file = this.file(session.id);
             const existing = await this.readRecord(session.id);
@@ -226,10 +237,28 @@ export class SessionStore {
                 throw new Error('Session belongs to a different workspace');
             if ((caller[REVISION] ?? null) !== revision(existing))
                 throw new Error('Session checkpoint conflict; reload the session before saving');
+            // Budget pass: serialize one message at a time and keep only byte counts.
+            // Oldest messages are dropped from this checkpoint until the durable
+            // history fits; the manifest records exactly how much was omitted.
+            const sizes = session.messages.map(message => Buffer.byteLength(JSON.stringify(redact(message)) + '\n', 'utf8'));
+            let historyBytes = sizes.reduce((sum, size) => sum + size, 0);
+            let truncatedMessages = 0;
+            let truncatedBytes = 0;
+            while (historyBytes > this.maxSaveBytes && truncatedMessages < sizes.length - 1) {
+                historyBytes -= sizes[truncatedMessages];
+                truncatedBytes += sizes[truncatedMessages];
+                truncatedMessages++;
+            }
+            if (historyBytes > this.maxSaveBytes) {
+                throw new Error(`Session message exceeds the ${Math.round(this.maxSaveBytes / (1024 * 1024))} MiB save budget; split the message or start a new session.`);
+            }
+            const messagesToWrite = truncatedMessages > 0 ? session.messages.slice(truncatedMessages) : session.messages;
             const generation = randomUUID();
-            const record = { ...metadataFor(session), workspace: path.resolve(session.workspace),
+            const record = { ...metadataFor(session), messageCount: messagesToWrite.length,
+                workspace: path.resolve(session.workspace),
                 updatedAt: new Date().toISOString(),
-                format: 'tbot-session-v2', generation, totalBytes: 0, segments: [] };
+                format: 'tbot-session-v2', generation, totalBytes: 0, segments: [],
+                ...(truncatedMessages > 0 ? { truncatedMessages, truncatedBytes } : {}) };
             const temporary = path.join(this.directory, `.${session.id}.${randomUUID()}.tmp`);
             const written = [];
             let committed = false;
@@ -247,7 +276,7 @@ export class SessionStore {
                     record.totalBytes += used;
                     used = 0;
                 };
-                for (const message of session.messages) {
+                for (const message of messagesToWrite) {
                     // Redact/serialize only one message at a time, never the complete history.
                     const bytes = Buffer.from(JSON.stringify(redact(message)) + '\n', 'utf8');
                     for (let offset = 0; offset < bytes.length;) {
@@ -273,9 +302,18 @@ export class SessionStore {
                 if (!committed)
                     await Promise.all(written.map(segment => fs.unlink(segment).catch(() => undefined)));
             }
+            result = {
+                ok: true,
+                truncatedMessages,
+                truncatedBytes,
+                ...(truncatedMessages > 0 ? {
+                    warning: `Session history exceeded the ${Math.round(this.maxSaveBytes / (1024 * 1024))} MiB save budget; the oldest ${truncatedMessages} message(s) (${truncatedBytes} bytes) were not saved.`,
+                } : {}),
+            };
             // Post-commit housekeeping is best effort; a cleanup failure must not report a failed save.
             await this.cleanup(session.id, new Set(record.segments.map(segment => segment.name))).catch(() => undefined);
         });
+        return result;
     }
     async writeSynced(file, data) {
         const handle = await fs.open(file, 'wx', 0o600);

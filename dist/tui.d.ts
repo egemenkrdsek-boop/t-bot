@@ -12,8 +12,12 @@ export interface HudConfig {
 /**
  * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
  * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
+ *
+ * `width` verilmezse terminal genişliği kullanılır. Sığmayan düşük öncelikli
+ * segmentler (tasarruf → bot → doğrulama) sırayla kısaltılır/atılır; model ve
+ * bellek her zaman görünür kalır.
  */
-export declare function renderHudBar(config: HudConfig): string;
+export declare function renderHudBar(config: HudConfig, width?: number): string;
 export interface EventPrinterOptions {
     interactive: boolean;
     getHudConfig: () => HudConfig;
@@ -26,6 +30,8 @@ export interface EventPrinter {
     stopThinking: () => void;
     stopSpinner: () => void;
     isThinking: () => boolean;
+    /** Re-render the live spinner after a terminal resize (SIGWINCH). */
+    redraw: () => void;
 }
 /**
  * Sıfır-Kırpışmalı (DEC ?2026h/?2026l), Sıfır-Taşmalı (truncateAnsi),
@@ -33,7 +39,7 @@ export interface EventPrinter {
  */
 export declare function createEventPrinter(options: EventPrinterOptions): EventPrinter;
 /** Print the shared CLI command catalog with terminal styling. */
-export declare function printHelp(): void;
+export declare function printHelp(width?: number): void;
 export interface TuiOptions {
     workspace: string;
     provider: Provider;

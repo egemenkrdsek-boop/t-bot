@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<html lang="tr" data-theme="dark">
+<html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: tbot-file:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>T Bot — Yerel Kodlama Ajanı</title>
   <link rel="icon" href="icon.ico">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body data-theme="dark">
+<body>
   <div id="drag-overlay" class="drag-overlay hidden">
     <div class="drag-box">
       <div class="drag-icon">↓</div>
@@ -36,7 +36,7 @@
       <canvas id="logo-canvas" width="24" height="24" class="logo-canvas" title="T Bot"></canvas>
       <div class="brand-text">
         <span class="brand-name">T BOT <span class="brand-version" data-app-version title="Sürüm">…</span></span>
-        <span class="brand-badge">LOCAL AGENT</span>
+        <span class="brand-badge">YEREL AJAN</span>
       </div>
     </div>
 
@@ -52,7 +52,7 @@
       <div id="telemetry-badge" class="telemetry-badge" title="Canlı Bellek ve Bağlam Tasarrufu">
         <span><span class="muted">RAM</span> <span id="telemetry-ram-val">— MB</span></span>
         <span class="telemetry-sep">/</span>
-        <span><span class="muted">CTX</span> %<span id="telemetry-savings-val">0</span></span>
+        <span><span class="muted">BAĞLAM</span> %<span id="telemetry-savings-val">0</span></span>
       </div>
 
       <button id="btn-theme-toggle" class="titlebar-action-btn" title="Temayı Değiştir">
@@ -67,22 +67,22 @@
       <button id="btn-pin" class="titlebar-window-btn" title="Her Zaman Üstte">⌖</button>
       <button id="btn-min" class="titlebar-window-btn" title="Simge Durumuna Küçült">−</button>
       <button id="btn-max" class="titlebar-window-btn" title="Ekranı Kapla">□</button>
-      <button id="btn-close" class="titlebar-window-btn titlebar-close" title="Kapat">×</button>
+      <button id="btn-close" class="titlebar-window-btn titlebar-close" title="Kapat (Arka Plana Al)">×</button>
     </div>
   </header>
 
   <section id="top-bar" class="top-bar">
     <div class="top-quick-actions">
       <button class="quick-btn" data-toggle-sidebar="left" aria-label="Sohbet panelini göster veya gizle" aria-expanded="true">Oturumlar</button>
-      <button class="quick-btn" data-toggle-sidebar="right" aria-label="Görev panelini göster veya gizle" aria-expanded="true">Inspector</button>
+      <button class="quick-btn" data-toggle-sidebar="right" aria-label="Görev panelini göster veya gizle" aria-expanded="true">Görevler</button>
       <button id="btn-quick-yolo" class="quick-toggle-btn" title="Araç Onay Modu">
         <span id="yolo-icon" class="q-icon">○</span> <span id="yolo-label">Onaylı</span>
       </button>
       <button id="btn-quick-plan" class="quick-btn" title="Plan Modu"><span class="q-icon">◇</span> Plan</button>
       <button id="btn-quick-ultracode" class="quick-btn" title="Ultracode Modu"><span class="q-icon">◆</span> Ultracode</button>
-      <button id="btn-quick-subagents" class="quick-btn" title="Subagents Modu"><span class="q-icon">◇</span> Subagents</button>
+      <button id="btn-quick-subagents" class="quick-btn" title="Alt Ajan Modu"><span class="q-icon">◇</span> Alt Ajan</button>
       <button id="btn-quick-config" class="quick-btn" title="Model ve API Anahtarları"><span class="q-icon">⌘</span> Model</button>
-      <button id="btn-quick-doctor" class="quick-btn" title="Sistem Teşhisi"><span class="q-icon">+</span> Doctor</button>
+      <button id="btn-quick-doctor" class="quick-btn" title="Sistem Teşhisi"><span class="q-icon">+</span> Teşhis</button>
       <button id="btn-quick-clear" class="quick-btn" title="Sohbeti Temizle"><span class="q-icon">⌫</span> Temizle</button>
     </div>
     <div class="top-hint">Ctrl+K Komutlar · Esc Durdur · Enter Gönder</div>
@@ -95,7 +95,7 @@
           <span class="sidebar-title">Oturumlar</span>
           <span id="sessions-count" class="badge-count">0</span>
         </div>
-        <button id="btn-new-session" class="btn btn-primary btn-sm" title="Yeni Oturum">+ Yeni Oturum</button>
+        <button id="btn-new-session" class="btn btn-primary btn-sm" title="Yeni Oturum">+ Yeni</button>
         <button id="btn-collapse-left" class="collapse-btn" title="Paneli Gizle">‹</button>
       </div>
 
@@ -123,7 +123,7 @@
     </aside>
 
     <main id="main-terminal" class="main-terminal">
-      <div id="chat-feed" class="chat-feed" role="log" aria-label="Sohbet" aria-live="polite" aria-relevant="additions">
+      <div id="chat-feed" class="chat-feed" role="log" aria-label="Sohbet" aria-live="off" aria-busy="false" aria-relevant="additions">
         <div id="empty-hero" class="empty-hero">
           <div class="hero-logo-wrapper">
             <canvas id="hero-logo-canvas" width="96" height="96" class="hero-logo-canvas"></canvas>
@@ -131,6 +131,7 @@
           <div class="hero-kicker">Yerel Öncelikli Kodlama Ajanı</div>
           <h1 class="hero-title">T BOT <span class="hero-version" data-app-version title="Sürüm">…</span></h1>
           <p class="hero-tagline">Kodunuzu okuyan, planlayan ve doğrulayan yerel ajan. Bir görev yazın veya aşağıdan başlayın.</p>
+          <div id="hero-provider-status" class="hero-provider-status"><span class="status-dot"></span><span id="hero-provider-text">Sağlayıcı yükleniyor…</span></div>
 
           <div class="hero-prompt-grid">
             <div class="hero-card" data-prompt="Projeyi AST ve Repo Haritası ile analiz et, proje yapısını özetle ve geliştirme önerileri sun.">
@@ -140,10 +141,6 @@
             <div class="hero-card" data-prompt="Kod tabanındaki potansiyel hataları ve tip uyumsuzluklarını denetle ve düzelt.">
               <div class="card-head"><span class="card-icon">!</span><span class="card-title">Hataları Bul ve Düzelt</span></div>
               <div class="card-desc">Sorunu kanıtla, cerrahi bir yama uygula, doğrula.</div>
-            </div>
-            <div class="hero-card" data-prompt="Webde ve yerel dokümantasyonda arama yaparak son teknik gelişmeleri derle.">
-              <div class="card-head"><span class="card-icon">◎</span><span class="card-title">Web ve Doküman Araştırması</span></div>
-              <div class="card-desc">Taze kaynakları topla; kaynağı ve tarihi belirt.</div>
             </div>
             <div class="hero-card" id="hero-card-goal">
               <div class="card-head"><span class="card-icon">◇</span><span class="card-title">Otonom Hedef</span></div>
@@ -155,13 +152,16 @@
 
       <div id="thinking-bar" class="thinking-bar hidden">
         <div class="run-spine" aria-hidden="true">
-          <span class="run-node active"></span><span class="run-node"></span><span class="run-node"></span><span class="run-node"></span>
+          <div class="run-phase"><span class="run-node active"></span><span class="run-node-label">Keşif</span></div>
+          <div class="run-phase"><span class="run-node"></span><span class="run-node-label">Plan</span></div>
+          <div class="run-phase"><span class="run-node"></span><span class="run-node-label">Uygulama</span></div>
+          <div class="run-phase"><span class="run-node"></span><span class="run-node-label">Doğrulama</span></div>
         </div>
         <div class="thinking-content">
           <div class="thinking-spinner" id="thinking-spinner">·</div>
-          <div class="thinking-step-badge" id="thinking-step-badge">Adım 1</div>
+          <div class="thinking-step-badge" id="thinking-step-badge">Keşif</div>
           <div class="thinking-label" id="thinking-label">Çalışıyor…</div>
-          <div class="thinking-timer" id="thinking-timer">0.0s</div>
+          <div class="thinking-timer" id="thinking-timer">0.0sn</div>
           <button id="btn-abort-turn" class="btn btn-danger-ghost btn-sm" title="İşlemi Durdur (Esc)">Durdur</button>
         </div>
       </div>
@@ -171,6 +171,18 @@
       <div class="bottom-area">
         <div id="attachment-chips" class="attachment-chips hidden"></div>
 
+        <div class="composer-chips" id="composer-chips">
+          <button id="chip-model" class="composer-chip" title="Model ve sağlayıcı seç">
+            <span class="chip-dot"></span><span id="chip-model-text">Model</span>
+          </button>
+          <button id="chip-effort" class="composer-chip" title="Düşünme eforu">
+            <span class="chip-label">Efor</span><span id="chip-effort-text">Orta</span>
+          </button>
+          <button id="chip-workspace" class="composer-chip composer-chip-ws" title="Çalışma alanını değiştir">
+            <span class="chip-label">Alan</span><span id="chip-workspace-text">—</span>
+          </button>
+        </div>
+
         <div class="input-container">
           <button id="btn-slash-hint" class="input-action-btn" title="Komut Paleti (Ctrl+K)">/</button>
           <button id="btn-attach" class="input-action-btn" title="Dosya veya Görsel Ekle">＋</button>
@@ -178,6 +190,7 @@
 
           <textarea aria-label="T Bot’a mesaj yazın" id="user-input" class="user-input" rows="1" placeholder="Bir talimat yazın veya / ile komutları açın…" autofocus></textarea>
 
+          <button id="btn-stop-turn" class="input-action-btn input-stop-btn hidden" title="Turı Durdur (Esc)" aria-label="Turı Durdur">■</button>
           <button id="btn-send" class="btn-send" title="Gönder (Enter)"><span class="send-icon">→</span></button>
         </div>
 
@@ -192,90 +205,129 @@
           <span class="hud-sep">·</span>
           <div class="hud-item hud-grounding"><span class="hud-label">Doğrulama</span><span id="hud-grounding-val" class="hud-success">—</span></div>
           <span class="hud-sep">·</span>
+          <div class="hud-item hud-policy"><span class="hud-label">İzin</span><span id="hud-policy-val" class="hud-val">Onaylı</span><button id="btn-remove-workspace-permission" class="hud-link hidden" title="Bu çalışma alanı için kalıcı izni kaldır">izni kaldır</button></div>
+          <span class="hud-sep">·</span>
           <div class="hud-item hud-ram"><span class="hud-label">RAM</span><span id="hud-ram-val" class="hud-cyan">— MB</span><span id="hud-ram-dot" class="hud-dot-green">●</span></div>
           <span class="hud-sep">·</span>
           <div class="hud-item hud-shortcut"><span class="hud-dim">Ctrl+K</span></div>
         </div>
       </div>
+
+      <div id="sr-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
     </main>
 
     <aside id="sidebar-right" class="sidebar sidebar-right">
       <div class="sidebar-header">
         <button id="btn-collapse-right" class="collapse-btn" title="Paneli Gizle">›</button>
-        <div class="sidebar-title-group"><span class="sidebar-title">Inspector</span></div>
+        <div class="sidebar-title-group"><span class="sidebar-title">Görev Paneli</span></div>
         <button id="btn-refresh-workflow" class="btn btn-ghost btn-sm" title="Yenile">↻</button>
       </div>
 
+      <div class="inspector-tabs" role="tablist" aria-label="Görev paneli sekmeleri">
+        <button class="inspector-tab is-active" data-inspector-tab="tasks" role="tab" aria-selected="true">Görevler</button>
+        <button class="inspector-tab" data-inspector-tab="plan" role="tab" aria-selected="false">Plan</button>
+        <button class="inspector-tab" data-inspector-tab="tools" role="tab" aria-selected="false">Araçlar</button>
+      </div>
+
       <div class="sidebar-scrollable">
-        <div class="workflow-card" id="workflow-goal-card">
-          <div class="workflow-card-head">
-            <div class="card-head-title"><span class="goal-icon">◇</span><span class="head-text">GOAL</span></div>
-            <span id="goal-status-badge" class="status-badge badge-dim">Yok</span>
+        <div id="inspector-panel-tasks" class="inspector-panel">
+          <div class="workflow-card" id="workflow-goal-card">
+            <div class="workflow-card-head">
+              <div class="card-head-title"><span class="goal-icon">◇</span><span class="head-text">HEDEF</span></div>
+              <span id="goal-status-badge" class="status-badge badge-dim">Yok</span>
+            </div>
+            <div class="goal-body">
+              <div id="goal-objective" class="goal-objective">Henüz aktif bir hedef belirlenmedi.</div>
+              <div id="goal-notes-list" class="goal-notes-list hidden"></div>
+            </div>
+            <div class="goal-actions">
+              <button id="btn-goal-set" class="btn btn-primary btn-xs">+ Hedef</button>
+              <button id="btn-goal-complete" class="btn btn-ghost btn-xs hidden">Bitir</button>
+              <button id="btn-goal-cancel" class="btn btn-ghost btn-xs text-danger hidden">İptal</button>
+            </div>
           </div>
-          <div class="goal-body">
-            <div id="goal-objective" class="goal-objective">Henüz aktif bir hedef belirlenmedi.</div>
-            <div id="goal-notes-list" class="goal-notes-list hidden"></div>
-          </div>
-          <div class="goal-actions">
-            <button id="btn-goal-set" class="btn btn-primary btn-xs">+ Hedef</button>
-            <button id="btn-goal-complete" class="btn btn-ghost btn-xs hidden">Bitir</button>
-            <button id="btn-goal-cancel" class="btn btn-ghost btn-xs text-danger hidden">İptal</button>
+
+          <div class="workflow-card" id="workflow-todos-card">
+            <div class="workflow-card-head">
+              <div class="card-head-title"><span class="todos-icon">☰</span><span class="head-text">GÖREVLER</span></div>
+              <span id="todos-progress-badge" class="badge-count">0/0</span>
+            </div>
+            <div class="todo-progress" aria-hidden="true"><span id="todos-progress-fill" class="todo-progress-fill"></span></div>
+            <div class="todo-add-form">
+              <input type="text" aria-label="Yeni görev" id="input-new-todo" class="todo-input" placeholder="Yeni Görev…">
+              <button id="btn-add-todo" class="btn btn-primary btn-xs">+</button>
+            </div>
+            <div class="todos-list" id="todos-list"><div class="empty-list-hint">Görev Yok</div></div>
           </div>
         </div>
 
-        <div class="workflow-card" id="workflow-todos-card">
-          <div class="workflow-card-head">
-            <div class="card-head-title"><span class="todos-icon">☰</span><span class="head-text">TASKS</span></div>
-            <span id="todos-progress-badge" class="badge-count">0/0</span>
+        <div id="inspector-panel-plan" class="inspector-panel hidden">
+          <div class="workflow-card plan-card">
+            <div class="workflow-card-head">
+              <div class="card-head-title"><span class="goal-icon">◇</span><span class="head-text">PLAN</span></div>
+              <span id="plan-state-badge" class="status-badge badge-dim">Bekliyor</span>
+            </div>
+            <div class="plan-body">
+              <div id="plan-preview" class="plan-preview">Henüz hazırlanmış bir plan yok. <code>/plan &lt;istek&gt;</code> ile plan oluşturun.</div>
+            </div>
+            <div class="plan-actions">
+              <button id="btn-apply-plan" class="btn btn-primary btn-xs hidden">Planı Uygula</button>
+            </div>
           </div>
-          <div class="todo-add-form">
-            <input type="text" aria-label="Yeni görev" id="input-new-todo" class="todo-input" placeholder="Yeni Görev…">
-            <button id="btn-add-todo" class="btn btn-primary btn-xs">+</button>
-          </div>
-          <div class="todos-list" id="todos-list"><div class="empty-list-hint">Görev Yok</div></div>
         </div>
 
-        <div class="workflow-card">
-          <div class="workflow-card-head">
-            <div class="card-head-title"><span class="skills-icon">⚙</span><span class="head-text">TOOLS & MCP</span></div>
+        <div id="inspector-panel-tools" class="inspector-panel hidden">
+          <div class="workflow-card">
+            <div class="workflow-card-head">
+              <div class="card-head-title"><span class="skills-icon">⚙</span><span class="head-text">ARAÇLAR VE MCP</span></div>
+            </div>
+            <div class="skills-tags-container">
+              <span id="mcp-server-count-tag" class="skill-tag mcp-tag">MCP yükleniyor…</span>
+            </div>
           </div>
-          <div class="skills-tags-container">
-            <span id="mcp-server-count-tag" class="skill-tag mcp-tag">MCP yükleniyor…</span>
+          <div class="workflow-card">
+            <div class="workflow-card-head">
+              <div class="card-head-title"><span class="skills-icon">⌘</span><span class="head-text">MODEL</span></div>
+            </div>
+            <div class="skills-tags-container">
+              <div class="inspector-meta" id="inspector-model-meta">Sağlayıcı bilgisi yükleniyor…</div>
+            </div>
           </div>
         </div>
       </div>
     </aside>
   </div>
 
-  <div id="command-palette" class="command-palette hidden">
+  <div id="palette-backdrop" class="palette-backdrop hidden"></div>
+  <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="Komut Paleti">
     <div class="palette-header">
       <span class="palette-icon">/</span>
-      <input type="text" aria-label="Komut ara" id="palette-search" class="palette-search" placeholder="Komut Ara…">
-      <span class="palette-hint">Esc kapatır</span>
+      <input type="text" aria-label="Komut ara" id="palette-search" class="palette-search" placeholder="Komut Ara…" role="combobox" aria-autocomplete="list" aria-controls="palette-items" aria-expanded="true">
+      <span class="palette-hint">↑↓ seç · Enter çalıştır · Esc kapat</span>
     </div>
-    <div class="palette-items" id="palette-items">
-      <div class="palette-item selected" data-cmd="/model"><span class="palette-cmd">/model</span><span class="palette-desc">Model ve Sağlayıcı Seç</span></div>
-      <div class="palette-item" data-cmd="/provider"><span class="palette-cmd">/provider</span><span class="palette-desc">Sağlayıcı ve API Anahtarı</span></div>
-      <div class="palette-item" data-cmd="/yolo"><span class="palette-cmd">/yolo</span><span class="palette-desc">Araç Onay Modunu Değiştir</span></div>
-      <div class="palette-item" data-cmd="/plan"><span class="palette-cmd">/plan</span><span class="palette-desc">Plan Oluştur veya Planı Uygula</span></div>
-      <div class="palette-item" data-cmd="/ultracode"><span class="palette-cmd">/ultracode</span><span class="palette-desc">Çok Aşamalı Ultracode Görevi Başlat</span></div>
-      <div class="palette-item" data-cmd="/subagents"><span class="palette-cmd">/subagents</span><span class="palette-desc">Alt Ajanlarla Paralel Görev Başlat</span></div>
-      <div class="palette-item" data-cmd="/goal"><span class="palette-cmd">/goal</span><span class="palette-desc">Otonom Hedef Yönet</span></div>
-      <div class="palette-item" data-cmd="/effort"><span class="palette-cmd">/effort</span><span class="palette-desc">Düşünme Eforunu Seç</span></div>
-      <div class="palette-item" data-cmd="/skills"><span class="palette-cmd">/skills</span><span class="palette-desc">Yetenekleri Listele</span></div>
-      <div class="palette-item" data-cmd="/sessions"><span class="palette-cmd">/sessions</span><span class="palette-desc">Oturumları Listele</span></div>
-      <div class="palette-item" data-cmd="/resume"><span class="palette-cmd">/resume</span><span class="palette-desc">Oturuma Devam Et</span></div>
-      <div class="palette-item" data-cmd="/imagegen"><span class="palette-cmd">/imagegen</span><span class="palette-desc">Görsel Üret veya Düzenle</span></div>
-      <div class="palette-item" data-cmd="/gui"><span class="palette-cmd">/gui</span><span class="palette-desc">Tarayıcı Görünürlüğü</span></div>
-      <div class="palette-item" data-cmd="/mcp"><span class="palette-cmd">/mcp</span><span class="palette-desc">MCP Bağlantıları</span></div>
-      <div class="palette-item" data-cmd="/bot"><span class="palette-cmd">/bot</span><span class="palette-desc">Telegram Botu</span></div>
-      <div class="palette-item" data-cmd="/ram"><span class="palette-cmd">/ram</span><span class="palette-desc">Belleği Boşalt</span></div>
-      <div class="palette-item" data-cmd="/tokens"><span class="palette-cmd">/tokens</span><span class="palette-desc">Token ve Bağlam Raporu</span></div>
-      <div class="palette-item" data-cmd="/memory"><span class="palette-cmd">/memory</span><span class="palette-desc">RAM ve Kayıtlı Bellek</span></div>
-      <div class="palette-item" data-cmd="/status"><span class="palette-cmd">/status</span><span class="palette-desc">Oturum Durumu</span></div>
-      <div class="palette-item" data-cmd="/doctor"><span class="palette-cmd">/doctor</span><span class="palette-desc">Sistem Teşhisi</span></div>
-      <div class="palette-item" data-cmd="/clear"><span class="palette-cmd">/clear</span><span class="palette-desc">Sohbeti Temizle</span></div>
-      <div class="palette-item" data-cmd="/help"><span class="palette-cmd">/help</span><span class="palette-desc">Komut Kılavuzu</span></div>
+    <div class="palette-items" id="palette-items" role="listbox" aria-label="Komutlar">
+      <div class="palette-item selected" data-cmd="/model" role="option" aria-selected="true"><span class="palette-cmd">/model</span><span class="palette-desc">Model ve Sağlayıcı Seç</span></div>
+      <div class="palette-item" data-cmd="/provider" role="option" aria-selected="false"><span class="palette-cmd">/provider</span><span class="palette-desc">Sağlayıcı ve API Anahtarı</span></div>
+      <div class="palette-item" data-cmd="/yolo" role="option" aria-selected="false"><span class="palette-cmd">/yolo</span><span class="palette-desc">Araç Onay Modunu Değiştir</span></div>
+      <div class="palette-item" data-cmd="/plan" role="option" aria-selected="false"><span class="palette-cmd">/plan</span><span class="palette-desc">Plan Oluştur veya Planı Uygula</span></div>
+      <div class="palette-item" data-cmd="/ultracode" role="option" aria-selected="false"><span class="palette-cmd">/ultracode</span><span class="palette-desc">Çok Aşamalı Ultracode Görevi Başlat</span></div>
+      <div class="palette-item" data-cmd="/subagents" role="option" aria-selected="false"><span class="palette-cmd">/subagents</span><span class="palette-desc">Alt Ajanlarla Paralel Görev Başlat</span></div>
+      <div class="palette-item" data-cmd="/goal" role="option" aria-selected="false"><span class="palette-cmd">/goal</span><span class="palette-desc">Otonom Hedef Yönet</span></div>
+      <div class="palette-item" data-cmd="/effort" role="option" aria-selected="false"><span class="palette-cmd">/effort</span><span class="palette-desc">Düşünme Eforunu Seç</span></div>
+      <div class="palette-item" data-cmd="/skills" role="option" aria-selected="false"><span class="palette-cmd">/skills</span><span class="palette-desc">Yetenekleri Listele</span></div>
+      <div class="palette-item" data-cmd="/sessions" role="option" aria-selected="false"><span class="palette-cmd">/sessions</span><span class="palette-desc">Oturumları Listele</span></div>
+      <div class="palette-item" data-cmd="/resume" role="option" aria-selected="false"><span class="palette-cmd">/resume</span><span class="palette-desc">Oturuma Devam Et</span></div>
+      <div class="palette-item" data-cmd="/imagegen" role="option" aria-selected="false"><span class="palette-cmd">/imagegen</span><span class="palette-desc">Görsel Üret veya Düzenle</span></div>
+      <div class="palette-item" data-cmd="/gui" role="option" aria-selected="false"><span class="palette-cmd">/gui</span><span class="palette-desc">Tarayıcı Görünürlüğü</span></div>
+      <div class="palette-item" data-cmd="/mcp" role="option" aria-selected="false"><span class="palette-cmd">/mcp</span><span class="palette-desc">MCP Bağlantıları</span></div>
+      <div class="palette-item" data-cmd="/bot" role="option" aria-selected="false"><span class="palette-cmd">/bot</span><span class="palette-desc">Telegram Botu</span></div>
+      <div class="palette-item" data-cmd="/ram" role="option" aria-selected="false"><span class="palette-cmd">/ram</span><span class="palette-desc">Belleği Boşalt</span></div>
+      <div class="palette-item" data-cmd="/tokens" role="option" aria-selected="false"><span class="palette-cmd">/tokens</span><span class="palette-desc">Token ve Bağlam Raporu</span></div>
+      <div class="palette-item" data-cmd="/memory" role="option" aria-selected="false"><span class="palette-cmd">/memory</span><span class="palette-desc">RAM ve Kayıtlı Bellek</span></div>
+      <div class="palette-item" data-cmd="/status" role="option" aria-selected="false"><span class="palette-cmd">/status</span><span class="palette-desc">Oturum Durumu</span></div>
+      <div class="palette-item" data-cmd="/doctor" role="option" aria-selected="false"><span class="palette-cmd">/doctor</span><span class="palette-desc">Sistem Teşhisi</span></div>
+      <div class="palette-item" data-cmd="/clear" role="option" aria-selected="false"><span class="palette-cmd">/clear</span><span class="palette-desc">Sohbeti Temizle</span></div>
+      <div class="palette-item" data-cmd="/help" role="option" aria-selected="false"><span class="palette-cmd">/help</span><span class="palette-desc">Komut Kılavuzu</span></div>
     </div>
   </div>
 
@@ -344,6 +396,7 @@
         <button id="modal-btn-close-mcp" class="btn btn-ghost">×</button>
       </div>
       <div class="modal-body">
+        <p class="modal-desc">Yerel (stdio) MCP sunucuları her zaman açık onay ister; “her zaman izin ver” yalnızca siz seçtiğinizde kaydedilir.</p>
         <div id="mcp-status-list" class="mcp-status-list"></div>
         <div class="form-group">
           <label for="select-mcp-service">Servis</label>

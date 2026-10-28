@@ -12,7 +12,8 @@ import { runUltracode } from './ultracode.js';
 import { startGoal, runGoal, getGoal, pauseGoal, resumeGoal, cancelGoal, completeGoal } from './workflows.js';
 import { SessionStore } from './sessions.js';
 import { handleComputerTool } from './tools/computer.js';
-import { createApprovalNonce, parseApprovalCallback, formatApprovalArguments, createPairingChallenge, acceptPairingCode } from './telegram-security.js';
+import { createApprovalNonce, parseApprovalCallback, formatApprovalArguments, createPairingChallenge, acceptPairingCode, redactTelegramText, isSensitiveGeneratedPath, approvalMentionsSensitivePath, resolvedScreenshotDirectory, isWorkspaceContainedPath } from './telegram-security.js';
+const TELEGRAM_USER_ID = /^\d{1,20}$/;
 // Module-level bridge state
 let isRunning = false;
 let currentBotUsername;
@@ -77,6 +78,39 @@ function syncEnvAllowedChats(config) {
         }
     }
     return config.telegramAllowedChatIds;
+}
+/**
+ * Merges TELEGRAM_ALLOWED_USERS into config.telegramAllowedUserIds. User IDs
+ * are the authority for tool approvals; chat IDs alone grant only conversation.
+ */
+function syncEnvAllowedUsers(config) {
+    const target = config;
+    if (!Array.isArray(target.telegramAllowedUserIds)) {
+        target.telegramAllowedUserIds = [];
+    }
+    const envRaw = process.env.TELEGRAM_ALLOWED_USERS;
+    if (envRaw && envRaw.trim()) {
+        for (const id of envRaw.split(/[,\s;]+/).map((s) => s.trim()).filter(Boolean)) {
+            if (TELEGRAM_USER_ID.test(id) && !target.telegramAllowedUserIds.includes(id)) {
+                target.telegramAllowedUserIds.push(id);
+            }
+        }
+    }
+    return target.telegramAllowedUserIds;
+}
+/**
+ * Tool approvals require the paired/allowed user. Groups never inherit the
+ * chat-level allowlist: with no user ID configured, group approvals stay
+ * closed. A legacy private-chat pairing (chat ID only, no user list) keeps
+ * working so existing single-user setups do not break.
+ */
+function canApproveAsUser(config, chatType, userId) {
+    if (typeof userId !== 'number' || !Number.isSafeInteger(userId))
+        return false;
+    const users = syncEnvAllowedUsers(config);
+    if (users.includes(String(userId)))
+        return true;
+    return (chatType === 'private' || chatType === undefined) && users.length === 0;
 }
 /**
  * Sends a raw text message chunk, falling back to plain text if Markdown parsing fails.
@@ -167,32 +201,37 @@ export async function sendTelegramPhoto(token, chatId, filePath, caption) {
     }
 }
 /**
- * Persists an allowed chat ID to the configuration file using saveConfig.
+ * Persists the paired chat and user IDs to the configuration file.
  */
-async function persistAllowedChatId(config, chatId, onLog) {
-    if (!Array.isArray(config.telegramAllowedChatIds)) {
-        config.telegramAllowedChatIds = [];
-    }
-    if (!config.telegramAllowedChatIds.includes(chatId)) {
-        config.telegramAllowedChatIds.push(chatId);
-    }
+async function persistAllowedIdentity(config, chatId, userId, onLog) {
+    const addIdentity = (target) => {
+        if (!Array.isArray(target.telegramAllowedChatIds))
+            target.telegramAllowedChatIds = [];
+        if (!target.telegramAllowedChatIds.includes(chatId))
+            target.telegramAllowedChatIds.push(chatId);
+        if (typeof userId === 'number' && Number.isSafeInteger(userId)) {
+            const view = target;
+            if (!Array.isArray(view.telegramAllowedUserIds))
+                view.telegramAllowedUserIds = [];
+            const id = String(userId);
+            if (!view.telegramAllowedUserIds.includes(id))
+                view.telegramAllowedUserIds.push(id);
+        }
+    };
+    addIdentity(config);
     try {
         await saveConfig(config);
-        onLog?.(`[Telegram Bot] Yetkili Chat ID kaydedildi: ${chatId}`);
+        onLog?.(`[Telegram Bot] Yetkili kimlik kaydedildi: Chat ${chatId}${typeof userId === 'number' ? ` / User ${userId}` : ''}`);
     }
     catch {
         // If the revision is outdated or missing, reload fresh config and persist
         try {
             const fresh = await loadConfig();
-            if (!Array.isArray(fresh.telegramAllowedChatIds)) {
-                fresh.telegramAllowedChatIds = [];
-            }
-            if (!fresh.telegramAllowedChatIds.includes(chatId)) {
-                fresh.telegramAllowedChatIds.push(chatId);
-            }
+            addIdentity(fresh);
             await saveConfig(fresh);
             config.telegramAllowedChatIds = fresh.telegramAllowedChatIds;
-            onLog?.(`[Telegram Bot] Yetkili Chat ID (fresh config) kaydedildi: ${chatId}`);
+            config.telegramAllowedUserIds = fresh.telegramAllowedUserIds;
+            onLog?.(`[Telegram Bot] Yetkili kimlik (fresh config) kaydedildi: Chat ${chatId}${typeof userId === 'number' ? ` / User ${userId}` : ''}`);
         }
         catch (saveErr) {
             onLog?.(`[Telegram Bot] Konfigürasyon kaydedilemedi: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`);
@@ -212,21 +251,29 @@ async function getImageProviderConfig(config) {
 /**
  * Scans workspace directories for screenshots and generated images created during a run turn.
  */
-async function collectGeneratedImages(workspace, startTime) {
+export async function collectGeneratedImages(workspace, startTime) {
     const discovered = [];
+    // Canonical state path; undefined when `.tbot/screenshots` is a junction or
+    // otherwise escapes. Never fall back to a lexical `path.join` in that case.
+    const screenshots = resolvedScreenshotDirectory(workspace);
     const searchDirs = [
         path.join(workspace, 'generated-images'),
-        path.join(workspace, '.tbot', 'screenshots'),
+        ...(screenshots ? [screenshots] : []),
         workspace,
     ];
     for (const dir of searchDirs) {
+        // The workspace root itself is a legitimate scan target; any other
+        // directory must resolve inside it (realpath, not just string prefix).
+        if (!(await isWorkspaceContainedPath(workspace, dir, { allowWorkspaceRoot: true })))
+            continue;
+        const isWorkspaceRoot = path.resolve(dir) === path.resolve(workspace);
         try {
             const entries = await fs.readdir(dir, { withFileTypes: true });
             for (const entry of entries) {
                 if (entry.isSymbolicLink() || !entry.isFile())
                     continue;
                 const lower = entry.name.toLowerCase();
-                if (dir === workspace && (!lower.startsWith('screenshot-') || !/\.(png|jpg|jpeg|webp)$/.test(lower))) {
+                if (isWorkspaceRoot && (!lower.startsWith('screenshot-') || !/\.(png|jpg|jpeg|webp)$/.test(lower))) {
                     continue;
                 }
                 if (!/\.(png|jpg|jpeg|webp)$/i.test(lower))
@@ -236,8 +283,12 @@ async function collectGeneratedImages(workspace, startTime) {
                     const stats = await fs.lstat(fullPath);
                     if (stats.isSymbolicLink() || !stats.isFile())
                         continue;
+                    // Junction/symlink swap between readdir and upload fails closed.
+                    if (!(await isWorkspaceContainedPath(workspace, fullPath)))
+                        continue;
+                    const canonical = await fs.realpath(fullPath);
                     if (stats.mtimeMs >= startTime - 2000) {
-                        discovered.push(fullPath);
+                        discovered.push(canonical);
                     }
                 }
                 catch { }
@@ -269,13 +320,19 @@ async function requestRemoteToolApproval(request, chatId, token, getYolo) {
         await sendTelegramMessage(token, chatId, '[REDDEDİLDİ] Onay içeriği gösterim sınırını aşıyor. İşlemi daha küçük adımlara ayırın.');
         return false;
     }
+    const description = request.description ? redactTelegramText(request.description) : '';
+    const sensitiveWarning = approvalMentionsSensitivePath(`${argsSnippet}\n${description}\n${request.tool}`)
+        ? '\n*[UYARI] Bu onay kimlik/anahtar dosyasına benzeyen bir yol içeriyor. Yalnız gerçekten güveniyorsanız onaylayın.*'
+        : '';
     const promptText = `*[ONAY GEREKİYOR] Araç Onayı:* \`${request.tool}\`
-${request.description ? `*Açıklama:* ${request.description}\n` : ''}*Argümanlar:*
+${description ? `*Açıklama:* ${description}\n` : ''}*Argümanlar:*
 \`\`\`json
 ${argsSnippet}
 \`\`\`
+${sensitiveWarning}
 
-Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki butonları kullanın (60sn)`;
+Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki butonları kullanın (60sn)
+Onay yetkisi yalnızca eşleştirilmiş kullanıcıya aittir.`;
     const nonce = createApprovalNonce();
     const reply_markup = {
         inline_keyboard: [[
@@ -391,25 +448,31 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
         }
         options.session.messages = updatedMessages;
         let persisted = true;
+        let saveWarning;
         try {
-            await new SessionStore(configDirectory()).save(options.session);
+            const saved = await new SessionStore(configDirectory()).save(options.session);
+            saveWarning = saved?.warning;
         }
         catch {
             persisted = false;
             options.onLog?.('[Telegram Bot] Üretilen turun oturum kaydı saklanamadı; son mesajlar yalnızca bellekte olabilir.');
         }
-        // Send latest assistant response
+        // Send latest assistant response (credentials masked before leaving the process)
         const lastAssistant = [...updatedMessages]
             .reverse()
             .find((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim().length > 0);
         if (lastAssistant && lastAssistant.content.trim()) {
-            await sendTelegramMessage(token, chatId, lastAssistant.content);
+            await sendTelegramMessage(token, chatId, redactTelegramText(lastAssistant.content));
         }
         else {
             await sendTelegramMessage(token, chatId, '[BİLGİ] Ajan turu sona erdi; gösterilecek metin yanıtı bulunmuyor.');
         }
         if (!persisted) {
             await sendTelegramMessage(token, chatId, '[KAYIT UYARISI] Yanıt üretilmiş veya araç işlemleri gerçekleşmiş olabilir; bu turun oturum kaydı saklanamadı. Son mesajlar yalnızca bellekte olabilir ve yeniden başlatmada kaybolabilir. Bu uyarı araç işlemlerinin geri alındığı anlamına gelmez.');
+        }
+        else if (saveWarning) {
+            options.onLog?.(`[Telegram Bot] ${saveWarning}`);
+            await sendTelegramMessage(token, chatId, `[KAYIT UYARISI] Oturum geçmişi kayıt sınırını aştı; en eski mesajlar kalıcı kayda alınmadı. Ayrıntı: ${saveWarning}`);
         }
         // Inspect disk for newly produced images or screenshots
         const scanned = await collectGeneratedImages(options.workspace, startTime);
@@ -418,6 +481,10 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
         }
         // Send any generated photos or screenshots directly to the user
         for (const imgPath of discoveredPaths) {
+            if (isSensitiveGeneratedPath(imgPath) || !(await isWorkspaceContainedPath(options.workspace, imgPath))) {
+                options.onLog?.('[Telegram Bot] Hassas veya workspace dışı bir yol üretilen görsel olarak işaretlendi; Telegram gönderimi atlandı.');
+                continue;
+            }
             const base = path.basename(imgPath);
             const isScreenshot = base.toLowerCase().startsWith('screenshot') || base.toLowerCase().startsWith('browser');
             const caption = isScreenshot ? `[EKRAN GÖRÜNTÜSÜ] \`${base}\`` : `[GÖRSEL] \`${base}\``;
@@ -448,8 +515,8 @@ async function handleIncomingMessage(msg, token, signal, options) {
         const pairMatch = text.match(/^\/pair(?:\s+|=)(\S+)$/i);
         if (pairMatch && pairingChallenge && acceptPairingCode(pairingChallenge, pairMatch[1])) {
             pairingChallenge = null;
-            await persistAllowedChatId(options.config, chatId, options.onLog);
-            const welcome = `*[BİLGİ] Eşleştirme Başarılı!*\n\nChat ID (\`${chatId}\`) ana yönetici olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
+            await persistAllowedIdentity(options.config, chatId, msg.from?.id, options.onLog);
+            const welcome = `*[BİLGİ] Eşleştirme Başarılı!*\n\nChat ID (\`${chatId}\`) ve kullanıcı kimliği yönetici olarak kaydedildi. Araç onayları yalnızca bu kullanıcıdan kabul edilir.`;
             await sendTelegramMessage(token, chatId, welcome);
             options.onLog?.(`[Telegram Bot] Yönetici başarıyla eşleştirildi: Chat ID ${chatId} (${msg.from?.first_name || 'Kullanıcı'})`);
             return;
@@ -466,6 +533,11 @@ async function handleIncomingMessage(msg, token, signal, options) {
     }
     // 1. Tool Approval Handling (/onay and /red)
     if (text === '/onay' || text.toLowerCase() === '/onay') {
+        if (!canApproveAsUser(options.config, msg.chat.type, msg.from?.id)) {
+            options.onLog?.(`[Telegram Bot] Yetkisiz onay denemesi: Chat ${chatId}`);
+            await sendTelegramMessage(token, chatId, '*[YETKİSİZ]* Araç onayı yalnızca eşleştirilmiş kullanıcı tarafından verilebilir.');
+            return;
+        }
         if (activeApproval && activeApproval.chatId === chatId) {
             clearTimeout(activeApproval.timeoutId);
             const { resolve, tool } = activeApproval;
@@ -479,6 +551,11 @@ async function handleIncomingMessage(msg, token, signal, options) {
         return;
     }
     if (text === '/red' || text.toLowerCase() === '/red') {
+        if (!canApproveAsUser(options.config, msg.chat.type, msg.from?.id)) {
+            options.onLog?.(`[Telegram Bot] Yetkisiz red denemesi: Chat ${chatId}`);
+            await sendTelegramMessage(token, chatId, '*[YETKİSİZ]* Araç onayı yalnızca eşleştirilmiş kullanıcı tarafından verilebilir.');
+            return;
+        }
         if (activeApproval && activeApproval.chatId === chatId) {
             clearTimeout(activeApproval.timeoutId);
             const { resolve, tool } = activeApproval;
@@ -493,6 +570,10 @@ async function handleIncomingMessage(msg, token, signal, options) {
     }
     // If a tool approval is currently pending, prompt the user to resolve it first
     if (activeApproval && activeApproval.chatId === chatId) {
+        if (!canApproveAsUser(options.config, msg.chat.type, msg.from?.id)) {
+            await sendTelegramMessage(token, chatId, '*[UYARI] Bekleyen Araç Onayı Var:*\nBu işlemi yalnızca eşleştirilmiş kullanıcı onaylayabilir veya reddedebilir.');
+            return;
+        }
         await sendTelegramMessage(token, chatId, `*[UYARI] Bekleyen Araç Onayı Var:*\n\`${activeApproval.tool}\` için onay bekleniyor. Lütfen önce \`/onay\` veya \`/red\` yazın.`);
         return;
     }
@@ -535,6 +616,10 @@ Herhangi bir metin göndererek doğrudan T Bot ajanını çalıştırabilirsiniz
                     shotPath = match[1];
             }
             if (shotPath) {
+                if (isSensitiveGeneratedPath(shotPath) || !(await isWorkspaceContainedPath(options.workspace, shotPath))) {
+                    await sendTelegramMessage(token, chatId, '[REDDEDİLDİ] Üretilen ekran görüntüsü yolu hassas veya workspace dışı olarak sınıflandırıldı; gönderilmedi.');
+                    return;
+                }
                 const sent = await sendTelegramPhoto(token, chatId, shotPath, `[EKRAN GÖRÜNTÜSÜ] \`${path.basename(shotPath)}\``);
                 if (!sent) {
                     await sendTelegramMessage(token, chatId, `[HATA] Ekran görüntüsü dosyası gönderilemedi: \`${shotPath}\``);
@@ -595,7 +680,7 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
             }
             else {
                 const list = facts
-                    .map((f) => `• *${escapeMarkdown(f.key)}* (${f.scope}):\n  \`${escapeMarkdown(f.value)}\``)
+                    .map((f) => `• *${escapeMarkdown(f.key)}* (${f.scope}):\n  \`${escapeMarkdown(redactTelegramText(f.value))}\``)
                     .join('\n\n');
                 await sendTelegramMessage(token, chatId, `*[HAFIZA] Proje Hafızası (${facts.length} Kayıt):*\n\n${list}`);
             }
@@ -750,6 +835,11 @@ async function runPollingLoop(token, signal, options) {
                         const pendingApproval = activeApproval;
                         const approved = pendingApproval ? parseApprovalCallback(cq.data, pendingApproval.nonce) : undefined;
                         if (pendingApproval && pendingApproval.chatId === cqChatId && approved !== undefined) {
+                            if (!canApproveAsUser(options.config, cq.message?.chat.type, cq.from?.id)) {
+                                options.onLog?.(`[Telegram Bot] Yetkisiz düğme onayı: Chat ${cqChatId}`);
+                                await answerCallbackQuery(token, cq.id, 'Onay yetkiniz yok.');
+                                continue;
+                            }
                             clearTimeout(pendingApproval.timeoutId);
                             const { resolve, tool } = pendingApproval;
                             activeApproval = null;

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,7 +18,19 @@ test('bounded inventory finds a deep monorepo query target after 85 shallow sour
     const deep = join(directory, 'packages/deep/auth/src');
     await mkdir(deep, { recursive: true });
     await writeFile(join(deep, 'reset-password.mts'), Array.from({ length: 20 }, (_, i) => `export const helper${i}=1;`).join('\n') + '\nexport function resetPassword() {}');
-    const map = await buildWorkspaceRepoMap(directory, 'resetPassword reset-password', 180);
+    // The 100 ms inventory / 250 ms inspection budgets are wall-clock guards,
+    // so a fully loaded parallel suite can truncate this fixture before the
+    // deep directory is visited. Freeze the clock for this build: the property
+    // under test is ranking (the deep file must beat 85 shallow files into the
+    // 80-file inspection cap), not the load-sensitive deadline itself.
+    const frozen = Date.now();
+    const clock = mock.method(Date, 'now', () => frozen);
+    let map: string;
+    try {
+      map = await buildWorkspaceRepoMap(directory, 'resetPassword reset-password', 180);
+    } finally {
+      clock.mock.restore();
+    }
     assert.match(map, /packages\/deep\/auth\/src\/reset-password\.mts/);
     assert.match(map, /resetPassword\[L21-21\]/);
     assert.match(map, /partial/);

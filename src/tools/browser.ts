@@ -1,10 +1,13 @@
-import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '../types.js';
 import { redactSecrets } from '../sessions.js';
+import { assertPublicHttpUrl, isLoopback } from '../security/url.js';
+import { isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
 import { GUI_WARM_IDLE_MS, guiObservation, MAX_BATCH_STEPS, validateBatchSteps } from './gui-policy.js';
+import { createScreenshotPath, pruneScreenshots, sweepStaleBrowserProfiles } from './screenshot-store.js';
 
 // A private, disposable profile: never attach to the user's existing browser.
 let context: any;
@@ -19,6 +22,52 @@ let idleTimer: NodeJS.Timeout | undefined;
 const BROWSER_IDLE_TIMEOUT_MS = GUI_WARM_IDLE_MS;
 let lastBrowserActivityAt = 0;
 let activeBrowserOps = 0;
+
+export interface ConsoleRecord {
+  type: string;
+  text: string;
+  location?: string;
+  timestamp: number;
+}
+
+/** Last console/page-error records for the browser session (bounded). */
+export const consoleHistory: ConsoleRecord[] = [];
+const MAX_CONSOLE_RECORDS = 200;
+/** Loopback navigation is opt-in: per call (`allow_local`) or via env. */
+const envLocalNavigationAllowed = process.env.TBOT_BROWSER_ALLOW_LOCAL === 'true';
+// Set only for the duration of one approved navigation (goto + its redirects).
+let activeLocalNavigation = false;
+
+function recordConsole(type: string, text: string, location?: string): void {
+  consoleHistory.push({ type, text: clean(text).slice(0, 2000), ...(location ? { location } : {}), timestamp: Date.now() });
+  if (consoleHistory.length > MAX_CONSOLE_RECORDS) consoleHistory.splice(0, consoleHistory.length - MAX_CONSOLE_RECORDS);
+}
+
+/** Append a tab-fallback note without breaking JSON tool output. */
+function applyTabNote(output: string, note: string | undefined): string {
+  if (!note) return output;
+  try {
+    const parsed = JSON.parse(output);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return JSON.stringify({ ...parsed, tabNote: note });
+    }
+  } catch { /* plain text result */ }
+  return `${output}\nNote: ${note}`;
+}
+
+/**
+ * `tsx`/esbuild with `keepNames` injects `__name(...)` calls into function
+ * bodies it transforms. Playwright serializes the callback source into the page,
+ * where that module-scope helper does not exist, so every inspect/read evaluate
+ * failed with "ReferenceError: __name is not defined". Define a no-op global in
+ * the page before each evaluation; it is idempotent and cheap.
+ */
+const PAGE_NAME_SHIM = 'window.__name = window.__name || function (fn) { return fn; };';
+
+async function evaluatePage(page: any, fn: any, arg?: any): Promise<any> {
+  await page.evaluate(PAGE_NAME_SHIM).catch(() => undefined);
+  return arg === undefined ? page.evaluate(fn) : page.evaluate(fn, arg);
+}
 
 export interface FallbackElementMeta {
   role: string;
@@ -85,7 +134,11 @@ const tabProperty = {
 };
 const selectorProperty = {
   type: 'string',
-  description: 'Element ref (e.g. "e1", "1") or Playwright selector from browser_inspect.',
+  description: 'Playwright selector or element ref (e.g. "e1") from browser_inspect.',
+};
+const textTargetProperty = {
+  type: 'string',
+  description: 'Visible text, button label or accessible name of the element (e.g. "Sign in"). Used when selector/ref are not available.',
 };
 const autoScreenshotProperty = {
   type: 'boolean',
@@ -127,12 +180,13 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate a tab to an HTTP or HTTPS URL with live cyber HUD and visual confirmation.',
+    description: 'Navigate a tab to an HTTP(S) URL. Every navigation redirect is validated against the public-URL policy; loopback URLs need allow_local: true.',
     parameters: params(
       {
         tab: tabProperty,
         url: { type: 'string', description: 'Target HTTP or HTTPS URL.' },
         headless: headlessProperty,
+        allow_local: { type: 'boolean', description: 'Allow a localhost/127.0.0.1 URL for local development. Private LAN and metadata addresses stay blocked.' },
         auto_screenshot: autoScreenshotProperty,
         observe: observeProperty,
       },
@@ -141,12 +195,13 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_open',
-    description: 'Open or navigate an isolated browser tab to a specified HTTP(S) URL in visible live mode by default.',
+    description: 'Open or navigate an isolated browser tab to an HTTP(S) URL in visible mode by default. Same URL policy and allow_local opt-in as browser_navigate.',
     parameters: params(
       {
         tab: tabProperty,
         url: { type: 'string', description: 'Target HTTP or HTTPS URL.' },
         headless: headlessProperty,
+        allow_local: { type: 'boolean', description: 'Allow a localhost/127.0.0.1 URL for local development.' },
         auto_screenshot: autoScreenshotProperty,
         observe: observeProperty,
       },
@@ -164,22 +219,25 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_click',
-    description: 'Click an element with live neon spotlight ripple animation, auto visual HUD, and automatic recovery.',
+    description: 'Click an element. Provide selector, ref (from browser_inspect) or text (visible label). A stale ref triggers one automatic re-inspect; an unknown tab falls back to the active tab.',
     parameters: params({
       tab: tabProperty,
       selector: selectorProperty,
-      ref: { type: 'string', description: 'Element ref (e.g. "e1", "1").' },
+      ref: { type: 'string', description: 'Element ref from browser_inspect (e.g. "e3" or "3").' },
+      text: textTargetProperty,
       auto_screenshot: autoScreenshotProperty,
+      observe: observeProperty,
     }),
   },
   {
     name: 'browser_type',
-    description: 'Type text into an input or editable field with live neon spotlight ripple and automatic SPA recovery.',
+    description: 'Type into an input or editable field. Target it with selector/ref/text; if none is given the focused field is used. Clears the field by default.',
     parameters: params(
       {
         tab: tabProperty,
         selector: selectorProperty,
-        ref: { type: 'string', description: 'Element ref (e.g. "e1", "1").' },
+        ref: { type: 'string', description: 'Element ref from browser_inspect (e.g. "e3" or "3").' },
+        text: textTargetProperty,
         value: { type: 'string', description: 'Text to type into the field.' },
         clear: { type: 'boolean', description: 'Whether to clear existing text before typing; defaults to true.' },
         auto_screenshot: autoScreenshotProperty,
@@ -190,12 +248,13 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_fill',
-    description: 'Fill a form field (alias for browser_type) with live visual focus indicator.',
+    description: 'Fill a form field (alias for browser_type with clear=true).',
     parameters: params(
       {
         tab: tabProperty,
         selector: selectorProperty,
-        ref: { type: 'string', description: 'Element ref (e.g. "e1", "1").' },
+        ref: { type: 'string', description: 'Element ref from browser_inspect (e.g. "e3" or "3").' },
+        text: textTargetProperty,
         value: { type: 'string', description: 'Text to fill into the field.' },
         auto_screenshot: autoScreenshotProperty,
         observe: observeProperty,
@@ -205,11 +264,12 @@ export const browserToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'browser_hover',
-    description: 'Hover mouse pointer over an element with neon spotlight ripple to reveal dropdowns, menus, or tooltips.',
+    description: 'Hover an element to reveal dropdowns, menus or tooltips. Target with selector/ref/text.',
     parameters: params({
       tab: tabProperty,
       selector: selectorProperty,
-      ref: { type: 'string', description: 'Element ref (e.g. "e1", "1").' },
+      ref: { type: 'string', description: 'Element ref from browser_inspect (e.g. "e3" or "3").' },
+      text: textTargetProperty,
       auto_screenshot: autoScreenshotProperty,
     }),
   },
@@ -284,6 +344,60 @@ export const browserToolDefinitions: ToolDefinition[] = [
     }, ['steps']),
   },
   {
+    name: 'browser_wait_for',
+    description: 'Wait until text becomes visible, the URL contains a substring, or network activity is idle. Provide at least one of text, url or network_idle.',
+    parameters: params({
+      tab: tabProperty,
+      text: { type: 'string', description: 'Visible text to wait for.' },
+      url: { type: 'string', description: 'URL substring to wait for.' },
+      network_idle: { type: 'boolean', description: 'Wait for no network activity for 500ms.' },
+      timeout_ms: { type: 'integer', minimum: 500, maximum: 30000, description: 'Maximum wait; defaults to 10000.' },
+    }),
+  },
+  {
+    name: 'browser_read',
+    description: 'Return readable page content (headings, lists and links preserved as light Markdown) for reading or summarizing.',
+    parameters: params({
+      tab: tabProperty,
+      maxChars: { type: 'integer', minimum: 1000, maximum: 20000, description: 'Maximum output characters; defaults to 8000.' },
+    }),
+  },
+  {
+    name: 'browser_console',
+    description: 'Return recent console messages and uncaught page errors from the browser session.',
+    parameters: params({
+      limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Number of recent records; defaults to 50.' },
+      clear: { type: 'boolean', description: 'Clear the buffer after reading.' },
+    }),
+  },
+  {
+    name: 'browser_download',
+    description: 'Download a file by clicking selector/ref/text or by navigating url, then save it inside the workspace. Returns the saved path.',
+    parameters: params({
+      tab: tabProperty,
+      selector: selectorProperty,
+      ref: { type: 'string', description: 'Element ref that starts the download.' },
+      text: textTargetProperty,
+      url: { type: 'string', description: 'Direct URL to download instead of clicking.' },
+      filename: { type: 'string', description: 'Optional file name; sanitized and stored under .tbot/downloads.' },
+      timeout_ms: { type: 'integer', minimum: 1000, maximum: 60000, description: 'Download start timeout; defaults to 20000.' },
+    }),
+  },
+  {
+    name: 'browser_upload',
+    description: 'Set files on a file input. Each path must stay inside the workspace; sensitive files are refused.',
+    parameters: params(
+      {
+        tab: tabProperty,
+        selector: selectorProperty,
+        ref: { type: 'string', description: 'Element ref of the file input.' },
+        text: textTargetProperty,
+        files: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 10, description: 'Workspace-relative file paths.' },
+      },
+      ['files']
+    ),
+  },
+  {
     name: 'browser_close',
     description: 'Close the isolated browser session and purge its temporary profile directory.',
     parameters: params({}),
@@ -293,7 +407,7 @@ export const browserToolDefinitions: ToolDefinition[] = [
 export async function updateLiveBrowserHud(page: any, stepText: string): Promise<void> {
   if (!page || page.isClosed?.()) return;
   try {
-    await page.evaluate((text: string) => {
+    await evaluatePage(page,(text: string) => {
       let hud = document.getElementById('__tbot_live_hud__');
       if (!hud) {
         hud = document.createElement('div');
@@ -410,7 +524,7 @@ export async function updateLiveBrowserHud(page: any, stepText: string): Promise
 export async function checkUserAborted(page: any): Promise<void> {
   if (!page || page.isClosed?.()) return;
   try {
-    const aborted = await page.evaluate(() => {
+    const aborted = await evaluatePage(page,() => {
       const val = Boolean((window as any).__tbotUserAborted);
       if (val) {
         (window as any).__tbotUserAborted = false;
@@ -531,7 +645,7 @@ export async function inspectPageElements(
   snapshots.delete(page);
   const generation = randomUUID().slice(0, 8);
 
-  const data = await page.evaluate(
+  const data = await evaluatePage(page,
     ({ previous, generation, maxChars }: { previous: string[]; generation: string; maxChars: number }) => {
       const isVisible = (el: Element): boolean => {
         const r = el.getBoundingClientRect();
@@ -674,15 +788,13 @@ export async function captureAnnotatedScreenshotAndElements(
   workspace: string
 ): Promise<{ screenshotPath: string; title: string; url: string; elementSummary: string }> {
   const baseDir = workspace ? workspace : process.cwd();
-  const dir = join(baseDir, '.tbot', 'screenshots');
-  await mkdir(dir, { recursive: true });
-  const shotPath = join(dir, `browser-${Date.now()}.png`);
+  const shotPath = await createScreenshotPath(baseDir, 'browser');
 
   // 1. Scan page elements & update refs
   const { items } = await inspectPageElements(page);
 
   // 2. Inject Set-of-Marks visual overlay badges
-  await page.evaluate(() => {
+  await evaluatePage(page,() => {
     document.getElementById('__tbot_som_overlay__')?.remove();
     const overlay = document.createElement('div');
     overlay.id = '__tbot_som_overlay__';
@@ -735,7 +847,7 @@ export async function captureAnnotatedScreenshotAndElements(
       timeout: 15000,
     });
   } finally {
-    await page.evaluate(() => {
+    await evaluatePage(page,() => {
       document.getElementById('__tbot_som_overlay__')?.remove();
     }).catch(() => {});
   }
@@ -788,6 +900,13 @@ async function observeBrowserResult(
 }
 
 function setupPageHandlers(page: any): void {
+  page.on('console', (message: any) => {
+    try { recordConsole(String(message.type?.() ?? 'log'), String(message.text?.() ?? ''), message.location?.()?.url); } catch { /* ignore */ }
+  });
+  page.on('pageerror', (error: any) => {
+    recordConsole('pageerror', error?.message ? String(error.message) : String(error));
+  });
+
   // Avoid freezing on dialogs without implicitly approving page confirmations.
   page.on('dialog', async (dialog: any) => {
     try {
@@ -846,6 +965,8 @@ async function browser(options?: { headless?: boolean }): Promise<any> {
     } catch {
       throw new Error('Browser tools require playwright-core. Install it and a compatible Chromium or Chrome browser.');
     }
+    // Crashed sessions leave %TEMP%/tbot-browser-* profile directories behind.
+    await sweepStaleBrowserProfiles().catch(() => 0);
     const dir = await mkdtemp(join(tmpdir(), 'tbot-browser-'));
     profile = dir;
 
@@ -896,6 +1017,24 @@ async function browser(options?: { headless?: boolean }): Promise<any> {
 
       context.setDefaultTimeout(10000);
 
+      // Validate every main-frame navigation, including redirects, before the
+      // request leaves the browser. Non-navigation resources are untouched.
+      try {
+        await context.route('**/*', async (route: any) => {
+          const request = route.request();
+          if (!request.isNavigationRequest?.()) return route.continue();
+          try {
+            await validateBrowserUrl(request.url(), activeLocalNavigation);
+            return await route.continue();
+          } catch {
+            try { return await route.abort('blockedbyclient'); }
+            catch { return undefined; }
+          }
+        });
+      } catch {
+        // Older playwright-core builds without route support: goto validation still applies.
+      }
+
       // Register init script so every new page/tab gets the ESC listener and abort flag
       try {
         await context.addInitScript(() => {
@@ -942,24 +1081,51 @@ async function browser(options?: { headless?: boolean }): Promise<any> {
   }
 }
 
-async function pageFor(value: unknown, options?: { headless?: boolean }): Promise<any> {
+/**
+ * Resolve a tab id to its page. An unknown id falls back to the active tab
+ * (or the first open tab) and returns a note instead of failing the call;
+ * `create: false` means the caller must navigate first when nothing is open.
+ */
+async function resolveTab(
+  value: unknown,
+  options?: { headless?: boolean; create?: boolean }
+): Promise<{ page: any; id: number; note?: string }> {
   const ctx = await browser(options);
   if (!tabs.size) {
+    if (options?.create === false) {
+      throw new Error('No browser tab is open yet. Call browser_navigate with a url first.');
+    }
     remember(await ctx.newPage());
   }
-  const id = value === undefined ? tabs.keys().next().value : value;
-  if (typeof id !== 'number' || !Number.isInteger(id) || !tabs.has(id)) {
-    throw new Error('Unknown browser tab. Call browser_tabs to view active tab IDs.');
+
+  const requested = value === undefined || value === null || value === '' ? undefined : Number(value);
+  const fallbackId = activeTabId !== undefined && tabs.has(activeTabId)
+    ? activeTabId
+    : tabs.keys().next().value as number | undefined;
+  let id: number | undefined;
+  let note: string | undefined;
+
+  if (requested !== undefined && Number.isInteger(requested) && tabs.has(requested)) {
+    id = requested;
+  } else if (value !== undefined && value !== null && value !== '') {
+    id = fallbackId;
+    note = `Tab ${String(value)} is not open; using tab ${id} instead. Call browser_tabs to see open tabs.`;
+  } else {
+    id = fallbackId;
   }
-  const page = tabs.get(id);
+
+  const page = id === undefined ? undefined : tabs.get(id);
+  if (!page || id === undefined) {
+    throw new Error('The browser tab was closed. Call browser_tabs to list open tabs or browser_navigate to open one.');
+  }
   if (activeTabId !== id) {
     activeTabId = id;
     await inspectPageElements(page).catch(() => {});
   }
-  return page;
+  return { page, id, note };
 }
 
-export function safeUrl(raw: string): string {
+function normalizeUrlInput(raw: string): string {
   let trimmed = raw.trim();
   if (trimmed === 'about:blank') return 'about:blank';
   if (!/^https?:\/\//i.test(trimmed)) {
@@ -969,23 +1135,29 @@ export function safeUrl(raw: string): string {
       trimmed = `https://${trimmed}`;
     }
   }
-  const url = new URL(trimmed);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('Only HTTP(S) URLs without embedded credentials are allowed');
+  return trimmed;
+}
+
+/**
+ * Public-URL policy for every navigation (including redirects). Loopback is
+ * only reachable with an explicit opt-in; private LAN and metadata addresses
+ * are always blocked by `assertPublicHttpUrl`.
+ */
+export async function validateBrowserUrl(raw: string, allowLocal = false): Promise<string> {
+  const normalized = normalizeUrlInput(raw);
+  if (normalized === 'about:blank') return normalized;
+  try {
+    const url = await assertPublicHttpUrl(normalized, { allowLocal: allowLocal || envLocalNavigationAllowed });
+    return url.href;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    let loopback = false;
+    try { loopback = isLoopback(new URL(normalized).hostname); } catch { /* keep the original error */ }
+    if (loopback) {
+      throw new Error(`${message} For a local development server, retry with "allow_local": true (or set TBOT_BROWSER_ALLOW_LOCAL=true).`);
+    }
+    throw new Error(message);
   }
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (
-    host === '169.254.169.254' ||
-    host === '0.0.0.0' ||
-    host === '::' ||
-    host === '0:0:0:0:0:0:0:0' ||
-    host.endsWith(':169.254.169.254') ||
-    host.endsWith(':a9fe:a9fe') ||
-    host === 'metadata.google.internal'
-  ) {
-    throw new Error(`Blocked unsafe or cloud metadata URL host: ${url.hostname}`);
-  }
-  return url.href;
 }
 
 function displayUrl(raw: string): string {
@@ -1019,6 +1191,8 @@ export async function closeBrowser(): Promise<void> {
   activeTabId = undefined;
   tabs.clear();
   lastElementMap.clear();
+  consoleHistory.length = 0;
+  activeLocalNavigation = false;
   try {
     if (current) await current.close();
   } finally {
@@ -1157,6 +1331,97 @@ export async function resolveElementLocator(
   return { locator: page.locator(primarySelector), ref: targetRef };
 }
 
+const TARGET_HINT =
+  'Provide "ref" (from browser_inspect), "selector" (CSS/Playwright) or "text" (visible label). ' +
+  'Example: {"ref":"e3"} or {"text":"Sign in"}.';
+
+function availableElementHints(limit = 8): string {
+  const entries = [...lastElementMap.entries()].slice(0, limit);
+  if (!entries.length) return 'none (call browser_inspect first)';
+  return entries.map(([ref, meta]) => {
+    const label = (meta.text || meta.ariaLabel || meta.name || meta.placeholder || '').slice(0, 40);
+    return `${ref} ${meta.role}${label ? ` "${label}"` : ''}`;
+  }).join(', ');
+}
+
+function missingElementError(target: string, rechecked: boolean): Error {
+  return new Error(
+    `Element "${target}" was not found${rechecked ? ' (the page was re-inspected once)' : ''}. ` +
+    `Available refs: ${availableElementHints()}. Call browser_inspect to refresh refs, or pass text: "<visible label>".`
+  );
+}
+
+async function resolveByText(page: any, text: string): Promise<{ locator: any; ref: string }> {
+  const roleLocators = [
+    page.getByRole('button', { name: text, exact: false }),
+    page.getByRole('link', { name: text, exact: false }),
+    page.getByRole('tab', { name: text, exact: false }),
+    page.getByRole('menuitem', { name: text, exact: false }),
+    page.getByRole('checkbox', { name: text, exact: false }),
+    page.getByText(text, { exact: false }),
+  ];
+  for (const locator of roleLocators) {
+    let count = 0;
+    try { count = await locator.count(); } catch { count = 0; }
+    for (let index = 0; index < Math.min(count, 20); index++) {
+      const nth = locator.nth(index);
+      if (await nth.isVisible().catch(() => false)) return { locator: nth, ref: text };
+    }
+    if (count > 0) return { locator: locator.first(), ref: text };
+  }
+  return { locator: page.getByText(text, { exact: false }).first(), ref: text };
+}
+
+/**
+ * Resolve selector/ref/text to a locator. Stale refs get one automatic
+ * re-inspect; every failure names the next step.
+ */
+async function resolveElementTarget(
+  page: any,
+  args: Record<string, unknown>,
+  toolName: string
+): Promise<{ locator: any; ref: string; note?: string }> {
+  const ref = typeof args.ref === 'string' && args.ref.trim() ? args.ref.trim() : undefined;
+  const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined;
+  const text = typeof args.text === 'string' && args.text.trim() ? args.text.trim() : undefined;
+
+  if (ref) {
+    let resolved = await resolveElementLocator(page, ref);
+    if ((await resolved.locator.count().catch(() => 0)) === 0) {
+      await inspectPageElements(page).catch(() => undefined);
+      resolved = await resolveElementLocator(page, ref);
+      if ((await resolved.locator.count().catch(() => 0)) > 0) {
+        return { ...resolved, note: `Ref "${ref}" was stale; the page was re-inspected automatically.` };
+      }
+      throw missingElementError(ref, true);
+    }
+    return resolved;
+  }
+
+  if (selector) {
+    let resolved: { locator: any; ref: string };
+    try {
+      resolved = await resolveElementLocator(page, selector);
+    } catch {
+      throw new Error(`"${selector}" is not a valid selector for ${toolName}. ${TARGET_HINT}`);
+    }
+    if ((await resolved.locator.count().catch(() => 0)) === 0) {
+      throw new Error(`No element matches selector "${selector}". Call browser_inspect and use a ref, or pass text: "<visible label>".`);
+    }
+    return resolved;
+  }
+
+  if (text) {
+    const resolved = await resolveByText(page, text);
+    if ((await resolved.locator.count().catch(() => 0)) === 0) {
+      throw new Error(`No visible element with text "${text}". Call browser_inspect to see the page, or pass a ref/selector.`);
+    }
+    return resolved;
+  }
+
+  throw new Error(`${toolName} needs a target. ${TARGET_HINT}`);
+}
+
 export async function handleBrowserTool(
   name: string,
   args: Record<string, unknown>,
@@ -1211,7 +1476,7 @@ async function runBrowserTool(
         const p = await ctx.newPage();
         const id = remember(p);
         if (typeof args.url === 'string' && args.url.trim()) {
-          const targetUrl = safeUrl(args.url);
+          const targetUrl = await validateBrowserUrl(args.url);
           await updateLiveBrowserHud(p, `Geziniliyor: ${displayUrl(targetUrl)}`);
           await p.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
           await updateLiveBrowserHud(p, 'Hazır');
@@ -1220,18 +1485,18 @@ async function runBrowserTool(
       }
 
       if (action === 'close') {
-        const page = await pageFor(args.tab);
+        const { page } = await resolveTab(args.tab, { create: false });
         await page.close();
         return JSON.stringify({ action: 'close', status: 'closed' });
       }
 
       if (action === 'switch') {
-        const page = await pageFor(args.tab);
+        const { page, id, note } = await resolveTab(args.tab, { create: false });
         await page.bringToFront();
         await updateLiveBrowserHud(page, 'Sekmeye geçildi');
         await checkUserAborted(page);
-        activeTabId = args.tab as number;
-        return JSON.stringify({ action: 'switch', activeTab: args.tab, url: displayUrl(page.url()), title: clean(await page.title()) });
+        activeTabId = id;
+        return applyTabNote(JSON.stringify({ action: 'switch', activeTab: id, url: displayUrl(page.url()), title: clean(await page.title()) }), note);
       }
 
       // Default: list tabs
@@ -1251,7 +1516,7 @@ async function runBrowserTool(
       const p = await ctx.newPage();
       const id = remember(p);
       if (typeof args.url === 'string' && args.url.trim()) {
-        const targetUrl = safeUrl(args.url);
+        const targetUrl = await validateBrowserUrl(args.url);
         await updateLiveBrowserHud(p, `Geziniliyor: ${displayUrl(targetUrl)}`);
         await p.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
         await updateLiveBrowserHud(p, 'Hazır');
@@ -1259,7 +1524,19 @@ async function runBrowserTool(
       return JSON.stringify({ tab: id, url: displayUrl(p.url()), title: clean(await p.title()) });
     }
 
-    const page = await pageFor(args.tab, { headless: typeof args.headless === 'boolean' ? args.headless : undefined });
+    if (name === 'browser_console') {
+      const limit = Math.min(200, Math.max(1, Number(args.limit ?? 50) || 50));
+      const records = consoleHistory.slice(-limit);
+      if (args.clear === true) consoleHistory.length = 0;
+      return JSON.stringify({ ok: true, count: records.length, records });
+    }
+
+    const needsPage = name === 'browser_navigate' || name === 'browser_open' || name === 'browser_batch';
+    const { page, id: tabId, note: tabNote } = await resolveTab(args.tab, {
+      headless: typeof args.headless === 'boolean' ? args.headless : undefined,
+      create: needsPage,
+    });
+    const finish = (output: string) => applyTabNote(output, tabNote);
     await checkUserAborted(page);
 
     if (name === 'browser_batch') {
@@ -1295,6 +1572,7 @@ async function runBrowserTool(
           const stepResult = await runBrowserTool(toolName, {
             ...step,
             tab: args.tab,
+            allow_local: args.allow_local ?? step.allow_local,
             auto_screenshot: false,
             observe: 'none',
           }, options);
@@ -1305,37 +1583,48 @@ async function runBrowserTool(
         }
       }
       const summary = `Batch completed ${steps.length} step(s).\n${completed.join('\n')}`;
-      return await observeBrowserResult(page, options.workspace, args, summary);
+      return finish(await observeBrowserResult(page, options.workspace, args, summary));
     }
 
     if (name === 'browser_close_tab') {
       await page.close();
-      return 'Tab closed.';
+      return finish('Tab closed.');
     }
 
     if (name === 'browser_navigate' || name === 'browser_open') {
-      const targetUrl = safeUrl(str(args.url, 'url'));
+      const localAllowed = args.allow_local === true;
+      const targetUrl = await validateBrowserUrl(str(args.url, 'url'), localAllowed);
       await updateLiveBrowserHud(page, `Geziniliyor: ${displayUrl(targetUrl)}`);
       await checkUserAborted(page);
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      // The opt-in covers this navigation and its redirects only; it never
+      // leaks into a later public page or another call.
+      const previousLocalNavigation = activeLocalNavigation;
+      activeLocalNavigation = localAllowed;
+      try {
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      } finally {
+        activeLocalNavigation = previousLocalNavigation;
+      }
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
       const result = JSON.stringify({
+        tab: tabId,
         url: displayUrl(page.url()),
         title: clean(cap(await page.title(), 300)),
         dialogsCaptured: lastDialogHistory.length > 0 ? lastDialogHistory.slice(-3) : undefined,
       });
 
-      if (args.auto_screenshot === true) {
+      if (guiObservation(args) === 'visual') {
         try {
           const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-          return formatWithObservation(obs, result);
+          await pruneScreenshots(options.workspace).catch(() => undefined);
+          return finish(formatWithObservation(obs, result));
         } catch {
-          return result;
+          return finish(result);
         }
       }
-      return result;
+      return finish(result);
     }
 
     // Inspect: 120 elements, viewport priority, rich semantic tree
@@ -1351,9 +1640,10 @@ async function runBrowserTool(
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
-      return cap(
+      return finish(cap(
         JSON.stringify(
           {
+            tab: tabId,
             url: displayUrl(page.url()),
             title: clean(await page.title()),
             text: data.text,
@@ -1363,16 +1653,12 @@ async function runBrowserTool(
           (_k, v) => (typeof v === 'string' ? clean(v) : v)
         ),
         maxChars
-      );
+      ));
     }
 
-    // Click: Resilient element resolution with live neon spotlight ripple
+    // Click: selector/ref/text, stale ref auto-recovery
     if (name === 'browser_click') {
-      const rawTarget = typeof args.ref === 'string' && args.ref.trim() ? args.ref : str(args.selector, 'selector or ref');
-      const { locator, ref } = await resolveElementLocator(page, rawTarget);
-      if ((await locator.count().catch(() => 0)) === 0) {
-        throw new Error(`Element "${rawTarget}" not found. Inspect the page again.`);
-      }
+      const { locator, ref, note: targetNote } = await resolveElementTarget(page, args, 'browser_click');
       await locator.scrollIntoViewIfNeeded().catch(() => {});
       await updateLiveBrowserHud(page, `Tıklanıyor: [${ref}]`);
       await highlightElementSpotlight(page, locator, ref);
@@ -1381,25 +1667,35 @@ async function runBrowserTool(
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
-      const result = `Clicked element ${ref}.`;
-      return await observeBrowserResult(page, options.workspace, args, result);
+      const result = `Clicked element ${ref}.${targetNote ? ` ${targetNote}` : ''}`;
+      return finish(await observeBrowserResult(page, options.workspace, args, result));
     }
 
-    // Type / Fill: Resilient form filling with live spotlight focus
+    // Type / Fill: target optional (focused field), stale ref auto-recovery
     if (name === 'browser_type' || name === 'browser_fill') {
-      const rawTarget = typeof args.ref === 'string' && args.ref.trim() ? args.ref : str(args.selector, 'selector or ref');
-      const rawVal = args.value ?? args.text ?? args.input;
+      const rawVal = args.value ?? args.input;
       if (rawVal === undefined || rawVal === null) {
-        throw new Error('value is required for type/fill');
+        throw new Error('value is required for browser_type/browser_fill. Example: {"ref":"e3","value":"hello"}.');
       }
       const value = String(rawVal);
       const clearFirst = name === 'browser_fill' || args.clear !== false;
+      const hasTarget = [args.ref, args.selector, args.text].some(
+        candidate => typeof candidate === 'string' && candidate.trim().length > 0
+      );
 
-      const { locator, ref } = await resolveElementLocator(page, rawTarget);
-      if ((await locator.count().catch(() => 0)) === 0) {
-        throw new Error(`Element "${rawTarget}" not found. Inspect the page again.`);
+      if (!hasTarget) {
+        // No target: type into whatever currently has focus.
+        await checkUserAborted(page);
+        if (clearFirst) {
+          await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+        }
+        await page.keyboard.type(value, { delay: 5 });
+        await updateLiveBrowserHud(page, 'Hazır');
+        await checkUserAborted(page);
+        return finish(await observeBrowserResult(page, options.workspace, args, 'Typed into the focused field.'));
       }
 
+      const { locator, ref, note: targetNote } = await resolveElementTarget(page, args, name);
       await locator.scrollIntoViewIfNeeded().catch(() => {});
       await updateLiveBrowserHud(page, `Yazılıyor: [${ref}]`);
       await highlightElementSpotlight(page, locator, ref);
@@ -1412,17 +1708,13 @@ async function runBrowserTool(
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
-      const result = name === 'browser_fill' ? `Filled form element ${ref}.` : `Typed into element ${ref}.`;
-      return await observeBrowserResult(page, options.workspace, args, result);
+      const result = `${name === 'browser_fill' ? 'Filled' : 'Typed into'} element ${ref}.${targetNote ? ` ${targetNote}` : ''}`;
+      return finish(await observeBrowserResult(page, options.workspace, args, result));
     }
 
-    // Hover with spotlight
+    // Hover
     if (name === 'browser_hover') {
-      const rawTarget = typeof args.ref === 'string' && args.ref.trim() ? args.ref : str(args.selector, 'selector or ref');
-      const { locator, ref } = await resolveElementLocator(page, rawTarget);
-      if ((await locator.count().catch(() => 0)) === 0) {
-        throw new Error(`Element "${rawTarget}" not found. Inspect the page again.`);
-      }
+      const { locator, ref, note: targetNote } = await resolveElementTarget(page, args, 'browser_hover');
       await locator.scrollIntoViewIfNeeded().catch(() => {});
       await updateLiveBrowserHud(page, `Üzerine geliniyor: [${ref}]`);
       await highlightElementSpotlight(page, locator, ref);
@@ -1431,8 +1723,8 @@ async function runBrowserTool(
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
-      const result = `Hovered over element ${ref}.`;
-      return await observeBrowserResult(page, options.workspace, args, result);
+      const result = `Hovered over element ${ref}.${targetNote ? ` ${targetNote}` : ''}`;
+      return finish(await observeBrowserResult(page, options.workspace, args, result));
     }
 
     // Scroll
@@ -1456,7 +1748,7 @@ async function runBrowserTool(
         await updateLiveBrowserHud(page, `Kaydırılıyor: ${direction} (${amount}px)`);
         await checkUserAborted(page);
 
-        await page.evaluate(({ direction, amount }: { direction: string; amount: number }) => {
+        await evaluatePage(page,({ direction, amount }: { direction: string; amount: number }) => {
           if (direction === 'top') {
             window.scrollTo({ top: 0, behavior: 'smooth' });
           } else if (direction === 'bottom') {
@@ -1474,7 +1766,7 @@ async function runBrowserTool(
       await updateLiveBrowserHud(page, 'Hazır');
       await checkUserAborted(page);
 
-      return await observeBrowserResult(page, options.workspace, args, result);
+      return finish(await observeBrowserResult(page, options.workspace, args, result));
     }
 
     // Press Key
@@ -1487,7 +1779,7 @@ async function runBrowserTool(
       await checkUserAborted(page);
 
       const result = `Pressed key "${key}".`;
-      return await observeBrowserResult(page, options.workspace, args, result);
+      return finish(await observeBrowserResult(page, options.workspace, args, result));
     }
 
     // Evaluate JavaScript
@@ -1495,26 +1787,166 @@ async function runBrowserTool(
       await checkUserAborted(page);
       const script = str(args.script, 'script');
       // Evaluation may have side effects before throwing; never replay it.
-      const evalResult: unknown = await page.evaluate(script);
+      const evalResult: unknown = await evaluatePage(page,script);
       await checkUserAborted(page);
       const serialized = typeof evalResult === 'object' && evalResult !== null ? JSON.stringify(evalResult) : String(evalResult);
-      return cap(serialized, 6000);
+      return finish(cap(serialized, 6000));
+    }
+
+    // Wait for text, URL or network idle
+    if (name === 'browser_wait_for') {
+      const text = typeof args.text === 'string' && args.text.trim() ? args.text.trim() : undefined;
+      const urlPattern = typeof args.url === 'string' && args.url.trim() ? args.url.trim() : undefined;
+      const networkIdle = args.network_idle === true;
+      if (!text && !urlPattern && !networkIdle) {
+        throw new Error('browser_wait_for needs at least one of "text", "url" or "network_idle": true. Example: {"text":"Saved","timeout_ms":15000}.');
+      }
+      const timeout = Math.min(30000, Math.max(500, Number(args.timeout_ms ?? 10000) || 10000));
+      await checkUserAborted(page);
+      if (text) await page.getByText(text, { exact: false }).first().waitFor({ state: 'visible', timeout });
+      if (urlPattern) {
+        const escaped = urlPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        await page.waitForURL(new RegExp(escaped), { timeout });
+      }
+      if (networkIdle) await page.waitForLoadState('networkidle', { timeout });
+      await checkUserAborted(page);
+      return finish(JSON.stringify({
+        ok: true,
+        tab: tabId,
+        waitedFor: { text, url: urlPattern, networkIdle },
+        url: displayUrl(page.url()),
+        title: clean(await page.title().catch(() => '')),
+      }));
+    }
+
+    // Readable page content
+    if (name === 'browser_read') {
+      const maxChars = Math.min(20000, Math.max(1000, Number(args.maxChars ?? 8000) || 8000));
+      await checkUserAborted(page);
+      const readable = await evaluatePage(page,(limit: number) => {
+        const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG']);
+        const parts: string[] = [];
+        let size = 0;
+        const push = (line: string) => {
+          const value = line.replace(/\s+/g, ' ').trim();
+          if (!value) return;
+          parts.push(value);
+          size += value.length + 1;
+        };
+        const walk = (node: Element) => {
+          if (size >= limit) return;
+          if (skip.has(node.tagName)) return;
+          const style = window.getComputedStyle(node);
+          if (style.display === 'none' || style.visibility === 'hidden') return;
+          const tag = node.tagName.toLowerCase();
+          if (/^h[1-6]$/.test(tag)) {
+            push(`${'#'.repeat(Number(tag[1]))} ${(node.textContent || '').replace(/\s+/g, ' ').trim()}`);
+            return;
+          }
+          if (tag === 'li') {
+            push(`- ${(node.textContent || '').replace(/\s+/g, ' ').trim()}`);
+            return;
+          }
+          if (tag === 'a') {
+            const href = (node as HTMLAnchorElement).href;
+            const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
+            if (label && href && !href.startsWith('javascript:')) push(`[${label}](${href})`);
+            return;
+          }
+          if (['p', 'blockquote', 'pre', 'td', 'th', 'dt', 'dd', 'figcaption'].includes(tag)) {
+            push((node.textContent || '').replace(/\s+/g, ' ').trim());
+            return;
+          }
+          for (const child of Array.from(node.children)) {
+            if (size >= limit) break;
+            walk(child);
+          }
+        };
+        const root = document.querySelector('main, article, [role="main"]') || document.body;
+        if (root) walk(root);
+        return { text: parts.join('\n').slice(0, limit), truncated: size >= limit };
+      }, maxChars);
+      return finish(JSON.stringify({
+        ok: true,
+        tab: tabId,
+        url: displayUrl(page.url()),
+        title: clean(await page.title().catch(() => '')),
+        content: clean(String(readable?.text ?? '')),
+        truncated: Boolean(readable?.truncated),
+      }));
+    }
+
+    // Download a file started by a click or a direct URL
+    if (name === 'browser_download') {
+      const timeout = Math.min(60000, Math.max(1000, Number(args.timeout_ms ?? 20000) || 20000));
+      const requested = typeof args.filename === 'string' ? args.filename.trim() : '';
+      const safeName = (requested || `download-${Date.now()}`).replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+      const directory = await resolveWorkspacePath(options.workspace, '.tbot/downloads');
+      await mkdir(directory, { recursive: true });
+      const destination = await resolveWorkspacePath(options.workspace, join('.tbot/downloads', `${randomUUID()}-${safeName}`));
+
+      await checkUserAborted(page);
+      const downloadPromise = page.waitForEvent('download', { timeout });
+      // A failed target resolution must not leave an unhandled rejection.
+      downloadPromise.catch(() => undefined);
+      const hasTarget = [args.ref, args.selector, args.text].some(
+        candidate => typeof candidate === 'string' && candidate.trim().length > 0
+      );
+      if (hasTarget) {
+        const { locator } = await resolveElementTarget(page, args, 'browser_download');
+        await locator.click({ timeout: 10000 });
+      } else if (typeof args.url === 'string' && args.url.trim()) {
+        const targetUrl = await validateBrowserUrl(args.url);
+        await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => undefined);
+      } else {
+        throw new Error('browser_download needs a target: "ref"/"selector"/"text" to click, or a direct "url".');
+      }
+      const download = await downloadPromise;
+      await download.saveAs(destination);
+      return finish(JSON.stringify({
+        ok: true,
+        tab: tabId,
+        path: destination,
+        suggestedFilename: clean(String(download.suggestedFilename?.() ?? safeName)),
+        sourceUrl: displayUrl(page.url()),
+      }));
+    }
+
+    // Upload files to a file input
+    if (name === 'browser_upload') {
+      const files = Array.isArray(args.files) ? args.files.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+      if (!files.length) throw new Error('browser_upload needs a non-empty "files" array of workspace-relative paths.');
+      if (files.length > 10) throw new Error('browser_upload accepts at most 10 files per call.');
+      const resolvedFiles: string[] = [];
+      for (const file of files) {
+        const absolute = await resolveWorkspacePath(options.workspace, file);
+        if (isSensitivePath(absolute)) throw new Error(`Refusing to upload a protected file: ${file}`);
+        const info = await stat(absolute).catch(() => undefined);
+        if (!info?.isFile()) throw new Error(`Upload file not found or not a regular file: ${file}`);
+        resolvedFiles.push(absolute);
+      }
+      const { locator, ref } = await resolveElementTarget(page, args, 'browser_upload');
+      await locator.setInputFiles(resolvedFiles, { timeout: 10000 });
+      return finish(JSON.stringify({
+        ok: true,
+        tab: tabId,
+        target: ref,
+        files: resolvedFiles.map(path => basename(path)),
+      }));
     }
 
     // Screenshot with Set-of-Marks (SoM) and smart masking
     if (name === 'browser_screenshot') {
       await checkUserAborted(page);
       const baseDir = options.workspace ? options.workspace : process.cwd();
-      const dir = join(baseDir, '.tbot', 'screenshots');
-      await mkdir(dir, { recursive: true });
-      const path = join(dir, `browser-${Date.now()}.png`);
+      const path = await createScreenshotPath(baseDir, 'browser');
 
       const annotate = args.annotate !== false;
       const maskInputs = args.mask_inputs === true;
 
       if (annotate) {
         // Inject Set-of-Marks overlay
-        await page.evaluate(() => {
+        await evaluatePage(page,() => {
           document.getElementById('__tbot_som_overlay__')?.remove();
           const overlay = document.createElement('div');
           overlay.id = '__tbot_som_overlay__';
@@ -1577,14 +2009,15 @@ async function runBrowserTool(
         });
       } finally {
         if (annotate) {
-          await page.evaluate(() => {
+          await evaluatePage(page,() => {
             document.getElementById('__tbot_som_overlay__')?.remove();
           }).catch(() => {});
         }
       }
 
       await checkUserAborted(page);
-      return `Screenshot saved: ${path}`;
+      await pruneScreenshots(options.workspace).catch(() => undefined);
+      return finish(`Screenshot saved: ${path}`);
     }
 
     throw new Error(`Unknown browser tool: ${name}`);

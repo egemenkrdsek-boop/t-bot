@@ -1,6 +1,9 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { StringDecoder } from 'node:string_decoder';
 import type { ToolDefinition } from '../types.js';
 import { globalGroundingLedger, validateFileSyntax } from '../grounding.js';
@@ -9,7 +12,9 @@ import { globalContextCache } from '../context-cache.js';
 import { estimateTokens, globalTokenTracker } from '../token-optimizer.js';
 import { handleShellTool } from './shell.js';
 import { applyEdit } from './edit-match.js';
+import { resolveGitExecutable } from './git.js';
 import { assertNotSensitivePath, isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
+import { childEnvironment } from '../security/env.js';
 import { redactSecrets } from '../secrets.js';
 import { saveCheckpoint } from '../checkpoints.js';
 
@@ -281,6 +286,356 @@ async function readMutationText(target: string, signal?: AbortSignal): Promise<s
   return text;
 }
 
+/** Full-file NUL scan (bounded to the caller's size cap), so binaries past the first 4 KB are still caught. */
+async function fileHasNul(target: string, size: number, signal?: AbortSignal): Promise<boolean> {
+  const handle = await fs.open(target, 'r');
+  try {
+    const chunk = Buffer.alloc(64 * 1024);
+    let position = 0;
+    while (position < size) {
+      signal?.throwIfAborted();
+      const length = Math.min(chunk.length, size - position);
+      const { bytesRead } = await handle.read(chunk, 0, length, position);
+      if (!bytesRead) break;
+      if (chunk.subarray(0, bytesRead).includes(0)) return true;
+      position += bytesRead;
+    }
+    return false;
+  } finally {
+    await handle.close();
+  }
+}
+
+const SEARCH_BUDGET_MS = 8_000;
+const SEARCH_REGEX_LINE_LIMIT = 8_192;
+const GIT_REPO_CACHE_MS = 30_000;
+/** Reject scopes that are the usual catastrophic-backtracking shapes. */
+const UNSAFE_REGEX_PATTERNS: RegExp[] = [
+  /\([^()]*[+*][^()]*\)\s*[+*{]/u, // (a+)+, (a*)*
+  /\([^()]*\|[^()]*\)\s*[+*{]/u,   // (a|a?)+, (a|aa)+
+  /\\[1-9]/u,                       // backreferences
+  /\(\?(?:=|!|<=|<!)/u,             // lookarounds
+];
+/** POSIX ERE (git grep -E) cannot express JS-specific escapes; use the bounded Node scan instead. */
+const JS_ONLY_REGEX = /\\[dDwWsSbBAZz]|\(\?[:=!<]|\\p\{|\\u\{/u;
+
+interface RegexMatchResult { index: number; length: number }
+
+/**
+ * Runs a user-supplied regular expression off the main thread. A catastrophic
+ * pattern blocks the worker event loop, never the agent; the parent terminates
+ * the thread after 2.5 s. The worker file is compiled to dist/tools.
+ */
+class RegexMatcher {
+  private worker: Worker | null = null;
+  private nextId = 1;
+  private pending = new Map<number, {
+    resolve: (matches: Array<RegexMatchResult | null>) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+
+  constructor(private readonly query: string) {}
+
+  private ensureWorker(): Worker {
+    if (this.worker) return this.worker;
+    const compiled = new URL('./search-worker.js', import.meta.url);
+    const source = new URL('./search-worker.ts', import.meta.url);
+    const target = fileURLToPath(import.meta.url).endsWith('.ts')
+      ? source
+      : (existsSync(fileURLToPath(compiled)) ? compiled : source);
+    // Under tsx the source worker is a .ts file and needs the same loader.
+    // Only loader flags are forwarded: `--test`, `--input-type` and inspector
+    // flags belong to the parent and break (or hijack) a worker that loads a file.
+    const loaderFlags = new Set(['--import', '--loader', '--experimental-loader', '--require', '-r', '--conditions']);
+    const filtered: string[] = [];
+    for (let i = 0; i < process.execArgv.length; i++) {
+      const arg = process.execArgv[i];
+      if (loaderFlags.has(arg)) {
+        filtered.push(arg);
+        const value = process.execArgv[i + 1];
+        if (value !== undefined) { filtered.push(value); i++; }
+        continue;
+      }
+      if (/^--(?:import|loader|experimental-loader|require|conditions)=/u.test(arg)) filtered.push(arg);
+    }
+    const execArgv = fileURLToPath(target).endsWith('.ts') && !filtered.some(arg => arg.includes('tsx'))
+      ? [...filtered, '--import', 'tsx']
+      : filtered;
+    const worker = new Worker(target, { execArgv });
+    worker.on('message', (message: { id: number; matches?: Array<RegexMatchResult | null>; error?: string }) => {
+      const task = this.pending.get(message.id);
+      if (!task) return;
+      clearTimeout(task.timer);
+      this.pending.delete(message.id);
+      if (message.error) task.reject(new Error(message.error));
+      else task.resolve(message.matches ?? []);
+    });
+    worker.on('error', error => this.failAll(error));
+    worker.on('exit', code => {
+      if (this.worker === worker) this.worker = null;
+      if (code !== 0) this.failAll(new Error(`Regular expression worker exited with code ${code}.`));
+    });
+    this.worker = worker;
+    return worker;
+  }
+
+  private failAll(error: Error): void {
+    this.worker = null;
+    for (const task of this.pending.values()) {
+      clearTimeout(task.timer);
+      task.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  match(lines: string[]): Promise<Array<RegexMatchResult | null>> {
+    if (!lines.length) return Promise.resolve([]);
+    let worker: Worker;
+    try {
+      worker = this.ensureWorker();
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const current = this.worker;
+        this.worker = null;
+        void current?.terminate().catch(() => undefined);
+        reject(new Error('Regular expression search exceeded the 2.5 second budget and was stopped. Use a simpler pattern or a literal search.'));
+      }, 2_500);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        worker.postMessage({ id, query: this.query, lines });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  close(): void {
+    const worker = this.worker;
+    this.failAll(new Error('Regular expression search cancelled.'));
+    void worker?.terminate().catch(() => undefined);
+  }
+}
+
+interface GitRepoInfo { executable: string; root: string }
+const gitRepoCache = new Map<string, { expires: number; info: GitRepoInfo | null }>();
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const env = childEnvironment();
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase().startsWith('GIT_')) delete env[key];
+  }
+  return {
+    ...env,
+    GIT_PAGER: 'cat',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+  };
+}
+
+function execGit(
+  executable: string,
+  cwd: string,
+  args: string[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  signal?.throwIfAborted();
+  return new Promise((resolvePromise, reject) => {
+    execFile(
+      executable,
+      [
+        '--no-optional-locks',
+        '-c', 'core.hooksPath=',
+        '-c', 'core.fsmonitor=false',
+        '-c', 'core.pager=cat',
+        '-c', 'credential.helper=',
+        '-c', 'core.sshCommand=',
+        '-c', 'color.ui=false',
+        '-c', 'color.grep=never',
+        '-c', 'core.quotepath=false',
+        ...args,
+      ],
+      { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true, signal, env: gitEnvironment() },
+      (error, stdout, stderr) => {
+        const rawCode = (error as { code?: unknown } | null)?.code;
+        const code = typeof rawCode === 'number' ? rawCode : error ? -1 : 0;
+        // `git grep` exits 1 when there are no matches.
+        if (error && code !== 1) {
+          reject(new Error(`Git failed: ${String(stderr || error.message).trim()}`));
+          return;
+        }
+        resolvePromise({ stdout: stdout || '', stderr: stderr || '', code });
+      }
+    );
+  });
+}
+
+async function gitRepoFor(workspace: string, signal?: AbortSignal): Promise<GitRepoInfo | null> {
+  const key = process.platform === 'win32' ? workspace.toLowerCase() : workspace;
+  const cached = gitRepoCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.info;
+
+  let info: GitRepoInfo | null = null;
+  try {
+    const executable = await resolveGitExecutable(workspace);
+    const result = await execGit(executable, workspace, ['rev-parse', '--show-toplevel'], signal, 3_000);
+    const root = result.stdout.trim();
+    if (root) info = { executable, root };
+  } catch {
+    info = null;
+  }
+  gitRepoCache.set(key, { expires: Date.now() + GIT_REPO_CACHE_MS, info });
+  return info;
+}
+
+interface GitGrepLine { file: string; line: number; text: string; match: boolean }
+
+/** Parse `git grep -n` output (`path:line:text`); context lines use `path-line-text`. */
+function parseGitGrep(stdout: string, withContext: boolean): GitGrepLine[][] {
+  const groups: GitGrepLine[][] = [];
+  let current: GitGrepLine[] = [];
+  const flush = () => {
+    if (current.length) groups.push(current);
+    current = [];
+  };
+
+  for (const raw of stdout.split(/\r?\n/)) {
+    if (!raw) continue;
+    if (withContext && raw === '--') { flush(); continue; }
+    const match = /^(.*?):(\d+):(.*)$/u.exec(raw);
+    if (match) {
+      current.push({ file: match[1].replace(/^\.\//u, ''), line: Number(match[2]), text: match[3], match: true });
+      continue;
+    }
+    if (withContext) {
+      const context = /^(.*?)-(\d+)-(.*)$/u.exec(raw);
+      if (context) current.push({ file: context[1].replace(/^\.\//u, ''), line: Number(context[2]), text: context[3], match: false });
+    }
+  }
+  flush();
+  return groups;
+}
+
+interface SearchResult {
+  matches: string[];
+  nextOffset: number | null;
+  capped: boolean;
+  sensitiveSkipped: number;
+}
+
+function searchSnippet(text: string, index: number, length: number): string {
+  const start = Math.max(0, index - 100);
+  const sliceLen = Math.max(300, length);
+  return `${start ? '…' : ''}${text.slice(start, start + sliceLen)}${text.length > start + sliceLen ? '…' : ''}`;
+}
+
+/** Fast path: git grep tracked + untracked text files, with the same sensitive-path filter. */
+async function searchWithGit(options: {
+  workspace: string;
+  target: string;
+  query: string;
+  useRegex: boolean;
+  matcher?: RegexMatcher;
+  fileMatcher?: (relPath: string, fileName: string) => boolean;
+  contextLines: number;
+  offset: number;
+  limit: number;
+  signal?: AbortSignal;
+}): Promise<SearchResult | undefined> {
+  if (options.useRegex && JS_ONLY_REGEX.test(options.query)) return undefined;
+  const repo = await gitRepoFor(options.workspace, options.signal);
+  if (!repo) return undefined;
+  const relTarget = path.relative(options.workspace, options.target).replace(/\\/g, '/') || '.';
+  if (relTarget.startsWith('..')) return undefined;
+
+  let stdout: string;
+  try {
+    const result = await execGit(repo.executable, options.workspace, [
+      'grep', '-n', '-I', '--untracked', '--no-color',
+      ...(options.contextLines > 0 ? ['-C', String(options.contextLines)] : []),
+      options.useRegex ? '-E' : '-F',
+      '-e', options.query,
+      '--', relTarget,
+    ], options.signal, 15_000);
+    stdout = result.stdout;
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    return undefined; // Fall back to the bounded Node scan on any git failure.
+  }
+
+  const sensitive = new Set<string>();
+  const matches: string[] = [];
+  let matchCount = 0;
+  let stopped = false;
+
+  // Filter on the main thread (cheap string checks), then run the regex on the
+  // worker so a pathological pattern cannot block the agent.
+  const groups = parseGitGrep(stdout, options.contextLines > 0);
+  const candidates: Array<{ line: GitGrepLine; group: number; index: number }> = [];
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+    const group = groups[groupIndex];
+    for (let index = 0; index < group.length; index++) {
+      const line = group[index];
+      if (!line.match) continue;
+      if (isSensitivePath(path.resolve(options.workspace, line.file))) {
+        sensitive.add(line.file);
+        continue;
+      }
+      if (options.fileMatcher && !options.fileMatcher(line.file, path.basename(line.file))) continue;
+      candidates.push({ line, group: groupIndex, index });
+    }
+  }
+  const regexMatches = options.matcher
+    ? await options.matcher.match(candidates.map(candidate => candidate.line.text))
+    : undefined;
+
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+    if (stopped) break;
+    const { line, group: groupIndex, index } = candidates[candidateIndex];
+    let matched: RegexMatchResult | undefined;
+    if (options.matcher) {
+      matched = regexMatches?.[candidateIndex] ?? undefined;
+    } else {
+      const at = line.text.indexOf(options.query);
+      if (at >= 0) matched = { index: at, length: options.query.length };
+    }
+    if (!matched) continue;
+    if (matchCount++ < options.offset) continue;
+
+    if (options.contextLines > 0) {
+      const group = groups[groupIndex];
+      const from = Math.max(0, index - options.contextLines);
+      const to = Math.min(group.length - 1, index + options.contextLines);
+      const block: string[] = [];
+      for (let c = from; c <= to; c++) {
+        const entry = group[c];
+        block.push(`${c === index ? '>' : ' '} ${entry.file}:${entry.line}: ${entry.text.slice(0, 300)}`);
+      }
+      matches.push(block.join('\n'));
+    } else {
+      matches.push(`${line.file}:${line.line}: ${searchSnippet(line.text, matched.index, matched.length)}`);
+    }
+    if (matches.length > options.limit) stopped = true;
+  }
+
+  return {
+    matches,
+    nextOffset: matches.length > options.limit ? options.offset + options.limit : null,
+    capped: false,
+    sensitiveSkipped: sensitive.size,
+  };
+}
+
+
 async function rememberWrittenFile(target: string, content: string, workspace: string): Promise<void> {
   globalGroundingLedger.forgetFileSnapshot(target, workspace);
   const before = await fileRevision(target);
@@ -331,8 +686,11 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
     const stat = await fs.stat(target);
     if (!stat.isFile()) throw new Error('Not a regular file');
     if (stat.size > 10 * 1024 * 1024) throw new Error('File exceeds the 10 MB outline limit');
-    const content = await fs.readFile(target, 'utf8');
     const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
+    if (await fileHasNul(target, stat.size, signal)) {
+      return `[İKİLİ DOSYA ENGELİ: '${relPath}' ikili (binary) bir dosyadır ve metin olarak okunamaz.]`;
+    }
+    const content = await fs.readFile(target, 'utf8');
     const outline = extractFileAstOutline(relPath, content);
     globalGroundingLedger.markFileInspected(target, workspace, content);
     return outline.formatted;
@@ -348,22 +706,9 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
       throw new Error(`[BOYUT ENGELİ: '${relPath}' dosyası 10 MB sınırını aşıyor (${(stat.size / (1024 * 1024)).toFixed(1)} MB); bellek tükenmesini (OOM) önlemek için okuma engellendi.]`);
     }
 
-    // 2. Binary file protection: inspect first 4096 bytes for null byte (\0)
-    const probeHandle = await fs.open(target, 'r');
-    let isBinary = false;
-    try {
-      const probeBuf = Buffer.alloc(Math.min(4096, stat.size));
-      const { bytesRead } = await probeHandle.read(probeBuf, 0, probeBuf.length, 0);
-      for (let i = 0; i < bytesRead; i++) {
-        if (probeBuf[i] === 0) {
-          isBinary = true;
-          break;
-        }
-      }
-    } finally {
-      await probeHandle.close();
-    }
-    if (isBinary) {
+    // 2. Binary file protection: scan the whole bounded file for a NUL byte,
+    //    not just the first 4 KB (binaries can start with a text header).
+    if (await fileHasNul(target, stat.size, signal)) {
       return `[İKİLİ DOSYA ENGELİ: '${relPath}' ikili (binary) bir dosyadır ve metin olarak okunamaz.]`;
     }
 
@@ -666,106 +1011,153 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
     const filePattern = typeof args.file_pattern === 'string' && args.file_pattern.trim() ? args.file_pattern.trim() : undefined;
     const contextLines = numberArg(args.context_lines, 0, 10);
     const fileMatcher = filePattern ? globToMatcher(filePattern) : undefined;
+    const offset = numberArg(args.offset, 0, 100000);
+    const limit = Math.max(1, numberArg(args.limit, 30, 200));
 
-    let queryRegex: RegExp | undefined;
     if (useRegex) {
+      if (UNSAFE_REGEX_PATTERNS.some(pattern => pattern.test(query))) {
+        throw new Error('Potentially catastrophic regular expression; simplify the pattern or search for a literal string.');
+      }
       try {
-        queryRegex = new RegExp(query);
+        new RegExp(query);
       } catch (e) {
         throw new Error(`Invalid regular expression: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    const matcher = useRegex ? new RegexMatcher(query) : undefined;
 
-    const root = await fs.realpath(workspace);
-    const found: string[] = [];
-    const offset = numberArg(args.offset, 0, 100000);
-    const limit = Math.max(1, numberArg(args.limit, 30, 200));
-    let matches = 0;
-    let visited = 0;
-    let stopped = false;
-    let capped = false;
+    try {
+      const stat = await fs.stat(target);
+      if (!stat.isDirectory()) throw new Error('Search path must be a directory');
 
-    async function walk(dir: string): Promise<void> {
-      signal?.throwIfAborted();
-      if (stopped) return;
-      const entries = await fs.readdir(dir, { withFileTypes: true });
-      entries.sort((a, b) => a.name.localeCompare(b.name));
-      for (const entry of entries) {
+      // Git's `-C` context is parsed back into per-match blocks; any git failure
+      // falls back to the bounded in-process scan below.
+      const gitResult = await searchWithGit({
+        workspace, target, query, useRegex, matcher, fileMatcher, contextLines, offset, limit, signal,
+      });
+
+      let result: SearchResult;
+    if (gitResult) {
+      result = gitResult;
+    } else {
+      const root = await fs.realpath(workspace);
+      const found: string[] = [];
+      const deadline = Date.now() + SEARCH_BUDGET_MS;
+      let matches = 0;
+      let visited = 0;
+      let stopped = false;
+      let capped = false;
+      let sensitiveSkipped = 0;
+
+      async function walk(dir: string): Promise<void> {
         signal?.throwIfAborted();
-        if (++visited > 10000) {
+        if (stopped) return;
+        if (Date.now() > deadline) {
           stopped = true;
           capped = true;
           return;
         }
-        if (entry.isSymbolicLink() || SKIP_DIRS.has(entry.name)) continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await walk(full);
-        } else if (entry.isFile()) {
-          const relFile = path.relative(root, full);
-          if (fileMatcher && !fileMatcher(relFile, entry.name)) continue;
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        for (const entry of entries) {
+          signal?.throwIfAborted();
+          if (++visited > 10000) {
+            stopped = true;
+            capped = true;
+            return;
+          }
+          if (entry.isSymbolicLink() || SKIP_DIRS.has(entry.name)) continue;
+          const full = path.join(dir, entry.name);
+          // Credential files and directories are never read into the result set.
+          if (isSensitivePath(full)) {
+            sensitiveSkipped++;
+            continue;
+          }
+          if (entry.isDirectory()) {
+            await walk(full);
+          } else if (entry.isFile()) {
+            const relFile = path.relative(root, full);
+            if (fileMatcher && !fileMatcher(relFile, entry.name)) continue;
 
-          const stat = await fs.stat(full);
-          if (stat.size > 1_000_000) continue;
-          const content = await fs.readFile(full, 'utf8');
-          if (content.includes('\0')) continue;
-          const lines = content.split(/\r?\n/);
+            const fileStat = await fs.stat(full);
+            if (fileStat.size > 1_000_000) continue;
+            const content = await fs.readFile(full, 'utf8');
+            if (content.includes('\0')) continue;
+            const lines = content.split(/\r?\n/);
+            const lineMatches = matcher
+              ? await matcher.match(lines.map(line => line.length > SEARCH_REGEX_LINE_LIMIT ? line.slice(0, SEARCH_REGEX_LINE_LIMIT) : line))
+              : undefined;
 
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            let matchIdx = -1;
-            let matchLen = query.length;
-
-            if (queryRegex) {
-              const m = queryRegex.exec(line);
-              if (m) {
-                matchIdx = m.index;
-                matchLen = Math.max(1, m[0].length);
-              }
-            } else {
-              matchIdx = line.indexOf(query);
-            }
-
-            if (matchIdx >= 0) {
-              if (matches++ >= offset) {
-                const start = Math.max(0, matchIdx - 100);
-                const sliceLen = Math.max(300, matchLen);
-                const snippet = `${start ? '…' : ''}${line.slice(start, start + sliceLen)}${
-                  line.length > start + sliceLen ? '…' : ''
-                }`;
-
-                if (contextLines > 0) {
-                  const ctxStart = Math.max(0, i - contextLines);
-                  const ctxEnd = Math.min(lines.length - 1, i + contextLines);
-                  const block: string[] = [];
-                  for (let c = ctxStart; c <= ctxEnd; c++) {
-                    const prefix = c === i ? '>' : ' ';
-                    block.push(`${prefix} ${relFile}:${c + 1}: ${lines[c].slice(0, 300)}`);
-                  }
-                  found.push(block.join('\n'));
-                } else {
-                  found.push(`${relFile}:${i + 1}: ${snippet}`);
+            for (let i = 0; i < lines.length; i++) {
+              if ((i & 63) === 0) {
+                signal?.throwIfAborted();
+                if (Date.now() > deadline) {
+                  stopped = true;
+                  capped = true;
+                  return;
                 }
               }
-              if (found.length > limit) {
-                stopped = true;
-                return;
+              const line = lines[i];
+              let matchIdx = -1;
+              let matchLen = query.length;
+
+              if (matcher) {
+                const found = lineMatches?.[i];
+                if (found) {
+                  matchIdx = found.index;
+                  matchLen = found.length;
+                }
+              } else {
+                matchIdx = line.indexOf(query);
+              }
+
+              if (matchIdx >= 0) {
+                if (matches++ >= offset) {
+                  const snippet = searchSnippet(line, matchIdx, matchLen);
+
+                  if (contextLines > 0) {
+                    const ctxStart = Math.max(0, i - contextLines);
+                    const ctxEnd = Math.min(lines.length - 1, i + contextLines);
+                    const block: string[] = [];
+                    for (let c = ctxStart; c <= ctxEnd; c++) {
+                      const prefix = c === i ? '>' : ' ';
+                      block.push(`${prefix} ${relFile}:${c + 1}: ${lines[c].slice(0, 300)}`);
+                    }
+                    found.push(block.join('\n'));
+                  } else {
+                    found.push(`${relFile}:${i + 1}: ${snippet}`);
+                  }
+                }
+                if (found.length > limit) {
+                  stopped = true;
+                  return;
+                }
               }
             }
           }
         }
       }
+
+      await walk(target);
+      result = {
+        matches: found,
+        nextOffset: found.length > limit ? offset + limit : null,
+        capped,
+        sensitiveSkipped,
+      };
     }
 
-    const stat = await fs.stat(target);
-    if (stat.isDirectory()) await walk(target);
-    else throw new Error('Search path must be a directory');
-
-    return JSON.stringify({
-      matches: found.slice(0, limit),
-      next_offset: found.length > limit ? offset + limit : null,
-      scan_limit_reached: capped,
-    });
+      // Redact each match string before serialization: redacting the JSON
+      // payload itself can break quoting and produce invalid JSON.
+      return JSON.stringify({
+        matches: result.matches.slice(0, limit).map(match => redactSecrets(match)),
+        next_offset: result.nextOffset,
+        scan_limit_reached: result.capped,
+        sensitive_skipped: result.sensitiveSkipped,
+      });
+    } finally {
+      matcher?.close();
+    }
   }
 
   throw new Error(`Unknown file tool: ${name}`);

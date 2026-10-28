@@ -1,8 +1,10 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { describeSensitiveMatch, isSensitivePath } from './security/denylist.js';
 const SKIP_FILES = new Set(['.npmrc', 'id_rsa', 'id_ed25519', '.netrc', '.pypirc']);
 const IGNORED_DIRS = new Set([
     'node_modules',
@@ -18,19 +20,22 @@ const IGNORED_DIRS = new Set([
     '.vscode',
     '.idea',
 ]);
-export async function packWorkspaceFiles(cwd = process.cwd()) {
+/**
+ * Pack workspace files for a Vercel deployment. Every path is screened by the
+ * shared denylist (`.ssh`, `.aws`, `.env*`, `.git-credentials`, keys, ...);
+ * sensitive files are never read or uploaded, and are reported by count only.
+ */
+export async function buildWorkspacePack(cwd = process.cwd()) {
     const packed = [];
+    const sensitiveSkipped = [];
     const MAX_FILES = 80;
     const MAX_FILE_SIZE = 250 * 1024; // 250 KB
+    let bytes = 0;
     const isIgnored = (name) => {
         const lower = name.toLowerCase();
         if (IGNORED_DIRS.has(name) || IGNORED_DIRS.has(lower))
             return true;
-        if (lower.startsWith('.env'))
-            return true;
         if (SKIP_FILES.has(lower) || SKIP_FILES.has(name))
-            return true;
-        if (lower.endsWith('.pem') || lower.endsWith('.key'))
             return true;
         return false;
     };
@@ -53,6 +58,12 @@ export async function packWorkspaceFiles(cwd = process.cwd()) {
             const fullPath = path.join(currentDir, entry.name);
             const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
             const posixRel = relPath.split(path.sep).join('/');
+            // Shared credential policy runs before any read: a sensitive file or
+            // directory is skipped wholesale.
+            if (isSensitivePath(posixRel) || isSensitivePath(fullPath)) {
+                sensitiveSkipped.push(posixRel);
+                continue;
+            }
             try {
                 const stats = await fs.lstat(fullPath);
                 if (stats.isSymbolicLink())
@@ -63,6 +74,7 @@ export async function packWorkspaceFiles(cwd = process.cwd()) {
                 else if (stats.isFile()) {
                     if (stats.size <= MAX_FILE_SIZE) {
                         const content = await fs.readFile(fullPath);
+                        bytes += content.length;
                         packed.push({
                             file: posixRel,
                             data: content.toString('base64'),
@@ -77,7 +89,21 @@ export async function packWorkspaceFiles(cwd = process.cwd()) {
         }
     }
     await walk(cwd, '');
-    return packed;
+    const hash = createHash('sha256');
+    for (const file of packed) {
+        hash.update(file.file).update('\0').update(file.data).update('\n');
+    }
+    return { files: packed, digest: hash.digest('hex'), bytes, sensitiveSkipped };
+}
+export async function packWorkspaceFiles(cwd = process.cwd()) {
+    return (await buildWorkspacePack(cwd)).files;
+}
+/** Explicit files must also pass the shared credential policy. */
+function assertUploadableFile(relPath) {
+    const reason = describeSensitiveMatch(relPath);
+    if (reason) {
+        throw new Error(`Refusing to upload a sensitive file (${reason}): ${relPath}`);
+    }
 }
 /** Local TBot MCP server backed by selected Vercel REST endpoints, not Vercel's hosted MCP. */
 export async function createVercelAdapter(token, options) {
@@ -146,7 +172,7 @@ export async function createVercelAdapter(token, options) {
                     },
                     auto_pack_workspace: {
                         type: 'boolean',
-                        description: 'Automatically pack project files from workspace (excluding node_modules, .git, dist, .tbot, .env*, and files >250KB, max 80 files). Defaults to true.',
+                        description: 'Opt in to packing workspace files (excluding node_modules, .git, dist, .tbot and files >250 KB; max 80). Sensitive credential files are always excluded. Defaults to false.',
                     },
                 },
                 required: ['project'],
@@ -159,6 +185,7 @@ export async function createVercelAdapter(token, options) {
             const args = req.params.arguments ?? {};
             let path;
             let body;
+            let packSummary = '';
             const only = (...keys) => { if (Object.keys(args).some(k => !keys.includes(k)))
                 throw new Error('Invalid arguments.'); };
             const projectValue = (value) => {
@@ -196,10 +223,16 @@ export async function createVercelAdapter(token, options) {
                     throw new Error('Invalid arguments.');
                 body = { name: project, project, ...(args.target === 'production' ? { target: 'production' } : {}) };
                 const hasFiles = Array.isArray(args.files) && args.files.length > 0;
-                const autoPack = args.auto_pack_workspace === true || (args.auto_pack_workspace !== false && !hasFiles && args.repoId === undefined);
+                // Auto-packing is an explicit opt-in: never upload workspace contents
+                // merely because a deployment was requested.
+                const autoPack = args.auto_pack_workspace === true;
+                if (!autoPack && !hasFiles && args.repoId === undefined) {
+                    throw new Error('Invalid arguments: provide "files", a "repoId"/"ref" git source, or set "auto_pack_workspace": true.');
+                }
                 if (autoPack) {
-                    const workspaceFiles = await packWorkspaceFiles(options.workspace || process.cwd());
-                    let combinedFiles = workspaceFiles;
+                    const pack = await buildWorkspacePack(options.workspace || process.cwd());
+                    packSummary = `Workspace pack: ${pack.files.length} file(s), ${pack.bytes} byte(s), sha256 ${pack.digest}; sensitive files skipped: ${pack.sensitiveSkipped.length}.\n`;
+                    let combinedFiles = pack.files;
                     if (hasFiles) {
                         let total = 0;
                         const seen = new Set();
@@ -209,13 +242,14 @@ export async function createVercelAdapter(token, options) {
                             const f = item;
                             if (Object.keys(f).some(k => !['file', 'data'].includes(k)) || typeof f.file !== 'string' || typeof f.data !== 'string' || f.file.length > 240 || !f.file || f.file.startsWith('/') || /[\\:\x00-\x1f]/.test(f.file) || f.file.split('/').some(part => !part || part === '.' || part === '..') || seen.has(f.file) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.data))
                                 throw new Error('Invalid arguments.');
+                            assertUploadableFile(f.file);
                             seen.add(f.file);
                             total += f.data.length;
                             if (total > 25_000_000)
                                 throw new Error('Invalid arguments.');
                             return { file: f.file, data: f.data, encoding: 'base64' };
                         });
-                        combinedFiles = [...workspaceFiles.filter(wf => !explicit.some(ef => ef.file === wf.file)), ...explicit];
+                        combinedFiles = [...pack.files.filter(wf => !explicit.some(ef => ef.file === wf.file)), ...explicit];
                     }
                     body.files = combinedFiles;
                 }
@@ -230,6 +264,7 @@ export async function createVercelAdapter(token, options) {
                         const f = item;
                         if (Object.keys(f).some(k => !['file', 'data'].includes(k)) || typeof f.file !== 'string' || typeof f.data !== 'string' || f.file.length > 240 || !f.file || f.file.startsWith('/') || /[\\:\x00-\x1f]/.test(f.file) || f.file.split('/').some(part => !part || part === '.' || part === '..') || seen.has(f.file) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(f.data))
                             throw new Error('Invalid arguments.');
+                        assertUploadableFile(f.file);
                         seen.add(f.file);
                         total += f.data.length;
                         if (total > 25_000_000)
@@ -246,10 +281,10 @@ export async function createVercelAdapter(token, options) {
             }
             else
                 throw new Error('Unknown tool.');
-            return { content: [{ type: 'text', text: await request(path, extra.signal, body) }] };
+            return { content: [{ type: 'text', text: packSummary + await request(path, extra.signal, body) }] };
         }
         catch (error) {
-            return { isError: true, content: [{ type: 'text', text: error instanceof Error && /^Vercel API HTTP \d+$|^Project is invalid|^Invalid arguments|^Unknown tool/.test(error.message) ? error.message : 'Vercel adapter request failed.' }] };
+            return { isError: true, content: [{ type: 'text', text: error instanceof Error && /^Vercel API HTTP \d+$|^Project is invalid|^Invalid arguments|^Refusing to upload|^Unknown tool/.test(error.message) ? error.message : 'Vercel adapter request failed.' }] };
         }
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
