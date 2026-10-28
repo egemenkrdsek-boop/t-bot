@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
+import { windowsSystemExecutable } from './windows-system.js';
 export const secretCache = new Map();
 export class SecretStorageError extends Error {
     code;
@@ -26,7 +27,7 @@ export function prepareApiKey(key) {
         throw new Error('API key is empty or contains invalid characters');
     return value;
 }
-const powershellPath = () => join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const powershellPath = () => windowsSystemExecutable('powershell');
 const secretDir = () => join(configDirectory(), 'secrets');
 function secretPath(id) {
     if (!/^[a-zA-Z0-9_-]+$/.test(id))

@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { closeIdleBrowser } from './tools/browser.js';
 import { closeIdleDesktopDaemon } from './tools/computer.js';
 import { pruneCompletedProcesses } from './tools/shell.js';
+import { windowsSystemExecutable } from './windows-system.js';
 let lastTrimAt = 0;
 const TRIM_COOLDOWN_MS = 120_000;
 let guardTimer = null;
@@ -53,7 +54,7 @@ public static class WsTrim {
 }
 [WsTrim]::Clean(${curPid})
 `;
-            execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
+            execFile(windowsSystemExecutable('powershell'), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
                 resolve();
             });
         }

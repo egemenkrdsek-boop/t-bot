@@ -26,6 +26,14 @@ Tam okunan ek yüzeyler: `src/bot.ts`, `src/telegram-security.ts` ve `scripts/co
 
 Kalan somut sınırlar: gerçek OS sandbox yoktur; aynı kullanıcıyla eşzamanlı path değiştirme ve filesystem reparse varyantları için atomik yetki sınırı kurulmaz. Git kurulumu workspace içinde veya yalnız relative PATH'teyse güvenli biçimde hata verir; kurulu Git mutlak PATH üzerinden workspace dışında bulunmalıdır. Telegram grup yetkisi chat üyelerinin tamamını kapsar. Vercel otomatik paketlenen dosyaların birebir digest/önizleme onay bağı ve son READY durumu bu taramada doğrulanmadı. Bağımlılıklar, üretilmiş binary/dokümanlar ve kalan bütün ürün yüzeyleri eksiksiz denetlenmedi.
 
+### Sonraki sibling düzeltmesi: otomatik Windows yardımcıları
+
+Git executable seçimi bulgusunun bağımsız devam incelemesinde `src/memory-guard.ts` ve `src/desktop/memory-trimmer.ts` RAM temizleme yollarının bare `powershell.exe` çalıştırdığı doğrulandı. Bu yollar model araç onayından bağımsızdır; otomatik kritik bellek baskısı ve manuel RAM düğmesi tarafından çağrılır. Saldırı önkoşulu kötü niyetli `powershell.exe` bulunan **uygulama başlatma cwd**'sidir; yalnız masaüstünde başka bir workspace seçmek bu önkoşulu sağlamaz. Kaynakta `process.chdir` bulunmadı. Git için yapılan zararsız Windows yürütülebilir lookup fixture'ı aynı bare executable arama davranışını gösterir.
+
+Yeni `src/windows-system.ts`, Windows PowerShell ve `taskkill` yardımcılarını mutlak `SystemRoot/System32` yolundan seçer; bağıl `SystemRoot` reddedilir, PATH/cwd veya bare executable fallback kullanılmaz. Otomatik CLI/desktop trim, onaylı shell/computer PowerShell çağrıları, süreç ağacı durdurma ve mevcut secret-store PowerShell yolu aynı helper'a bağlandı. Mevcut süre sınırları, gizli pencere seçimi ve bellek temizlemenin yardımcı çalışmazsa sessizce devam etmesi korunur. Güvenilir işletim sistemi kurulumu ve işlem ortamındaki `SystemRoot` hâlâ varsayımdır; aynı kullanıcı tarafından ortamın/sistem binary'sinin değiştirilmesine karşı izolasyon iddiası yoktur.
+
+Doğrulama: `node --import tsx --test tests/security.test.ts tests/desktop.test.cjs tests/runtime-tools.test.ts` **47/47**, `npx tsc --noEmit` başarılı. Windows olarak çalışan iki trim fonksiyonu sahte `execFile` ile yakalanır: mutlak PowerShell yolu, 5 saniye timeout, `windowsHide`, mevcut argümanlar ve hata sonrası bare fallback olmaması doğrulanır; PowerShell/OS eylemi çalıştırılmaz. Helper için farklı sürücü, büyük harfli `SYSTEMROOT`, eksik ortam ve bağıl kök sınıfları sınanır. Mühürlü ilk tarama değiştirilmedi; bu ayrı bir düzeltme doğrulamasıdır, yeni full scan değildir.
+
 ## Kapatılan sınırlar
 
 | Bulgu | Önceki yol | Değişiklik | Doğrulama |

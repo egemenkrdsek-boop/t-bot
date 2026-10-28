@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { executeDesktopRequest } from './desktop-request.js';
+import { windowsSystemExecutable } from '../windows-system.js';
 export const computerToolDefinitions = [{
         name: 'computer',
         description: 'Control the local desktop GUI with semantic UI Automation, pinpoint target resolution, on-screen live HUD, and automatic visual verification. Coordinates are absolute physical desktop pixels.',
@@ -130,7 +131,7 @@ async function getDesktopDaemon() {
         return daemonLaunching;
     daemonLaunching = (async () => {
         const script = getScriptPath();
-        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn(windowsSystemExecutable('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
@@ -250,7 +251,7 @@ async function runStandalonePs(request, signal) {
     const TIMEOUT_MS = 15_000;
     return new Promise((resolve, reject) => {
         let settled = false;
-        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
+        const child = spawn(windowsSystemExecutable('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
             windowsHide: true,
             signal,
             stdio: ['pipe', 'pipe', 'pipe']

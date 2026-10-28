@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
+import { windowsSystemExecutable } from './windows-system.js';
 
 export type ProviderId = string;
 export const secretCache = new Map<string, string>();
@@ -31,7 +32,7 @@ export function prepareApiKey(key: string): string {
   return value;
 }
 
-const powershellPath = () => join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const powershellPath = () => windowsSystemExecutable('powershell');
 const secretDir = () => join(configDirectory(), 'secrets');
 
 function secretPath(id: string): string {

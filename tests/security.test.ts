@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveGitExecutable, handleGitTool } from '../src/tools/git.js';
 import { handleSkillTool, loadCustomSkills, buildSkillPrompt, autoDistillSkillFromTurn } from '../src/skills.js';
+import { windowsSystemExecutable } from '../src/windows-system.js';
 import { fetchPublicText, isPrivateOrLocalHost, publicLookup, validatePublicUrl } from '../src/tools/public-network.js';
 import { fetchUrlContent } from '../src/tools/web.js';
 import { executeTool, APPROVAL_REQUIRED_TOOLS } from '../src/tools/index.js';
@@ -126,6 +127,15 @@ test('shell environment preserves runtime paths and omits inherited credentials'
     CUSTOM_PASSWORD: 'sensitive', CI: 'false' });
   assert.deepEqual(env, { PATH: 'runtime-path', SystemRoot: 'windows', CI: 'true',
     GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' });
+});
+
+test('Windows system helper selection ignores cwd and PATH and requires an absolute OS root', () => {
+  assert.equal(windowsSystemExecutable('powershell', { SystemRoot: 'D:\\Windows', PATH: 'C:\\attacker' }), 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.equal(windowsSystemExecutable('taskkill', { SYSTEMROOT: 'D:\\Windows' }), 'D:\\Windows\\System32\\taskkill.exe');
+  assert.equal(windowsSystemExecutable('powershell', {}), 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  for (const SystemRoot of ['.', 'relative', 'C:Windows', '\\Windows']) {
+    assert.throws(() => windowsSystemExecutable('powershell', { SystemRoot }), /absolute path/);
+  }
 });
 
 test('Telegram approval callbacks are bound to the current request', () => {

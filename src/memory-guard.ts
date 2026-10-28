@@ -6,6 +6,7 @@ import type { Session } from './sessions.js';
 import { closeIdleBrowser } from './tools/browser.js';
 import { closeIdleDesktopDaemon } from './tools/computer.js';
 import { pruneCompletedProcesses } from './tools/shell.js';
+import { windowsSystemExecutable } from './windows-system.js';
 
 export interface MemoryStats {
   heapUsedMB: number;
@@ -79,7 +80,7 @@ public static class WsTrim {
 `;
 
       execFile(
-        'powershell.exe',
+        windowsSystemExecutable('powershell'),
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
         { timeout: 5000, windowsHide: true },
         () => {

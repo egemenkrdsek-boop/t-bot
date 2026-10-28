@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { app, BrowserWindow } from 'electron';
+import { windowsSystemExecutable } from '../windows-system.js';
 
 export interface DesktopMemoryStats {
   mainMB: number;
@@ -207,7 +208,7 @@ Add-Type -TypeDefinition $def -Language CSharp
 `;
 
       execFile(
-        'powershell.exe',
+        windowsSystemExecutable('powershell'),
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
         { timeout: 5000, windowsHide: true },
         () => {

@@ -297,6 +297,7 @@ test('memory trim requests share one in-flight operation', async () => {
       if (name === 'electron') return { app: { getAppMetrics: () => [] } };
       if (name === 'node:os') return { default: { freemem: () => 1073741824 } };
       if (name === 'node:child_process') return {};
+      if (name === '../windows-system.js') return {};
       throw new Error(`Unexpected dependency: ${name}`);
     },
   };
@@ -382,6 +383,7 @@ test('hidden desktop pressure cleanup respects thresholds, single flight and a t
       if (name === 'electron') return { app: { getAppMetrics: () => [] } };
       if (name === 'node:os') return { default: { freemem: () => 1073741824 } };
       if (name === 'node:child_process') return {};
+      if (name === '../windows-system.js') return {};
       throw new Error(`Unexpected dependency: ${name}`);
     },
   };
@@ -408,4 +410,39 @@ test('hidden desktop pressure cleanup respects thresholds, single flight and a t
   await trim(undefined, { systemFreeGB: 0.1, totalWorkingSetMB: 800 });
   assert.equal(collections, 3);
   assert.doesNotMatch(source('memory-trimmer.ts'), /session\.messages|reclaimMemory/);
+});
+
+test('automatic Windows trim helpers launch absolute PowerShell with no executable-search fallback', async () => {
+  for (const desktop of [false, true]) {
+    const calls = [];
+    const expected = 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const context = {
+      exports: {}, process: { platform: 'win32', pid: 1234, env: {}, memoryUsage: () => ({ rss: 1048576 }) },
+      global: {}, setTimeout, clearTimeout,
+      require: name => {
+        if (name === 'electron') return { app: { getAppMetrics: () => [] } };
+        if (name === 'node:os') return { default: { freemem: () => 1073741824 }, homedir: () => 'D:\\User' };
+        if (name === 'node:path') return require('node:path');
+        if (name === 'node:fs/promises') return { mkdir: async () => {} };
+        if (name.endsWith('windows-system.js')) return { windowsSystemExecutable: name => { assert.equal(name, 'powershell'); return expected; } };
+        if (name === 'node:child_process') return { execFile: (file, args, options, done) => { calls.push({ file, args, options }); done(new Error('simulated unavailable helper')); } };
+        if (/tools\/(?:browser|computer|shell)\.js$/.test(name)) return {};
+        throw new Error(`Unexpected dependency: ${name}`);
+      },
+    };
+    vm.createContext(context);
+    const code = desktop ? source('memory-trimmer.ts') : readFileSync(join(__dirname, '..', 'src', 'memory-guard.ts'), 'utf8');
+    vm.runInContext(ts.transpileModule(code, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText, context);
+    if (desktop) await context.exports.trimDesktopMemory();
+    else await context.exports.trimWindowsWorkingSet(true);
+    assert.equal(calls.length, 1, 'failure must never retry a bare executable');
+    assert.equal(calls[0].file, expected);
+    assert.equal(calls[0].options.timeout, 5000);
+    assert.equal(calls[0].options.windowsHide, true);
+    assert.equal(calls[0].args[0], '-NoProfile');
+    assert.equal(calls[0].args[1], '-NonInteractive');
+    assert.ok(calls[0].args.includes('-Command'));
+  }
 });

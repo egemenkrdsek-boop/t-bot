@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { app } from 'electron';
+import { windowsSystemExecutable } from '../windows-system.js';
 let lastFreedMB = 0;
 let lastTrimAt = 0;
 let activeTrim = null;
@@ -171,7 +172,7 @@ public static class DesktopMemTrimmer {
 Add-Type -TypeDefinition $def -Language CSharp
 [DesktopMemTrimmer]::Clean(@(${pidList}))
 `;
-            execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
+            execFile(windowsSystemExecutable('powershell'), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], { timeout: 5000, windowsHide: true }, () => {
                 resolve();
             });
         }

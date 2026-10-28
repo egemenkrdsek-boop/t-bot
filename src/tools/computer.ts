@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { ToolDefinition } from '../types.js';
 import { executeDesktopRequest } from './desktop-request.js';
+import { windowsSystemExecutable } from '../windows-system.js';
 
 export const computerToolDefinitions: ToolDefinition[] = [{
   name: 'computer',
@@ -142,7 +143,7 @@ async function getDesktopDaemon(): Promise<ChildProcess> {
   daemonLaunching = (async () => {
     const script = getScriptPath();
     const child = spawn(
-      'powershell.exe',
+      windowsSystemExecutable('powershell'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
     );
@@ -269,7 +270,7 @@ async function runStandalonePs(request: Record<string, unknown>, signal?: AbortS
   const TIMEOUT_MS = 15_000;
   return new Promise<string>((resolve, reject) => {
     let settled = false;
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
+    const child = spawn(windowsSystemExecutable('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
       windowsHide: true,
       signal,
       stdio: ['pipe', 'pipe', 'pipe']

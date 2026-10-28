@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { Writable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import type { ToolDefinition } from '../types.js';
+import { windowsSystemExecutable } from '../windows-system.js';
 
 export interface ManagedProcess {
   processId: string;
@@ -46,7 +47,7 @@ function spawnCommand(
   const env = shellEnvironment();
 
   if (isPowerShell) {
-    return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    return spawn(windowsSystemExecutable('powershell'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
       cwd: options.cwd,
       shell: false,
       windowsHide: options.windowsHide ?? true,
@@ -72,7 +73,7 @@ export function stopAllBackgroundProcesses(): void {
       proc.status = 'stopped';
       try {
         if (process.platform === 'win32') {
-          spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
         } else {
           try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.child.kill('SIGKILL'); }
         }
@@ -105,7 +106,7 @@ function killProcessTree(proc: ManagedProcess): void {
     proc.child.stderr?.destroy();
     try {
       if (process.platform === 'win32') {
-        spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
       } else {
         try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.child.kill('SIGKILL'); }
       }
@@ -295,7 +296,7 @@ export async function handleShellTool(
       proc.child.stdout?.destroy();
       proc.child.stderr?.destroy();
       if (process.platform === 'win32') {
-        const killer = spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        const killer = spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
         await new Promise<void>(resolve => {
           const timeout = setTimeout(resolve, 2000);
           killer.on('close', () => { clearTimeout(timeout); resolve(); });
@@ -430,7 +431,7 @@ export async function handleShellTool(
       child.stdout?.destroy(); child.stderr?.destroy();
       const done = () => finish(`${why}; process tree termination attempted (detached descendants may continue)`);
       if (process.platform === 'win32' && child.pid) {
-        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        const killer = spawn(windowsSystemExecutable('taskkill'), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
         const limit = setTimeout(() => { killer.kill(); child.kill(); done(); }, 3000);
         killer.on('error', () => { clearTimeout(limit); child.kill(); done(); });
         killer.on('close', () => { clearTimeout(limit); done(); });
