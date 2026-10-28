@@ -13,6 +13,7 @@ export interface AppConfig {
   baseUrl?: string;
   workspacePermissions: Record<string, WorkspacePermission>;
   efforts?: Record<string, EffortLevel>;
+  guiMode?: 'live' | 'headless';
   telegramBotToken?: boolean;
   telegramAllowedChatIds?: string[];
 }
@@ -74,6 +75,9 @@ export function normalizeConfig(rawInput: Partial<AppConfig> | Record<string, un
     workspacePermissions: permissions,
     efforts
   };
+  if (input.guiMode === 'live' || input.guiMode === 'headless') {
+    result.guiMode = input.guiMode;
+  }
   if (typeof input.telegramBotToken === 'boolean') {
     result.telegramBotToken = input.telegramBotToken;
   }
@@ -159,6 +163,7 @@ export async function saveConfig(config: AppConfig): Promise<void> {
       ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
       workspacePermissions: config.workspacePermissions,
       efforts: config.efforts ?? {},
+      ...(config.guiMode ? { guiMode: config.guiMode } : {}),
       ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
       ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
     };

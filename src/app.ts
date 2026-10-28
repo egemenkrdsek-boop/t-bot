@@ -15,7 +15,7 @@ import { runUltracode } from './ultracode.js';
 import { EFFORT_LEVELS, describeEffort, type EffortLevel } from './effort.js';
 import { BUILTIN_SKILLS, resolveSkills, skillRequiresReadOnly } from './skills.js';
 import { IMAGE_MODELS } from './tools/image.js';
-import { executeTool } from './tools/index.js';
+import { executeTool, registerGuiKillSwitch } from './tools/index.js';
 import { connectMcp, type McpConnection } from './mcp.js';
 import { MCP_PRESETS, type McpService } from './mcp-presets.js';
 import { loadConnections, saveConnection, getMcpToken, setMcpToken, removeConnection } from './mcp-config.js';
@@ -113,6 +113,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   let config = await loadConfig();
+  if (config.guiMode === 'headless') process.env.TBOT_HEADLESS = 'true';
   if (options.provider && options.provider !== config.provider) { config.provider = options.provider; delete config.baseUrl; }
   if (options.model) config.model = options.model;
   const workspace = resolve(options.workspace || process.cwd());
@@ -317,6 +318,10 @@ export async function main(argv: string[]): Promise<void> {
     const controller = new AbortController();
     const cancel = () => controller.abort();
     process.once('SIGINT', cancel);
+    registerGuiKillSwitch((reason) => {
+      showEvent({ type: 'error', error: reason });
+      controller.abort();
+    });
     try {
       await hydrateMcp(controller.signal, showEvent);
       console.error(describeEffort(config.provider, config.model, selectedEffort).message);
@@ -334,6 +339,7 @@ export async function main(argv: string[]): Promise<void> {
       await store.save(session);
       stdout.write('\n');
     } finally {
+      registerGuiKillSwitch(null);
       process.off('SIGINT', cancel);
       await cleanupAllResources();
     }
@@ -482,6 +488,25 @@ export async function main(argv: string[]): Promise<void> {
       },
       onCommand: async (command, setYolo) => {
         const [name, argument, extra] = command.trim().toLowerCase().split(/\s+/);
+
+        if (name === '/gui') {
+          const sub = argument?.toLowerCase();
+          if (sub === 'headless') {
+            process.env.TBOT_HEADLESS = 'true';
+            config.guiMode = 'headless';
+            await saveConfig(config);
+            return '[GUI] Arka Plan (Headless) Modu Aktif. Tarayıcı pencereleri gizli çalışacak.';
+          }
+          if (sub === 'stop') {
+            await closeBrowser().catch(() => undefined);
+            stopAllBackgroundProcesses();
+            return '[GUI] Açık tarayıcı ve masaüstü arka plan süreçleri durduruldu.';
+          }
+          delete process.env.TBOT_HEADLESS;
+          config.guiMode = 'live';
+          await saveConfig(config);
+          return '[GUI] Canlı Mod Aktif (Canlı HUD ve Tarayıcı Pencereleri Görünür).';
+        }
 
         if (name === '/tokens') {
           const report = globalTokenTracker.getReport();

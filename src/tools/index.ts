@@ -3,7 +3,7 @@ import type { McpConnection } from '../mcp.js';
 import { fileToolDefinitions, handleFileTool } from './files.js';
 import { shellToolDefinitions, handleShellTool } from './shell.js';
 import { browserToolDefinitions, handleBrowserTool } from './browser.js';
-import { computerToolDefinitions, handleComputerTool } from './computer.js';
+import { computerToolDefinitions, handleComputerTool, executeComputerTool, closeIdleDesktopDaemon } from './computer.js';
 import { gitToolDefinitions, handleGitTool } from './git.js';
 import { imageToolDefinitions, handleImageTool, type ImageProviderConfig } from './image.js';
 import { memoryToolDefinitions, handleMemoryTool, forgetFact } from '../memory.js';
@@ -339,18 +339,31 @@ function redact(value: unknown): unknown {
 }
 
 export const APPROVAL_REQUIRED_TOOLS = [
-  'browser_click',
-  'browser_fill',
+  'shell',
   'file_write',
   'file_patch',
-  'shell',
   'process_stop',
   'git_add',
   'git_commit',
   'git_branch',
   'git_push',
-  'computer',
 ];
+
+let activeKillSwitchCallback: ((reason: string) => void) | null = null;
+
+export function registerGuiKillSwitch(cb: ((reason: string) => void) | null): void {
+  activeKillSwitchCallback = cb;
+}
+
+export function triggerGuiKillSwitch(reason: string): void {
+  if (activeKillSwitchCallback) {
+    try {
+      activeKillSwitchCallback(reason);
+    } catch {
+      // ignore
+    }
+  }
+}
 
 export async function executeTool(call: ToolCall, context: ToolContext): Promise<string> {
   const rawArgs = ((call as unknown as { args?: Record<string, unknown> }).args || call.arguments || {}) as Record<string, unknown>;
@@ -397,7 +410,11 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       return err;
     }
 
-    if (remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name)) {
+    const isGuiTool = actualCall.name === 'computer' || actualCall.name.startsWith('browser_');
+    const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL === 'true';
+    const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) || (isGuiTool && requireGuiApproval);
+
+    if (isApprovalRequired) {
       const description = remote
         ? `Allow remote MCP tool ${actualCall.name} with the supplied arguments.`
         : actualCall.name === 'shell'
@@ -470,12 +487,20 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     if (actualCall.name !== call.name) {
       globalGroundingLedger.recordToolResult(actualCall.name, actualArgs, output as any, isToolResultOk(actualCall.name, output) as any);
     }
+    if (typeof output === 'string' && (output.includes('[ACİL DURDURMA') || output.includes('KULLANICI ACİL DURDURMA'))) {
+      triggerGuiKillSwitch(output);
+    }
     return output;
   } catch (error) {
     const err = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+    if (err.includes('[ACİL DURDURMA') || err.includes('KULLANICI ACİL DURDURMA')) {
+      triggerGuiKillSwitch(err);
+    }
     try {
       globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, isToolResultOk(call.name, err) as any);
     } catch { /* ignore */ }
     return err;
   }
 }
+
+export { executeComputerTool, closeIdleDesktopDaemon, handleComputerTool } from './computer.js';

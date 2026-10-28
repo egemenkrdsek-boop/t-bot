@@ -6,6 +6,7 @@ export interface AppConfig {
     baseUrl?: string;
     workspacePermissions: Record<string, WorkspacePermission>;
     efforts?: Record<string, EffortLevel>;
+    guiMode?: 'live' | 'headless';
     telegramBotToken?: boolean;
     telegramAllowedChatIds?: string[];
 }

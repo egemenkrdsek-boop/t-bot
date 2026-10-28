@@ -251,38 +251,48 @@ export function createProvider(config: ProviderConfig): Provider {
 
         const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
         const nonSystem = messages.filter(m => m.role !== 'system');
-        let lastUserIndex = -1;
-        for (let i = nonSystem.length - 1; i >= 0; i--) {
-          if (nonSystem[i].role === 'user' || nonSystem[i].role === 'tool') {
-            lastUserIndex = i;
-            break;
+
+        const anthropicMessages: Obj[] = [];
+        for (const m of nonSystem) {
+          if (m.role === 'tool') {
+            const toolResultBlocks: Obj[] = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
+            const toolResultPart: Obj = {
+              type: 'tool_result',
+              tool_use_id: m.toolCallId,
+              content: toolResultBlocks,
+            };
+            const last = anthropicMessages[anthropicMessages.length - 1];
+            if (last && last.role === 'user' && Array.isArray(last.content)) {
+              last.content.push(toolResultPart);
+            } else {
+              anthropicMessages.push({
+                role: 'user',
+                content: [toolResultPart],
+              });
+            }
+          } else {
+            const blocks: Obj[] = [
+              ...(m.content ? [{ type: 'text', text: m.content }] : []),
+              ...anthropicImages(m),
+              ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments })),
+            ];
+            const role = m.role === 'assistant' ? 'assistant' : 'user';
+            const last = anthropicMessages[anthropicMessages.length - 1];
+            if (last && last.role === role && Array.isArray(last.content)) {
+              last.content.push(...blocks);
+            } else {
+              anthropicMessages.push({ role, content: blocks });
+            }
           }
         }
 
-        const anthropicMessages = nonSystem.map((m, idx) => {
-          const isCacheTarget = idx === lastUserIndex;
-          if (m.role === 'tool') {
-            const toolResultBlocks: Obj[] = [{ type: 'text', text: m.content }, ...anthropicImages(m)];
-            return {
-              role: 'user',
-              content: [{
-                type: 'tool_result',
-                tool_use_id: m.toolCallId,
-                content: toolResultBlocks,
-                ...(isCacheTarget ? { cache_control: { type: 'ephemeral' } } : {})
-              }]
-            };
+        // Cache target: en son user mesajının son içeriğine ephemeral cache ekle
+        for (let i = anthropicMessages.length - 1; i >= 0; i--) {
+          if (anthropicMessages[i].role === 'user' && Array.isArray(anthropicMessages[i].content) && anthropicMessages[i].content.length > 0) {
+            anthropicMessages[i].content[anthropicMessages[i].content.length - 1].cache_control = { type: 'ephemeral' };
+            break;
           }
-          const blocks: Obj[] = [
-            ...(m.content ? [{ type: 'text', text: m.content }] : []),
-            ...anthropicImages(m),
-            ...(m.toolCalls ?? []).map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.arguments }))
-          ];
-          if (isCacheTarget && blocks.length) {
-            blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
-          }
-          return { role: m.role, content: blocks };
-        });
+        }
 
         body = {
           model: config.model,
@@ -302,7 +312,73 @@ export function createProvider(config: ProviderConfig): Provider {
       } else if (spec.id === 'gemini') {
         url = endpoint(base, `models/${encodeURIComponent(config.model)}:streamGenerateContent`) + '?alt=sse'; headers['x-goog-api-key'] = config.apiKey!;
         const names = new Map(messages.flatMap(m => (m.toolCalls ?? []).map(c => [c.id, c.name] as const)));
-        body = { contents: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: m.role === 'tool' ? [{ functionResponse: { name: names.get(m.toolCallId ?? '') ?? '', response: { result: m.content } } }, ...geminiImages(m)] : [...(m.content ? [{ text: m.content }] : []), ...geminiImages(m), ...(m.toolCalls ?? []).map(c => ({ functionCall: { name: c.name, args: c.arguments }, ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}) }))] })), ...(messages.some(m => m.role === 'system') ? { systemInstruction: { parts: [{ text: messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') }] } } : {}), ...(tools.length ? { tools: [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }] } : {}) };
+
+        const geminiContents: Obj[] = [];
+        for (const m of messages.filter(msg => msg.role !== 'system')) {
+          if (m.role === 'tool') {
+            const toolName = names.get(m.toolCallId ?? '') ?? '';
+            const functionResponsePart = {
+              functionResponse: {
+                name: toolName,
+                response: { result: m.content },
+              },
+            };
+            const last = geminiContents[geminiContents.length - 1];
+            if (last && last.role === 'user' && Array.isArray(last.parts) && last.parts.every((p: Obj) => 'functionResponse' in p)) {
+              last.parts.push(functionResponsePart);
+            } else {
+              geminiContents.push({
+                role: 'user',
+                parts: [functionResponsePart],
+              });
+            }
+
+            if (m.images?.length) {
+              geminiContents.push({
+                role: 'user',
+                parts: [
+                  { text: '[Canlı Ekran Görüntüsü - Ekrandaki öğeleri ve koordinatları inceleyerek odaklanın]' },
+                  ...geminiImages(m),
+                ],
+              });
+            }
+          } else if (m.role === 'assistant') {
+            const parts: Obj[] = [
+              ...(m.content ? [{ text: m.content }] : []),
+              ...(m.toolCalls ?? []).map(c => ({
+                functionCall: { name: c.name, args: c.arguments },
+                ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}),
+              })),
+            ];
+            const last = geminiContents[geminiContents.length - 1];
+            if (last && last.role === 'model') {
+              last.parts.push(...parts);
+            } else {
+              geminiContents.push({ role: 'model', parts });
+            }
+          } else {
+            const parts: Obj[] = [
+              ...(m.content ? [{ text: m.content }] : []),
+              ...geminiImages(m),
+            ];
+            const last = geminiContents[geminiContents.length - 1];
+            if (last && last.role === 'user' && Array.isArray(last.parts) && !last.parts.some((p: Obj) => 'functionResponse' in p)) {
+              last.parts.push(...parts);
+            } else {
+              geminiContents.push({ role: 'user', parts });
+            }
+          }
+        }
+
+        body = {
+          contents: geminiContents,
+          ...(messages.some(m => m.role === 'system')
+            ? { systemInstruction: { parts: [{ text: messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n') }] } }
+            : {}),
+          ...(tools.length
+            ? { tools: [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }] }
+            : {}),
+        };
       } else {
         url = endpoint(base, 'chat/completions'); if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
         const enableOpenRouterCache = spec.id === 'openrouter' && /^(?:anthropic|google)\//i.test(config.model.trim());

@@ -190,6 +190,12 @@ export const CORE_TOOLS = new Set([
   'delegate_task',
   'todo_manage',
   'goal_manage',
+  'computer',
+  'browser_open',
+  'browser_inspect',
+  'browser_click',
+  'browser_type',
+  'browser_screenshot',
 ]);
 
 /**
@@ -225,10 +231,14 @@ const INTENT_GROUP_KEYWORDS: Record<string, string[]> = {
     'scrape', 'sayfa', 'browser', 'ui testi', 'site', 'playwright', 'dom',
     'araştır', 'arastir', 'search', 'fetch', 'google', 'dokümantasyon',
     'documentation', 'internette ara', 'link', 'web_search', 'url_fetch',
+    'aç', 'uygulama', 'program', 'gui', 'arayüz', 'buton', 'düğme',
+    'tıkla', 'tikla', 'ekbanda', 'ekrandaki', 'form', 'giriş yap', 'login', 'sekme', 'tab', 'izle', 'gör',
   ],
   computer: [
     'masaüstü', 'masaustu', 'ekran', 'pencere', 'mouse', 'fare',
     'klavye', 'desktop', 'screen', 'window', 'click', 'screenshot', 'computer',
+    'aç', 'uygulama', 'program', 'gui', 'arayüz', 'buton', 'düğme',
+    'tıkla', 'tikla', 'ekbanda', 'ekrandaki', 'form', 'giriş yap', 'login', 'sekme', 'tab', 'izle', 'gör',
   ],
   image: [
     'görsel', 'gorsel', 'resim', 'logo', 'ikon', 'icon',

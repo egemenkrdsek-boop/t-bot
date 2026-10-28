@@ -24,4 +24,7 @@ export declare const toolDefinitions: ToolDefinition[];
 export declare const READ_ONLY_TOOLS: Set<string>;
 export declare function getToolDefinitions(connectionsOrPolicy?: McpConnection[] | 'all' | 'read-only', policy?: 'all' | 'read-only'): ToolDefinition[];
 export declare const APPROVAL_REQUIRED_TOOLS: string[];
+export declare function registerGuiKillSwitch(cb: ((reason: string) => void) | null): void;
+export declare function triggerGuiKillSwitch(reason: string): void;
 export declare function executeTool(call: ToolCall, context: ToolContext): Promise<string>;
+export { executeComputerTool, closeIdleDesktopDaemon, handleComputerTool } from './computer.js';

@@ -15,6 +15,7 @@ import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
 import { getMemoryStats } from './memory-guard.js';
 import { getTelegramBotStatus } from './bot.js';
+import { registerGuiKillSwitch } from './tools/index.js';
 
 export { logo };
 
@@ -325,7 +326,8 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
     const mem = getMemoryStats();
     const tokenReport = globalTokenTracker.getReport();
     const telemetry = `${theme.crystalCyan(`▣ ${mem.heapUsedMB}MB`)} ${theme.brightMint(`%${tokenReport.savingsPercent ?? 0}`)}`;
-    const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${wave} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)} ${theme.dim('·')} ${telemetry}`;
+    const stopHint = theme.amber('[ESC / F12 / ⏹ Durdur]');
+    const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${wave} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)} ${theme.dim('·')} ${telemetry} ${theme.dim('·')} ${stopHint}`;
     const maxCols = Math.max(40, (process.stdout.columns || 100) - 2);
     return truncateAnsi(rawLine, maxCols);
   };
@@ -563,6 +565,7 @@ export function printHelp(): void {
         ['/effort [düzey]', 'Düşünme Eforu (Düşük, Orta, Yüksek, Maksimum)'],
         ['/ultracode [on|off]', 'Yüksek Doğruluklu Özerk Kodlama Modu'],
         ['/yolo [on|off]', 'Araç Çalıştırma Otomatik Onay Modu'],
+        ['/gui [live|headless|stop]', 'Canlı Tarayıcı/Masaüstü HUD ve Pencere Kontrolü'],
       ],
     },
     {
@@ -641,6 +644,34 @@ export async function startTui(options: TuiOptions): Promise<void> {
 
   const write = (text: string): void => { process.stdout.write(text); };
   const eventPrinter = createEventPrinter({ interactive, getHudConfig: getHudContext, write });
+
+  registerGuiKillSwitch((reason: string) => {
+    eventPrinter.emit({ type: 'error', error: reason });
+    if (controller && !controller.signal.aborted) {
+      controller.abort();
+    }
+  });
+
+  const onKeyData = (data: Buffer | string): void => {
+    if (!controller || controller.signal.aborted) return;
+    const str = typeof data === 'string' ? data : data.toString();
+    // Tek başına ESC (\x1b) veya F12 (\x1b[24~)
+    if (str === '\x1b' || str === '\x1b[24~') {
+      controller.abort();
+      eventPrinter.stopThinking();
+      write(`\n${theme.amber('⏹ İşlem kullanıcı tarafından klavyeden [ESC / F12] ile durduruldu.')}\n`);
+      eventPrinter.finishStream();
+      if (waiting) {
+        const resolve = waiting;
+        waiting = undefined;
+        resolve(undefined);
+      }
+    }
+  };
+
+  if (interactive && process.stdin.isTTY) {
+    process.stdin.on('data', onKeyData);
+  }
 
   const attach = (): void => {
     rl.on('line', line => {
@@ -801,6 +832,10 @@ export async function startTui(options: TuiOptions): Promise<void> {
       if (interactive) write('\n');
     }
   } finally {
+    if (interactive && process.stdin.isTTY) {
+      process.stdin.off('data', onKeyData);
+    }
+    registerGuiKillSwitch(null);
     eventPrinter.stopThinking();
     rl.close();
   }

@@ -12,7 +12,7 @@ $binDir = Join-Path $env:APPDATA "TBot\bin"
 if (-not (Test-Path -LiteralPath $binDir)) {
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
-$dllPath = Join-Path $binDir "tbot-desktop-native-v3.dll"
+$dllPath = Join-Path $binDir "tbot-desktop-native-v10.dll"
 if (Test-Path -LiteralPath $dllPath) {
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 } else {
@@ -44,6 +44,102 @@ public static class DesktopNative {
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
+
+  [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenWindowStation(string lpszWinSta, bool fInherit, uint dwDesiredAccess);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessWindowStation(IntPtr hWinSta);
+  [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+  public static bool SwitchToInteractiveDesktop() {
+    try {
+      IntPtr hSta = OpenWindowStation("WinSta0", false, 0x037F);
+      if (hSta != IntPtr.Zero) SetProcessWindowStation(hSta);
+      IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
+      if (hDesk != IntPtr.Zero) return SetThreadDesktop(hDesk);
+    } catch {}
+    return false;
+  }
+
+  public static string GetUiElementsJson(string handleStr) {
+    string jsonResult = "{\"action\":\"inspect\",\"handle\":\"0\",\"windowTitle\":\"\",\"elements\":[]}";
+    IntPtr hSta = OpenWindowStation("WinSta0", false, 0x037F);
+    if (hSta != IntPtr.Zero) SetProcessWindowStation(hSta);
+    IntPtr hDesk = OpenDesktop("Default", 0, false, 0x01FF);
+
+    System.Threading.Thread t = new System.Threading.Thread(() => {
+      try {
+        if (hDesk != IntPtr.Zero) SetThreadDesktop(hDesk);
+
+        IntPtr target = IntPtr.Zero;
+        long val;
+        if (!string.IsNullOrEmpty(handleStr) && long.TryParse(handleStr, out val) && val > 0) {
+          target = new IntPtr(val);
+        }
+        if (target == IntPtr.Zero || !IsWindow(target)) {
+          target = GetForegroundWindow();
+        }
+        if (target == IntPtr.Zero || !IsWindow(target)) {
+          EnumWindows((h, p) => {
+            if (IsWindowVisible(h)) {
+              StringBuilder sb = new StringBuilder(256);
+              GetWindowText(h, sb, sb.Capacity);
+              string tStr = sb.ToString();
+              if (tStr.Length > 0 && !tStr.Contains("OsdForm") && !tStr.Contains("Giriş Deneyimi")) {
+                target = h;
+                return false;
+              }
+            }
+            return true;
+          }, IntPtr.Zero);
+        }
+
+        if (target == IntPtr.Zero) return;
+
+        StringBuilder titleSb = new StringBuilder(512);
+        GetWindowText(target, titleSb, titleSb.Capacity);
+        string winTitle = titleSb.ToString();
+
+        System.Collections.Generic.List<string> list = new System.Collections.Generic.List<string>();
+        try {
+          System.Windows.Automation.AutomationElement rootEl = System.Windows.Automation.AutomationElement.FromHandle(target);
+          if (rootEl != null) {
+            System.Windows.Automation.PropertyCondition cond = new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.IsEnabledProperty, true);
+            System.Windows.Automation.AutomationElementCollection collection = rootEl.FindAll(System.Windows.Automation.TreeScope.Descendants, cond);
+            int idx = 1;
+            foreach (System.Windows.Automation.AutomationElement item in collection) {
+              if (idx > 60) break;
+              try {
+                if (item.Current.IsOffscreen) continue;
+                System.Windows.Rect r = item.Current.BoundingRectangle;
+                if (r.Width <= 4 || r.Height <= 4) continue;
+
+                string rawType = item.Current.ControlType.ProgrammaticName;
+                string cleanType = rawType.StartsWith("ControlType.") ? rawType.Substring(12) : rawType;
+                string name = item.Current.Name ?? item.Current.AutomationId ?? "";
+                name = name.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+                if (name.Length > 80) name = name.Substring(0, 77) + "...";
+
+                int cx = (int)(r.X + (r.Width / 2.0));
+                int cy = (int)(r.Y + (r.Height / 2.0));
+
+                list.Add("{\"id\":\"u" + idx + "\",\"type\":\"" + cleanType + "\",\"name\":\"" + name + "\",\"x\":" + cx + ",\"y\":" + cy + ",\"rect\":{\"left\":" + (int)r.X + ",\"top\":" + (int)r.Y + ",\"width\":" + (int)r.Width + ",\"height\":" + (int)r.Height + "}}");
+                idx++;
+              } catch {}
+            }
+          }
+        } catch {}
+
+        string safeTitle = winTitle.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", " ");
+        jsonResult = "{\"action\":\"inspect\",\"handle\":\"" + target.ToInt64() + "\",\"windowTitle\":\"" + safeTitle + "\",\"elements\":[" + string.Join(",", list.ToArray()) + "]}";
+      } catch {}
+    });
+
+    t.SetApartmentState(System.Threading.ApartmentState.STA);
+    t.Start();
+    t.Join();
+    return jsonResult;
+  }
+
   public static bool ForceForeground(IntPtr hWnd) {
     if (hWnd == IntPtr.Zero || !IsWindow(hWnd)) return false;
     ShowWindowAsync(hWnd, 9); // SW_RESTORE = 9
@@ -67,7 +163,7 @@ public static class DesktopNative {
   }
 }
 "@
-  Add-Type -TypeDefinition $source -ReferencedAssemblies 'System.Windows.Forms','System.Drawing' -OutputAssembly $dllPath
+  Add-Type -TypeDefinition $source -ReferencedAssemblies 'System.Windows.Forms','System.Drawing','UIAutomationClient','UIAutomationTypes','WindowsBase' -OutputAssembly $dllPath
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 }
 
@@ -77,6 +173,82 @@ try {
   }
 } catch {
   [void][DesktopNative]::SetProcessDPIAware()
+}
+
+
+function Draw-ScreenshotOverlays($bitmap, $screen, $uiElements) {
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  try {
+    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+
+    $neonGreen = [System.Drawing.Color]::FromArgb(148, 216, 45)
+    $darkBg = [System.Drawing.Color]::FromArgb(220, 11, 19, 14)
+    $gridColor = [System.Drawing.Color]::FromArgb(55, 148, 216, 45)
+
+    $gridPen = [System.Drawing.Pen]::new($gridColor, 1)
+    $textBrush = [System.Drawing.SolidBrush]::new($neonGreen)
+    $bgBrush = [System.Drawing.SolidBrush]::new($darkBg)
+    $badgeBorderPen = [System.Drawing.Pen]::new($neonGreen, 1)
+    $badgeOutlinePen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(80, 148, 216, 45), 1)
+    $rulerFont = [System.Drawing.Font]::new("Consolas", 8, [System.Drawing.FontStyle]::Bold)
+    $badgeFont = [System.Drawing.Font]::new("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+
+    try {
+      for ($x = 100; $x -lt $screen.Width; $x += 100) {
+        $graphics.DrawLine($gridPen, $x, 0, $x, $screen.Height)
+        $numStr = "$x"
+        $sz = $graphics.MeasureString($numStr, $rulerFont)
+        $bx = [int]($x - ($sz.Width / 2.0))
+        $graphics.FillRectangle($bgBrush, $bx, 2, [int]$sz.Width + 4, 15)
+        $graphics.DrawRectangle($badgeBorderPen, $bx, 2, [int]$sz.Width + 4, 15)
+        $graphics.DrawString($numStr, $rulerFont, $textBrush, $bx + 2, 2)
+      }
+
+      for ($y = 100; $y -lt $screen.Height; $y += 100) {
+        $graphics.DrawLine($gridPen, 0, $y, $screen.Width, $y)
+        $numStr = "$y"
+        $sz = $graphics.MeasureString($numStr, $rulerFont)
+        $by = [int]($y - ($sz.Height / 2.0))
+        $graphics.FillRectangle($bgBrush, 2, $by, [int]$sz.Width + 4, 15)
+        $graphics.DrawRectangle($badgeBorderPen, 2, $by, [int]$sz.Width + 4, 15)
+        $graphics.DrawString($numStr, $rulerFont, $textBrush, 4, $by)
+      }
+
+      if ($uiElements) {
+        foreach ($el in $uiElements) {
+          try {
+            $rx = [int]$el.rect.left - $screen.X
+            $ry = [int]$el.rect.top - $screen.Y
+            $rw = [int]$el.rect.width
+            $rh = [int]$el.rect.height
+
+            $graphics.DrawRectangle($badgeOutlinePen, $rx, $ry, $rw, $rh)
+            $badgeText = "[$($el.id)]"
+            $bsz = $graphics.MeasureString($badgeText, $badgeFont)
+            $badgeW = [int]$bsz.Width + 4
+            $badgeH = 15
+            $bx = [Math]::Max(0, $rx)
+            $by = if ($ry -ge 16) { $ry - 15 } else { $ry + 2 }
+
+            $graphics.FillRectangle($bgBrush, $bx, $by, $badgeW, $badgeH)
+            $graphics.DrawRectangle($badgeBorderPen, $bx, $by, $badgeW, $badgeH)
+            $graphics.DrawString($badgeText, $badgeFont, $textBrush, $bx + 2, $by)
+          } catch {}
+        }
+      }
+    } finally {
+      $gridPen.Dispose()
+      $textBrush.Dispose()
+      $bgBrush.Dispose()
+      $badgeBorderPen.Dispose()
+      $badgeOutlinePen.Dispose()
+      $rulerFont.Dispose()
+      $badgeFont.Dispose()
+    }
+  } finally {
+    $graphics.Dispose()
+  }
 }
 
 function Execute-DesktopRequest($request) {
@@ -113,6 +285,18 @@ function Execute-DesktopRequest($request) {
     }
   }
 
+    if ($action -eq 'inspect') {
+    $handleInput = if ($request.handle) { [string]$request.handle } else { "" }
+    $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
+    $resObj = $rawJson | ConvertFrom-Json
+    return @{
+      action = 'inspect';
+      handle = [string]$resObj.handle;
+      windowTitle = [string]$resObj.windowTitle;
+      elements = @($resObj.elements);
+    }
+  }
+
   if ($action -eq 'screenshot') {
     $file = [string]$request.screenshotPath
     if (-not [IO.Path]::IsPathRooted($file) -or [IO.Path]::GetExtension($file) -ne '.png') {
@@ -122,17 +306,35 @@ function Execute-DesktopRequest($request) {
     try {
       $graphics = [Drawing.Graphics]::FromImage($bitmap)
       try {
-        $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
-        $bitmap.Save($file, [Drawing.Imaging.ImageFormat]::Png)
+        try {
+          $graphics.CopyFromScreen($screen.Location, [Drawing.Point]::Empty, $screen.Size)
+        } catch {
+          $bg = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(15, 20, 25))
+          $graphics.FillRectangle($bg, 0, 0, $screen.Width, $screen.Height)
+          $bg.Dispose()
+        }
       } finally {
         $graphics.Dispose()
       }
+
+      $handleInput = if ($request.handle) { [string]$request.handle } else { "" }
+      $rawJson = [DesktopNative]::GetUiElementsJson($handleInput)
+      $uiObj = $rawJson | ConvertFrom-Json
+      $uiElements = @($uiObj.elements)
+
+      try {
+        Draw-ScreenshotOverlays $bitmap $screen $uiElements
+      } catch {}
+
+      $bitmap.Save($file, [Drawing.Imaging.ImageFormat]::Png)
     } finally {
       $bitmap.Dispose()
     }
     return @{
       path = $file;
-      bounds = @{ x=$screen.X; y=$screen.Y; width=$screen.Width; height=$screen.Height }
+      screenshotPath = $file;
+      bounds = @{ x=$screen.X; y=$screen.Y; width=$screen.Width; height=$screen.Height };
+      elements = @($uiElements);
     }
   }
 

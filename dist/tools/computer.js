@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 export const computerToolDefinitions = [{
         name: 'computer',
-        description: 'Control the local desktop GUI. List windows and obtain handles before focusing or interacting. Coordinates are absolute physical desktop pixels; screenshot returns a local PNG path, not image content.',
+        description: 'Control the local desktop GUI with semantic UI Automation, pinpoint target resolution, on-screen live HUD, and automatic visual verification. Coordinates are absolute physical desktop pixels.',
         parameters: {
             type: 'object',
             additionalProperties: false,
@@ -13,12 +13,20 @@ export const computerToolDefinitions = [{
             properties: {
                 action: {
                     type: 'string',
-                    enum: ['windows', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'],
+                    enum: ['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'],
                     description: 'Action to perform on the desktop.'
                 },
                 handle: {
                     type: 'string',
                     description: 'Decimal or hex handle from windows; required for focus and input on target window.'
+                },
+                target: {
+                    type: 'string',
+                    description: 'Tıklanacak/yazılacak UI öğesinin referans kodu (örn: u1, u2) veya buton/alan metni (örn: Kaydet, Arama). Koordinat (x,y) yerine öncelikle target kullanın.'
+                },
+                auto_screenshot: {
+                    type: 'boolean',
+                    description: 'Eylem sonrası otomatik işaretli ekran görüntüsü ve UI öğe listesi döndür (varsayılan: true).'
                 },
                 x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
                 y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
@@ -337,6 +345,12 @@ async function handleUnixComputer(args, context) {
             return JSON.stringify({ attempted: true, action: 'key' });
         }
     }
+    if (action === 'inspect') {
+        return JSON.stringify({
+            elements: [],
+            note: `Semantic UI Automation inspection is native to Windows. On ${platform}, window enumeration is available via windows action.`
+        });
+    }
     throw new Error(`Action "${action}" is not fully supported on ${platform}. Please run on Windows for complete native desktop integration.`);
 }
 function execUnix(cmd, args, signal) {
@@ -354,7 +368,27 @@ function execUnix(cmd, args, signal) {
         });
     });
 }
+function isKillSwitchError(err) {
+    if (!err)
+        return false;
+    const msg = err instanceof Error ? err.message : String(err);
+    return (msg.includes('KULLANICI ACİL DURDURMA') ||
+        msg.includes('KILL-SWITCH') ||
+        msg.includes('ACİL DURDURMA'));
+}
+function formatElementsSummary(elements) {
+    if (!Array.isArray(elements) || elements.length === 0) {
+        return 'Görünür etkileşimli öğe bulunamadı.';
+    }
+    return elements.slice(0, 40).map((el) => {
+        const label = el.name ? ` "${el.name}"` : '';
+        return `[${el.id}] ${el.type}${label} (${el.x}, ${el.y})`;
+    }).join('\n');
+}
 // --- Main Handler ---
+export async function executeComputerTool(name, args, workspace = process.cwd()) {
+    return handleComputerTool(name, args, { workspace });
+}
 export async function handleComputerTool(name, args, context) {
     if (name !== 'computer')
         throw new Error(`Unknown computer tool: ${name}`);
@@ -362,19 +396,31 @@ export async function handleComputerTool(name, args, context) {
         return await handleUnixComputer(args, context);
     }
     const action = args.action;
-    if (typeof action !== 'string' || !['windows', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'].includes(action)) {
+    if (typeof action !== 'string' || !['windows', 'inspect', 'screenshot', 'focus', 'click', 'type', 'key', 'scroll'].includes(action)) {
         throw new Error('Invalid computer action.');
     }
-    const permitted = new Set(['action', 'handle', 'x', 'y', 'button', 'text', 'key', 'delta']);
+    const permitted = new Set(['action', 'handle', 'target', 'auto_screenshot', 'x', 'y', 'button', 'text', 'key', 'delta']);
     if (Object.keys(args).some(k => !permitted.has(k))) {
         throw new Error('Unexpected computer argument.');
     }
-    if (!['windows', 'screenshot'].includes(action) && (typeof args.handle !== 'string' || !/^[1-9]\d{0,18}$/.test(args.handle))) {
+    if (args.handle !== undefined && (typeof args.handle !== 'string' || !/^[0-9]\d{0,18}$/.test(args.handle))) {
         throw new Error('A decimal window handle is required.');
     }
-    if (action === 'click' || action === 'scroll') {
+    if (args.target !== undefined && (typeof args.target !== 'string' || args.target.trim().length === 0)) {
+        throw new Error('Target must be a non-empty string.');
+    }
+    if (args.auto_screenshot !== undefined && typeof args.auto_screenshot !== 'boolean') {
+        throw new Error('auto_screenshot must be a boolean.');
+    }
+    if (action === 'focus' && !args.handle) {
+        throw new Error('A decimal window handle is required for focus.');
+    }
+    if (!['windows', 'inspect', 'screenshot'].includes(action) && !args.handle && !args.target) {
+        throw new Error('A decimal window handle or target is required.');
+    }
+    if ((action === 'click' || action === 'scroll') && !args.target) {
         if (!Number.isSafeInteger(args.x) || !Number.isSafeInteger(args.y) || Math.abs(args.x) > 100000 || Math.abs(args.y) > 100000) {
-            throw new Error('Valid integer desktop coordinates are required.');
+            throw new Error('Valid integer desktop coordinates are required when target is not specified.');
         }
     }
     if (action === 'click' && args.button !== undefined && !['left', 'right', 'double', 'middle'].includes(args.button)) {
@@ -389,23 +435,108 @@ export async function handleComputerTool(name, args, context) {
     if (action === 'key' && (typeof args.key !== 'string' || !['ENTER', 'TAB', 'ESC', 'BACKSPACE', 'DELETE', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'HOME', 'END', 'PAGEUP', 'PAGEDOWN'].includes(args.key))) {
         throw new Error('Unsupported key.');
     }
-    let request = args;
+    let request = { ...args };
     if (action === 'screenshot') {
         const directory = join(context.workspace, '.tbot', 'screenshots');
         await mkdir(directory, { recursive: true });
-        request = { ...args, screenshotPath: join(directory, `screenshot-${randomUUID()}.png`) };
+        request.screenshotPath = join(directory, `screenshot-${randomUUID()}.png`);
     }
     // Attempt warm daemon execution for ultra-low latency (2-10ms); fall back to standalone if daemon fails
+    let rawRes;
     try {
-        return await sendDaemonRequest(request, context.signal);
+        rawRes = await sendDaemonRequest(request, context.signal);
     }
     catch (daemonError) {
-        // If daemon fails or was closed, fallback to one-shot standalone runner
+        if (isKillSwitchError(daemonError)) {
+            await closeIdleDesktopDaemon();
+            throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${daemonError.message}`);
+        }
         try {
             await closeIdleDesktopDaemon();
         }
         catch { }
-        return await runStandalonePs(request, context.signal);
+        try {
+            rawRes = await runStandalonePs(request, context.signal);
+        }
+        catch (standaloneError) {
+            if (isKillSwitchError(standaloneError)) {
+                throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${standaloneError.message}`);
+            }
+            throw standaloneError;
+        }
     }
+    let data = {};
+    try {
+        data = JSON.parse(rawRes);
+    }
+    catch {
+        data = { raw: rawRes };
+    }
+    if (action === 'inspect') {
+        const elements = data.elements || [];
+        const elementsSummary = formatElementsSummary(elements);
+        return JSON.stringify({
+            ...data,
+            summary: `Active Window: "${data.windowTitle || ''}" (Handle: ${data.handle})\n\n[Etkileşimli UI Öğeleri]:\n${elementsSummary}`,
+        });
+    }
+    if (action === 'screenshot') {
+        const shotPath = request.screenshotPath;
+        const elements = data.elements || [];
+        const elementsSummary = formatElementsSummary(elements);
+        return JSON.stringify({
+            ...data,
+            path: shotPath,
+            screenshotPath: shotPath,
+            message: `Screenshot saved: ${shotPath}\n\n[Aktif Pencere Etkileşimli Öğeleri (Set-of-Marks)]:\n${elementsSummary}`,
+            elements,
+        });
+    }
+    // Otomatik Gözlem -> Eylem -> Görsel Doğrulama Döngüsü
+    const shouldAutoScreenshot = args.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll'].includes(action);
+    if (shouldAutoScreenshot) {
+        await new Promise(r => setTimeout(r, 220));
+        const directory = join(context.workspace, '.tbot', 'screenshots');
+        await mkdir(directory, { recursive: true });
+        const shotPath = join(directory, `screenshot-${randomUUID()}.png`);
+        try {
+            let shotRaw;
+            try {
+                shotRaw = await sendDaemonRequest({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
+            }
+            catch (shotDaemonError) {
+                if (isKillSwitchError(shotDaemonError)) {
+                    await closeIdleDesktopDaemon();
+                    throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${shotDaemonError.message}`);
+                }
+                shotRaw = await runStandalonePs({ action: 'screenshot', screenshotPath: shotPath }, context.signal);
+            }
+            let shotData = {};
+            try {
+                shotData = JSON.parse(shotRaw);
+            }
+            catch { }
+            const elements = shotData.elements || [];
+            const elementsSummary = formatElementsSummary(elements);
+            return JSON.stringify({
+                ...data,
+                path: shotPath,
+                screenshotPath: shotPath,
+                message: `Screenshot saved: ${shotPath}\n\n[Aktif Pencere Etkileşimli Öğeleri (Set-of-Marks)]:\n${elementsSummary}`,
+                elements,
+            });
+        }
+        catch (shotErr) {
+            if (isKillSwitchError(shotErr)) {
+                await closeIdleDesktopDaemon();
+                throw new Error(`[ACİL DURDURMA - KULLANICI TARAFINDAN DURDURULDU] ${shotErr.message}`);
+            }
+            return JSON.stringify({
+                ...data,
+                note: `Action attempted; visual verification screenshot was skipped: ${shotErr.message}`,
+            });
+        }
+    }
+    return rawRes;
 }
 //# sourceMappingURL=computer.js.map

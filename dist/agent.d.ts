@@ -1,5 +1,6 @@
-import type { AgentEvent, AgentInput, Message } from './types.js';
+import type { AgentEvent, AgentInput, ImageAttachment, Message, ToolCall } from './types.js';
 import type { Session } from './sessions.js';
+export declare function screenshotImage(call: ToolCall, result: string, workspace: string): Promise<ImageAttachment | undefined>;
 export interface AgentRunOptions {
     toolPolicy?: 'read-only' | 'all';
     maxRounds?: number;

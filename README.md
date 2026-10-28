@@ -83,6 +83,23 @@ T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 
 ---
 
+## Dünya #1 Canlı Görsel Tarayıcı (Browser Use) & Masaüstü GUI (Computer Use)
+
+T Bot 2.0; pikselleri ve UI ağaçlarını anlayan, ekranda insan gibi gezinip işlem yapabilen, canlı geri bildirim döngüsüne sahip gelişmiş bir görsel otomasyon motoru içerir:
+
+* **Doğrudan Ekranı Görme (Multimodal Vision):** Multimodal LLM'ler (Gemini, Claude, GPT-4o) ekranı ve web sayfalarını doğrudan insan gözüyle görür. Her eylemin (tıklama, yazma, kısayol vb.) ardından sistem **otomatik olarak işaretli ekran görüntüsü doğrulaması** gerçekleştirir ve görsel teyit alarak bir sonraki adıma geçer (Closed-Loop Autonomous Feedback).
+* **Windows UI Automation (`[u1]`, `[u2]` Semantik Ağacı + `target`):** Ekrandaki pencereleri, butonları, menüleri ve giriş kutularını semantik düzeyde ayrıştırır. Ajan doğrudan `target: "u1"` parametresiyle piksellerle uğraşmadan nokta atışı tıklar, çift tıklar veya metin yazar.
+* **Koordinat Cetveli & Hedef Nişangahı (`⊕`):** Alınan her masaüstü ekran görüntüsüne 50px aralıklı floresan koordinat cetveli ve son tıklanan noktaya net bir hedef nişangahı (`⊕`) basılır; böylece ajan ve kullanıcı yapılan eylemi pikseller seviyesinde anında doğrular.
+* **Canlı Görünür Tarayıcı (`headless: false` varsayılan):** Playwright tarayıcısı arka planda gizli kalmak yerine kullanıcının gözü önünde canlı açılır. Yapılan her tıklama ve metin girişinde sayfa üzerinde **Neon Tıklama/Yazma Hedef Halkası** parıldar ve sayfanın en üstünde canlı durum kontrol çubuğu enjekte edilir.
+* **Ekran Üstü Siber-Zen Masaüstü HUD Penceresi:** Masaüstü kontrolü çalışırken ekranın köşesinde yarı şeffaf Cyber-Zen Masaüstü HUD penceresi (`[⏹ DURDUR]` butonu ile) aktif kalarak kullanıcının kontrolü elinde tutmasını sağlar.
+* **3 Katmanlı Donanımsal & Yazılımsal Acil Durdurma (Fail-Safe Kill-Switch):**
+  1. *Ekran Üstü HUD:* Masaüstü HUD penceresindeki `[⏹ DURDUR]` butonuna tek tık.
+  2. *Global Klavye Kısayolu:* Herhangi bir anda `F12` veya `ESC` tuşuna basarak anında dondurma.
+  3. *Fail-Safe Köşe Koruması:* Fareyi fiziksel olarak ekranın sol-üst köşesine `(0, 0)` çekmek tüm GUI döngüsünü donanımsal olarak durdurur.
+  4. *Terminal Komutu:* `/gui live | headless | stop` ile canlı/arka plan modunu değiştirin veya anında acil durdurma tetikleyin.
+
+---
+
 ## Yerleşik Araçlar (Built-in Tools) Tablosu
 
 | Kategori | Araç İsimleri | Açıklama |
@@ -168,6 +185,7 @@ tbot --version                    Sürüm bilgisi (2.0.0)
 | `/subagents <istek>` | Paralel salt-okunur alt ajan araştırması başlatır |
 | `/ultracode [on\|off]` | 4 aşamalı özerk kodlama modunu açar veya kapatır |
 | `/yolo [on\|off]` | Araç onaylarını otomatik onaylama moduna alır |
+| `/gui [live\|headless\|stop]` | Görsel tarayıcı ve masaüstü GUI modunu yönetir veya acil durdurma tetikler |
 | `/effort [düzey]` | Düşünme eforunu ayarlar (low, medium, high, xhigh, max) |
 | `/provider`, `/model` | Sağlayıcı ve model seçim menüsünü açar |
 | `/config`, `/auth` | Ayarları yapılandırır veya yeni API anahtarı girer |

@@ -1,5 +1,6 @@
 import { open, realpath } from 'node:fs/promises';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { executeTool, getToolDefinitions, READ_ONLY_TOOLS } from './tools/index.js';
 import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
 import { pruneToolDefinitions, compressConversationHistory, estimateMessagesTokens, smartTruncateToolOutput, globalTokenTracker, } from './token-optimizer.js';
@@ -13,7 +14,7 @@ const MAX_TOOL_CALLS = 90;
 const MAX_CALLS_PER_ROUND = 12;
 const MAX_CONTEXT_CHARS = 90_000;
 const SYSTEM_PROMPT = `You are T Bot, an elite software engineering agent with cognitive discipline.
-Work strictly within the authorized workspace. Follow this 5-rule Algorithmic Cognitive Protocol:
+Work strictly within the authorized workspace. Follow this 6-rule Algorithmic Cognitive Protocol:
 
 1. Mimari Farkındalık (Architectural Awareness):
    Önce [PROJE MİMARİ VE SEMBOL HARİTASI] (RepoMap) ve \`file_outline\` / \`file_search\` kullanarak hedef sembolün ve fonksiyonun tam satır aralığını tespit et. Proje mimarisini anlamadan doğrudan dosya tahmininde bulunma.
@@ -28,7 +29,10 @@ Work strictly within the authorized workspace. Follow this 5-rule Algorithmic Co
    Var olmayan dosya, export edilmemiş fonksiyon veya sahte paket uydurma. "Test geçti", "derlendi", "dosya güncellendi" gibi iddiaları mutlaka gerçek araç çalıştırma kanıtıyla doğrula; kanıtsız başarı iddia etme.
 
 5. Otonom Hata Kurtarma (Autonomous Self-Healing):
-   Bir araç hata verdiğinde aynı hatalı parametrelerle çağrıyı asla tekrarlama; [OTONOM KURTARMA KILAVUZU] yönergelerindeki alternatif adımı (ör. \`file_read\` ile güncel satırları tazeleyip yeni \`file_patch\` hazırlama) derhal uygula.`;
+   Bir araç hata verdiğinde aynı hatalı parametrelerle çağrıyı asla tekrarlama; [OTONOM KURTARMA KILAVUZU] yönergelerindeki alternatif adımı (ör. \`file_read\` ile güncel satırları tazeleyip yeni \`file_patch\` hazırlama) derhal uygula.
+
+6. Görsel Ekran & GUI/Tarayıcı Odak Disiplini (Visual Screen & GUI/Browser Focus):
+   Tarayıcı (\`browser_*\`) ve Masaüstü GUI (\`computer\`) kullanma yetkin tamdır ve kesintisizdir. Ekranı veya tarayıcıyı kullanırken: (a) Önce \`computer(action:'inspect')\` veya \`browser_inspect\` / \`screenshot\` ile ekrandaki numaralı öğeleri (\`[u1]\`, \`[e1]\`) ve koordinat ızgarasını gör, (b) Kör koordinat sallamak yerine öncelikle \`target: 'u1'\` / \`ref: 'e1'\` veya öğe metniyle nokta atışı tıkla/yaz, (c) Her adımdan sonra gelen canlı ekran görüntüsünü ve kırmızı hedef nişangahını (\`⊕\`) kontrol ederek işlemin gerçekten gerçekleştiğini doğrula ve görev tamamen bitene kadar odaklanarak devam et.`;
 const repoMapCache = new Map();
 async function getCachedRepoMap(workspace, query) {
     const now = Date.now();
@@ -80,45 +84,73 @@ function isReadOnlyTool(name) {
         name === 'skill_list' ||
         name === 'mcp_catalog');
 }
-// Only accept paths produced by screenshot tools, under their dedicated directory.
-async function screenshotImage(call, result, workspace) {
-    if (!(call.name === 'browser_screenshot' || (call.name === 'computer' && call.arguments.action === 'screenshot')))
+// Accepts screenshots produced by any browser or computer action.
+export async function screenshotImage(call, result, workspace) {
+    const isVisual = call.name.startsWith('browser_') || call.name === 'computer' || call.name.startsWith('computer_');
+    if (!isVisual)
         return;
     let path;
-    if (call.name === 'browser_screenshot')
-        path = result.startsWith('Screenshot saved: ') ? result.slice('Screenshot saved: '.length) : undefined;
-    else {
-        try {
-            path = JSON.parse(result).path;
-        }
-        catch {
-            return;
+    try {
+        const parsed = JSON.parse(result);
+        const candidate = parsed.screenshotPath ?? parsed.path ?? parsed.screenshot_path ?? parsed.filePath;
+        if (typeof candidate === 'string') {
+            path = candidate;
         }
     }
-    if (typeof path !== 'string')
+    catch { }
+    if (!path) {
+        const savedMatch = result.match(/Screenshot saved:\s*([^\r\n"]+)/i);
+        if (savedMatch) {
+            path = savedMatch[1].trim();
+        }
+        else {
+            const pathMatch = result.match(/(?:[A-Za-z]:[\\/]|[\/])[^\s"'<>|]+?\.(?:png|jpe?g)/i);
+            if (pathMatch) {
+                path = pathMatch[0];
+            }
+        }
+    }
+    if (!path || typeof path !== 'string')
         return;
     try {
-        const workspaceRoot = await realpath(workspace);
-        const root = await realpath(join(workspace, '.tbot', 'screenshots'));
-        const rootRelative = relative(workspaceRoot, root);
-        if (!rootRelative || rootRelative.startsWith('..') || isAbsolute(rootRelative))
-            return;
-        const file = await realpath(path);
-        const rel = relative(root, file);
-        if (!rel || rel.startsWith('..') || isAbsolute(rel) || !rel.toLowerCase().endsWith('.png'))
+        const resolvedPath = resolve(path);
+        let file;
+        try {
+            file = await realpath(resolvedPath);
+        }
+        catch {
+            file = resolvedPath;
+        }
+        const normalizedFile = file.toLowerCase();
+        const allowedDirs = [
+            resolve(workspace).toLowerCase(),
+            resolve(join(workspace, '.tbot')).toLowerCase(),
+            resolve(tmpdir()).toLowerCase(),
+        ];
+        const isAllowed = allowedDirs.some(dir => normalizedFile === dir ||
+            normalizedFile.startsWith(dir + '\\') ||
+            normalizedFile.startsWith(dir + '/'));
+        if (!isAllowed)
             return;
         const handle = await open(file, 'r');
         try {
             const stat = await handle.stat();
-            if (!stat.isFile() || stat.size < 24 || stat.size > 4 * 1024 * 1024)
+            if (!stat.isFile() || stat.size < 24 || stat.size > 10 * 1024 * 1024)
                 return;
             const data = await handle.readFile();
-            if (data.length !== stat.size || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) || data.toString('ascii', 12, 16) !== 'IHDR')
+            if (data.length !== stat.size)
                 return;
-            const width = data.readUInt32BE(16), height = data.readUInt32BE(20);
-            if (!width || !height || width > 8192 || height > 8192 || width * height > 20_000_000)
-                return;
-            return { mimeType: 'image/png', data: data.toString('base64') };
+            if (data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+                if (data.toString('ascii', 12, 16) !== 'IHDR')
+                    return;
+                const width = data.readUInt32BE(16), height = data.readUInt32BE(20);
+                if (!width || !height || width > 16384 || height > 16384 || width * height > 40_000_000)
+                    return;
+                return { mimeType: 'image/png', data: data.toString('base64') };
+            }
+            if (data[0] === 0xff && data[1] === 0xd8 && data[data.length - 2] === 0xff && data[data.length - 1] === 0xd9) {
+                return { mimeType: 'image/jpeg', data: data.toString('base64') };
+            }
         }
         finally {
             await handle.close();
@@ -441,6 +473,7 @@ export async function runAgent(input, options = {}) {
                 seenIds.add(call.id);
                 totalToolCalls++;
             }
+            const isEmergencyStop = (text) => text.includes('[ACİL DURDURMA') || text.includes('KULLANICI ACİL DURDURMA') || Boolean(input.signal?.aborted);
             const executionGroups = groupToolCallsForHybridExecution(calls);
             for (const group of executionGroups) {
                 if (group.parallel && group.calls.length > 1) {
@@ -454,6 +487,13 @@ export async function runAgent(input, options = {}) {
                             ...(out.image ? { images: [out.image] } : {}),
                         };
                         conversation.push(toolMessage);
+                        if (isEmergencyStop(out.result)) {
+                            const stopMsg = '⏹ İşlem kullanıcı tarafından ekrandan/klavyeden durduruldu.';
+                            emit({ type: 'status', message: stopMsg });
+                            emit({ type: 'text', text: stopMsg });
+                            conversation.push({ role: 'assistant', content: stopMsg });
+                            return conversation;
+                        }
                     }
                 }
                 else {
@@ -467,6 +507,13 @@ export async function runAgent(input, options = {}) {
                             ...(out.image ? { images: [out.image] } : {}),
                         };
                         conversation.push(toolMessage);
+                        if (isEmergencyStop(out.result)) {
+                            const stopMsg = '⏹ İşlem kullanıcı tarafından ekrandan/klavyeden durduruldu.';
+                            emit({ type: 'status', message: stopMsg });
+                            emit({ type: 'text', text: stopMsg });
+                            conversation.push({ role: 'assistant', content: stopMsg });
+                            return conversation;
+                        }
                     }
                 }
             }

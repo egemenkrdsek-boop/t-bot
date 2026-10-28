@@ -42,9 +42,27 @@ export function createOpenAIResponsesProvider(config) {
                 // /v1/responses 404 veya 400 dönerse standart /v1/chat/completions SSE akışına otomatik fallback yap
                 if (response.status === 404 || response.status === 400) {
                     const chatMessages = [];
+                    let pendingImages = [];
+                    const flushImages = () => {
+                        if (pendingImages.length) {
+                            chatMessages.push({
+                                role: 'user',
+                                content: [{ type: 'text', text: '[Canlı Ekran Görüntüsü]' }, ...pendingImages],
+                            });
+                            pendingImages = [];
+                        }
+                    };
                     for (const m of messages) {
+                        if (m.role !== 'tool')
+                            flushImages();
                         if (m.role === 'tool') {
                             chatMessages.push({ role: 'tool', tool_call_id: m.toolCallId, content: m.content });
+                            if (m.images?.length) {
+                                pendingImages.push(...m.images.map(image => ({
+                                    type: 'image_url',
+                                    image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+                                })));
+                            }
                         }
                         else if (m.role === 'assistant') {
                             chatMessages.push({
@@ -61,10 +79,23 @@ export function createOpenAIResponsesProvider(config) {
                                     : {}),
                             });
                         }
+                        else if (m.role === 'user' && m.images?.length) {
+                            chatMessages.push({
+                                role: 'user',
+                                content: [
+                                    ...(m.content ? [{ type: 'text', text: m.content }] : []),
+                                    ...m.images.map(image => ({
+                                        type: 'image_url',
+                                        image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+                                    })),
+                                ],
+                            });
+                        }
                         else {
                             chatMessages.push({ role: m.role, content: m.content });
                         }
                     }
+                    flushImages();
                     const chatBody = {
                         model: config.model,
                         messages: chatMessages,

@@ -63,6 +63,9 @@ export function normalizeConfig(rawInput) {
         workspacePermissions: permissions,
         efforts
     };
+    if (input.guiMode === 'live' || input.guiMode === 'headless') {
+        result.guiMode = input.guiMode;
+    }
     if (typeof input.telegramBotToken === 'boolean') {
         result.telegramBotToken = input.telegramBotToken;
     }
@@ -173,6 +176,7 @@ export async function saveConfig(config) {
             ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
             workspacePermissions: config.workspacePermissions,
             efforts: config.efforts ?? {},
+            ...(config.guiMode ? { guiMode: config.guiMode } : {}),
             ...(config.telegramBotToken !== undefined ? { telegramBotToken: config.telegramBotToken } : {}),
             ...(config.telegramAllowedChatIds ? { telegramAllowedChatIds: config.telegramAllowedChatIds } : {})
         };
