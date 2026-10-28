@@ -267,6 +267,6 @@ Bu sonuçlar gerçek GUI gecikmesini, model kalitesini, rakiplere göre token ta
 | --- | --- |
 | `release/T-Bot-Setup-4.1.0.exe` | 128.598.420 byte; SHA256 `d560d2a7f2b7c80559c6b40b6ed7859619e3808c3657ac322d7392f5e5d70e9f` |
 | `app.asar` SHA256 | `6f2b11772366608e3188cf4ff149c8626759030893ac3f3df357e248e555b331` (manifest ile aynı) |
-| Desktop yerel kurulum | Manifest doğrulamalı `deploy-local.ps1`; sürüm ve `app.asar` hash'i kontrol edilir |
-| Global CLI kurulumu | `t-bot-cli-4.1.0.tgz` global kurulur; `tbot --version` → `T Bot 4.1.0` |
+| Desktop yerel kurulum | `deploy-local.ps1` başarılı; ProductVersion `4.1.0.0`; kurulu `app.asar` SHA256 `6f2b11772366608e3188cf4ff149c8626759030893ac3f3df357e248e555b331` ile manifest eşleşti; uygulama açılmadı |
+| Global CLI kurulumu | `t-bot-cli-4.1.0.tgz` `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 4.1.0` |
 | Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar |
