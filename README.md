@@ -27,7 +27,7 @@ Linux / macOS:
 sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, sürüm/yardım kontrolü yapar ve hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz. Belirli bir sürüm dalını/tag'ini kurmak için `TBOT_INSTALL_REF=v4.0.0` (PowerShell: `$env:TBOT_INSTALL_REF='v4.0.0'`) ayarlanabilir; tam commit sabitlemek için `TBOT_INSTALL_REVISION` kullanılır. Kurulumdan sonra:
+Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, sürüm/yardım kontrolü yapar ve hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz. Belirli bir sürüm dalını/tag'ini kurmak için `TBOT_INSTALL_REF=v4.1.0` (PowerShell: `$env:TBOT_INSTALL_REF='v4.1.0'`) ayarlanabilir; tam commit sabitlemek için `TBOT_INSTALL_REVISION` kullanılır. Kurulumdan sonra:
 
 ```text
 tbot config                 Sağlayıcı ve API anahtarını yapılandır

@@ -31,7 +31,7 @@ Bu dosya bağımsız bir rakip denetimi veya sıralama kanıtı değildir. Amaç
 | Dil sunucusu tanılaması eksikliği | TS/JS için yerel `diagnostics`; genel LSP istemcisi yok | Kısmen |
 | İşlem geri alma/checkpoint | Dosya checkpoint/undo, onaylı geri yükleme | Uygulandı; tüm dosya sistemi değil |
 
-## 4.0'da bilinçli olarak kapsam dışı
+## 4.1'de bilinçli olarak kapsam dışı
 
 - Tam OS sandbox veya container izolasyonu (Windows'ta adaptör yok).
 - Canlı rakip benchmark'ı ve “dünya #1” sertifikası.
