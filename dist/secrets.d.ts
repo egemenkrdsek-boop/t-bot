@@ -1,3 +1,4 @@
+export { redactSecrets } from './security/redact.js';
 export type ProviderId = string;
 export declare const secretCache: Map<string, string>;
 export declare class SecretStorageError extends Error {
@@ -11,6 +12,11 @@ export interface SecretStorageStatus {
 export type ApiKeySource = 'saved' | 'provider-env' | 'generic-env' | 'missing';
 export declare const normalizeKey: (key: string) => string;
 export declare function prepareApiKey(key: string): string;
+/**
+ * Restrict a data directory to the current user, SYSTEM and Administrators.
+ * Windows uses icacls with inheritance removed; Unix uses mode 0700.
+ */
+export declare function secureDataDirectory(directory: string): Promise<void>;
 export declare function setApiKey(id: string, key: string): Promise<SecretStorageStatus>;
 export declare function readSavedKey(id: string): Promise<string | undefined>;
 export declare function getApiKey(id: string): Promise<string | undefined>;

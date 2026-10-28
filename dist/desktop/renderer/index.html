@@ -1,290 +1,215 @@
 <!DOCTYPE html>
-<html lang="tr" data-theme="light">
+<html lang="tr" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>T Bot — Yerel Kodlama Asistanı</title>
+  <title>T Bot — Yerel Kodlama Ajanı</title>
   <link rel="icon" href="icon.ico">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="cyber-zen-body" data-theme="light">
-  <!-- Sürükle-Bırak Karşılama Katmanı -->
+<body data-theme="dark">
   <div id="drag-overlay" class="drag-overlay hidden">
     <div class="drag-box">
-      <div class="drag-icon">📥</div>
-      <div class="drag-title">Dosya veya Görseli Buraya Bırakın</div>
+      <div class="drag-icon">↓</div>
+      <div class="drag-title">Dosya veya görseli bırakın</div>
       <div class="drag-subtitle">Görseller önizlemeye eklenir, dosyalar mesaja iliştirilir</div>
     </div>
   </div>
 
-  <!-- Ekran Görüntüsü Lightbox Modalı -->
   <div id="lightbox-modal" class="lightbox-modal hidden">
     <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
     <div class="lightbox-content">
       <div class="lightbox-header">
         <span class="lightbox-title" id="lightbox-title">Görsel Önizlemesi</span>
         <div class="lightbox-actions">
-          <button id="lightbox-btn-download" class="zen-btn-ghost" title="Görseli İndir">💾 İndir</button>
-          <button id="lightbox-btn-close" class="zen-btn-ghost" title="Kapat (Esc)">✕</button>
+          <button id="lightbox-btn-download" class="btn btn-ghost btn-sm" title="Görseli İndir">İndir</button>
+          <button id="lightbox-btn-close" class="btn btn-ghost btn-sm" title="Kapat (Esc)">×</button>
         </div>
       </div>
-      <div class="lightbox-body">
-        <img id="lightbox-img" src="" alt="Önizleme">
-      </div>
+      <div class="lightbox-body"><img id="lightbox-img" src="" alt="Önizleme"></div>
     </div>
   </div>
 
-  <!-- Özel Çerçevesiz Başlık Çubuğu -->
   <header id="titlebar" class="titlebar">
     <div class="titlebar-left">
-      <canvas id="logo-canvas" width="28" height="28" class="logo-canvas" title="T Bot"></canvas>
+      <canvas id="logo-canvas" width="24" height="24" class="logo-canvas" title="T Bot"></canvas>
       <div class="brand-text">
-        <span class="brand-name">T BOT <span class="brand-version" data-app-version title="Sürüm bilgisi yükleniyor">…</span></span>
-        <span class="brand-badge">YEREL KODLAMA ASİSTANI</span>
+        <span class="brand-name">T BOT <span class="brand-version" data-app-version title="Sürüm">…</span></span>
+        <span class="brand-badge">LOCAL AGENT</span>
       </div>
     </div>
 
     <div class="titlebar-center">
-      <button id="btn-workspace" class="workspace-btn" title="Çalışma Klasörünü Değiştir (Tıkla)">
-        <span class="ws-icon">📁</span>
+      <button id="btn-workspace" class="workspace-btn" title="Çalışma Klasörünü Değiştir">
+        <span class="ws-icon">⌂</span>
         <span id="workspace-path" class="ws-path">Çalışma alanı yükleniyor…</span>
-        <span class="ws-caret">▾</span>
+        <span class="ws-caret">⌄</span>
       </button>
     </div>
 
     <div class="titlebar-right">
-      <div id="telemetry-badge" class="telemetry-badge" title="Canlı Bellek ve Token Tasarrufu">
-        <span class="telemetry-ram">▣ <span id="telemetry-ram-val">— MB</span></span>
-        <span class="telemetry-sep">·</span>
-        <span class="telemetry-savings">%<span id="telemetry-savings-val">0</span> Tasarruf</span>
+      <div id="telemetry-badge" class="telemetry-badge" title="Canlı Bellek ve Bağlam Tasarrufu">
+        <span><span class="muted">RAM</span> <span id="telemetry-ram-val">— MB</span></span>
+        <span class="telemetry-sep">/</span>
+        <span><span class="muted">CTX</span> %<span id="telemetry-savings-val">0</span></span>
       </div>
 
-      <button id="btn-theme-toggle" class="titlebar-action-btn theme-toggle-btn" title="Temayı Değiştir (Açık / Koyu)">
-        <span id="theme-toggle-icon" class="action-icon">☀️</span>
-        <span id="theme-toggle-label" class="action-label">Açık</span>
+      <button id="btn-theme-toggle" class="titlebar-action-btn" title="Temayı Değiştir">
+        <span id="theme-toggle-icon" class="action-icon">◐</span>
+        <span id="theme-toggle-label" class="action-label">Koyu</span>
+      </button>
+      <button id="btn-trim-ram" class="titlebar-action-btn" title="Belleği Boşalt">
+        <span class="action-icon">⌫</span>
+        <span class="action-label">RAM</span>
       </button>
 
-      <button id="btn-trim-ram" class="titlebar-action-btn" title="Bellek Çöp Toplayıcısını (GC) Çalıştır ve RAM'i Boşalt">
-        <span class="action-icon">🧹</span>
-        <span class="action-label">RAM Boşalt</span>
-      </button>
-
-      <button id="btn-pin" class="titlebar-window-btn" title="Her Zaman Üstte Tut">📌</button>
-      <button id="btn-min" class="titlebar-window-btn" title="Simge Durumuna Küçült">─</button>
-      <button id="btn-max" class="titlebar-window-btn" title="Ekranı Kapla / Geri Yükle">□</button>
-      <button id="btn-close" class="titlebar-window-btn titlebar-close" title="Kapat">✕</button>
+      <button id="btn-pin" class="titlebar-window-btn" title="Her Zaman Üstte">⌖</button>
+      <button id="btn-min" class="titlebar-window-btn" title="Simge Durumuna Küçült">−</button>
+      <button id="btn-max" class="titlebar-window-btn" title="Ekranı Kapla">□</button>
+      <button id="btn-close" class="titlebar-window-btn titlebar-close" title="Kapat">×</button>
     </div>
   </header>
 
-  <!-- Üst Ultracode 4-Aşamalı Stepper & Hızlı Mod Çubuğu -->
   <section id="top-bar" class="top-bar">
     <div class="top-quick-actions">
-      <button class="quick-btn" data-toggle-sidebar="left" aria-label="Sohbet panelini göster veya gizle" aria-expanded="true">☰ Sohbetler</button>
-      <button class="quick-btn" data-toggle-sidebar="right" aria-label="Görev panelini göster veya gizle" aria-expanded="true">Görevler</button>
-      <button id="btn-quick-yolo" class="quick-toggle-btn" title="YOLO Modu: Araçları onaysız otomatik yürüt (Dikkatli Kullanın)">
-        <span class="q-icon" id="yolo-icon">🛡️</span> <span id="yolo-label">Onaylı</span>
+      <button class="quick-btn" data-toggle-sidebar="left" aria-label="Sohbet panelini göster veya gizle" aria-expanded="true">Oturumlar</button>
+      <button class="quick-btn" data-toggle-sidebar="right" aria-label="Görev panelini göster veya gizle" aria-expanded="true">Inspector</button>
+      <button id="btn-quick-yolo" class="quick-toggle-btn" title="Araç Onay Modu">
+        <span id="yolo-icon" class="q-icon">○</span> <span id="yolo-label">Onaylı</span>
       </button>
-      <button id="btn-quick-config" class="quick-btn" title="Model, Sağlayıcı ve API Anahtarlarını Ayarla">
-        <span class="q-icon">🔑</span> Model & API
-      </button>
-      <button id="btn-quick-doctor" class="quick-btn" title="Sistem Sağlığı ve Araç Teşhisini Başlat">
-        <span class="q-icon">🩺</span> Doctor
-      </button>
-      <button id="btn-quick-clear" class="quick-btn" title="Sohbet Geçmişini Temizle">
-        <span class="q-icon">🧹</span> Temizle
-      </button>
+      <button id="btn-quick-plan" class="quick-btn" title="Plan Modu"><span class="q-icon">◇</span> Plan</button>
+      <button id="btn-quick-ultracode" class="quick-btn" title="Ultracode Modu"><span class="q-icon">◆</span> Ultracode</button>
+      <button id="btn-quick-subagents" class="quick-btn" title="Subagents Modu"><span class="q-icon">◇</span> Subagents</button>
+      <button id="btn-quick-config" class="quick-btn" title="Model ve API Anahtarları"><span class="q-icon">⌘</span> Model</button>
+      <button id="btn-quick-doctor" class="quick-btn" title="Sistem Teşhisi"><span class="q-icon">+</span> Doctor</button>
+      <button id="btn-quick-clear" class="quick-btn" title="Sohbeti Temizle"><span class="q-icon">⌫</span> Temizle</button>
     </div>
+    <div class="top-hint">Ctrl+K Komutlar · Esc Durdur · Enter Gönder</div>
   </section>
 
-  <!-- 3 Sütunlu Ana Gövde Düzeni -->
   <div class="workspace-grid">
-    <!-- Sol Panel: Oturumlar ve Kısayollar -->
     <aside id="sidebar-left" class="sidebar sidebar-left">
       <div class="sidebar-header">
         <div class="sidebar-title-group">
           <span class="sidebar-title">Oturumlar</span>
           <span id="sessions-count" class="badge-count">0</span>
         </div>
-        <button id="btn-new-session" class="zen-btn-primary zen-btn-sm" title="Yeni Bir Oturum Başlat">
-          <span>+</span> Yeni
-        </button>
-        <button id="btn-collapse-left" class="collapse-btn" title="Sol Paneli Gizle/Göster">◀</button>
+        <button id="btn-new-session" class="btn btn-primary btn-sm" title="Yeni Oturum">+ Yeni Oturum</button>
+        <button id="btn-collapse-left" class="collapse-btn" title="Paneli Gizle">‹</button>
       </div>
 
       <div class="sessions-container" id="sessions-list">
-        <!-- Oturum kartları dinamik eklenir -->
         <div class="empty-list-hint">Henüz oturum yok</div>
       </div>
 
       <div class="sidebar-footer-section">
-        <div class="section-title">HIZLI YETENEKLER</div>
+        <div class="section-title">Hızlı Başlangıç</div>
         <div class="quick-launcher-list">
           <button class="quick-launch-chip" data-prompt="Masaüstü ekranımı analiz et, açık pencereleri incele ve durumu özetle.">
-            <span class="chip-icon">🖥️</span>
-            <span class="chip-text">Ekranı Gör & Yönet</span>
+            <span class="chip-icon">▣</span><span class="chip-text">Ekranı İncele</span>
           </button>
           <button class="quick-launch-chip" data-prompt="Tarayıcıyı başlat ve en son geliştirici dokümanlarını incele.">
-            <span class="chip-icon">🌐</span>
-            <span class="chip-text">Tarayıcı Otomasyonu</span>
+            <span class="chip-icon">◎</span><span class="chip-text">Tarayıcı Otomasyonu</span>
           </button>
           <button class="quick-launch-chip" data-prompt="Projeyi AST ve repo haritası üzerinden tara, mimariyi ve olası zafiyetleri denetle.">
-            <span class="chip-icon">🔍</span>
-            <span class="chip-text">Kod & AST Analizi</span>
+            <span class="chip-icon">⌕</span><span class="chip-text">Kod ve AST Analizi</span>
           </button>
           <button class="quick-launch-chip" id="btn-launch-goal">
-            <span class="chip-icon">🎯</span>
-            <span class="chip-text">Otonom /goal Başlat</span>
+            <span class="chip-icon">◇</span><span class="chip-text">Otonom Hedef</span>
           </button>
         </div>
       </div>
     </aside>
 
-    <!-- Orta Alan: Terminal / Akış Akışı -->
     <main id="main-terminal" class="main-terminal">
       <div id="chat-feed" class="chat-feed" role="log" aria-label="Sohbet" aria-live="polite" aria-relevant="additions">
-        <!-- Boş Karşılama Ekranı (Hero) -->
         <div id="empty-hero" class="empty-hero">
           <div class="hero-logo-wrapper">
-            <canvas id="hero-logo-canvas" width="112" height="112" class="hero-logo-canvas"></canvas>
+            <canvas id="hero-logo-canvas" width="96" height="96" class="hero-logo-canvas"></canvas>
           </div>
-          <h1 class="hero-title">T BOT <span class="hero-version" data-app-version title="Sürüm bilgisi yükleniyor">…</span></h1>
-          <p class="hero-tagline">Kodunuzu birlikte geliştirelim. Bir görev yazın veya aşağıdan başlayın.</p>
+          <div class="hero-kicker">Yerel Öncelikli Kodlama Ajanı</div>
+          <h1 class="hero-title">T BOT <span class="hero-version" data-app-version title="Sürüm">…</span></h1>
+          <p class="hero-tagline">Kodunuzu okuyan, planlayan ve doğrulayan yerel ajan. Bir görev yazın veya aşağıdan başlayın.</p>
 
           <div class="hero-prompt-grid">
             <div class="hero-card" data-prompt="Projeyi AST ve Repo Haritası ile analiz et, proje yapısını özetle ve geliştirme önerileri sun.">
-              <div class="card-head">
-                <span class="card-icon">🔍</span>
-                <span class="card-title">Kod Tabanını İncele</span>
-              </div>
-              <div class="card-desc">Tüm kaynak kodları, fonksiyon ilişkilerini ve dosya yapısını tara.</div>
+              <div class="card-head"><span class="card-icon">⌕</span><span class="card-title">Kod Tabanını İncele</span></div>
+              <div class="card-desc">Dosya yapısını, sembolleri ve bağımlılıkları çıkar.</div>
             </div>
-
             <div class="hero-card" data-prompt="Kod tabanındaki potansiyel hataları ve tip uyumsuzluklarını denetle ve düzelt.">
-              <div class="card-head">
-                <span class="card-icon">⚡</span>
-                <span class="card-title">Hataları Bul ve Düzelt</span>
-              </div>
-              <div class="card-desc">Sorunu incele, gerekli değişiklikleri yap ve sonucu doğrula.</div>
+              <div class="card-head"><span class="card-icon">!</span><span class="card-title">Hataları Bul ve Düzelt</span></div>
+              <div class="card-desc">Sorunu kanıtla, cerrahi bir yama uygula, doğrula.</div>
             </div>
-
             <div class="hero-card" data-prompt="Webde ve yerel dokümantasyonda arama yaparak son teknik gelişmeleri derle.">
-              <div class="card-head">
-                <span class="card-icon">🌐</span>
-                <span class="card-title">Web & Doküman Araştırması</span>
-              </div>
-              <div class="card-desc">Web araması ve sayfa okuma araçlarıyla taze bilgi topla.</div>
+              <div class="card-head"><span class="card-icon">◎</span><span class="card-title">Web ve Doküman Araştırması</span></div>
+              <div class="card-desc">Taze kaynakları topla; kaynağı ve tarihi belirt.</div>
             </div>
-
             <div class="hero-card" id="hero-card-goal">
-              <div class="card-head">
-                <span class="card-icon">🎯</span>
-                <span class="card-title">Otonom Hedef Belirle</span>
-              </div>
-              <div class="card-desc">.tbot/goal.json altında çok adımlı bağımsız yazılım görevi başlat.</div>
+              <div class="card-head"><span class="card-icon">◇</span><span class="card-title">Otonom Hedef</span></div>
+              <div class="card-desc">Çok adımlı görevi planla ve kanıtla tamamla.</div>
             </div>
           </div>
         </div>
-
-        <!-- Dinamik Mesajlar & Araç Kartları Buraya Eklenir -->
       </div>
 
-      <!-- Canlı Cyber-Wave Düşünme Çubuğu -->
       <div id="thinking-bar" class="thinking-bar hidden">
-        <div class="thinking-cyber-wave"></div>
+        <div class="run-spine" aria-hidden="true">
+          <span class="run-node active"></span><span class="run-node"></span><span class="run-node"></span><span class="run-node"></span>
+        </div>
         <div class="thinking-content">
-          <div class="thinking-spinner" id="thinking-spinner">⠋</div>
+          <div class="thinking-spinner" id="thinking-spinner">·</div>
           <div class="thinking-step-badge" id="thinking-step-badge">Adım 1</div>
-          <div class="thinking-label" id="thinking-label">Düşünülüyor…</div>
-          <div class="thinking-timer" id="thinking-timer">0.0sn</div>
-          <button id="btn-abort-turn" class="btn-abort" title="İşlemi Hemen Durdur (ESC)">
-            <span class="abort-icon">⏹</span> DURDUR (ESC)
-          </button>
+          <div class="thinking-label" id="thinking-label">Çalışıyor…</div>
+          <div class="thinking-timer" id="thinking-timer">0.0s</div>
+          <button id="btn-abort-turn" class="btn btn-danger-ghost btn-sm" title="İşlemi Durdur (Esc)">Durdur</button>
         </div>
       </div>
 
-      <!-- Aşağı Kaydır Butonu -->
-      <button id="btn-scroll-bottom" class="btn-scroll-bottom hidden" title="En Aşağı Kaydır">
-        ↓ Yeni Mesajlar
-      </button>
+      <button id="btn-scroll-bottom" class="btn-scroll-bottom hidden" title="En Alta İn">↓ Yeni Mesajlar</button>
 
-      <!-- Alt Giriş ve HUD Alanı -->
       <div class="bottom-area">
-        <!-- Ekli Dosyalar/Görseller Çipleri -->
         <div id="attachment-chips" class="attachment-chips hidden"></div>
 
-        <!-- Mesaj Giriş Kapsayıcısı -->
         <div class="input-container">
-          <button id="btn-slash-hint" class="input-action-btn" title="Komut Paletini Aç (Ctrl+K veya /)">
-            <span class="input-action-icon">/</span>
-          </button>
-          <button id="btn-attach" class="input-action-btn" title="Görsel veya Dosya Ekle">
-            <span class="input-action-icon">📎</span>
-          </button>
+          <button id="btn-slash-hint" class="input-action-btn" title="Komut Paleti (Ctrl+K)">/</button>
+          <button id="btn-attach" class="input-action-btn" title="Dosya veya Görsel Ekle">＋</button>
           <input type="file" id="file-input-hidden" multiple style="display:none" accept="image/*,.txt,.md,.json,.ts,.js,.py,.css,.html">
 
-          <textarea aria-label="T Bot’a mesaj yazın" id="user-input" class="user-input" rows="1" placeholder="Bir talimat yazın veya '/' ile komutları açın (Shift+Enter yeni satır, Enter gönder)..." autofocus></textarea>
+          <textarea aria-label="T Bot’a mesaj yazın" id="user-input" class="user-input" rows="1" placeholder="Bir talimat yazın veya / ile komutları açın…" autofocus></textarea>
 
-          <button id="btn-send" class="btn-send" title="Gönder (Enter)">
-            <span class="send-icon">➤</span>
-          </button>
+          <button id="btn-send" class="btn-send" title="Gönder (Enter)"><span class="send-icon">→</span></button>
         </div>
 
-        <!-- Alt CLI HUD Çubuğu -->
         <div class="cli-hud-bar" id="cli-hud-bar">
-          <div class="hud-item hud-model">
-            <span class="hud-label">Model:</span>
-            <span id="hud-model-val" class="hud-val">gemini-2.5-pro</span>
-          </div>
-          <span class="hud-sep">│</span>
-          <div class="hud-item hud-effort">
-            <span class="hud-label">Efor:</span>
-            <span id="hud-effort-val" class="hud-val">Normal</span>
-          </div>
-          <span class="hud-sep">│</span>
-          <div class="hud-item hud-savings">
-            <span class="hud-label">Tasarruf:</span>
-            <span id="hud-savings-val" class="hud-val-accent">%0</span>
-            <div class="hud-mini-bar" id="hud-mini-bar" title="Token Tasarruf Oranı">▰▰▰▰▱</div>
-            <span id="hud-tokens-saved" class="hud-dim">(0 Tok)</span>
-          </div>
-          <span class="hud-sep">│</span>
-          <div class="hud-item hud-grounding">
-            <span class="hud-label">Doğrulama:</span>
-            <span id="hud-grounding-val" class="hud-success">—</span>
-          </div>
-          <span class="hud-sep">│</span>
-          <div class="hud-item hud-ram">
-            <span class="hud-label">RAM:</span>
-            <span id="hud-ram-val" class="hud-cyan">— MB</span>
-            <span id="hud-ram-dot" class="hud-dot-green">●</span>
-          </div>
-          <span class="hud-sep">│</span>
-          <div class="hud-item hud-shortcut" title="Klavye Kısayolları">
-            <span class="hud-dim">Kısayol: Ctrl+K</span>
-          </div>
+          <div class="hud-item hud-model"><span class="hud-label">Model</span><span id="hud-model-val" class="hud-val">—</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-effort"><span class="hud-label">Efor</span><span id="hud-effort-val" class="hud-val">—</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-mode"><span class="hud-label">Mod</span><span id="hud-mode-val" class="hud-val-accent">Ajan</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-savings"><span class="hud-label">Bağlam</span><span id="hud-savings-val" class="hud-val-accent">%0</span><span id="hud-mini-bar" class="hud-mini-bar" title="Bağlam tasarrufu">▱▱▱▱▱</span><span id="hud-tokens-saved" class="hud-dim">(0 tok)</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-grounding"><span class="hud-label">Doğrulama</span><span id="hud-grounding-val" class="hud-success">—</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-ram"><span class="hud-label">RAM</span><span id="hud-ram-val" class="hud-cyan">— MB</span><span id="hud-ram-dot" class="hud-dot-green">●</span></div>
+          <span class="hud-sep">·</span>
+          <div class="hud-item hud-shortcut"><span class="hud-dim">Ctrl+K</span></div>
         </div>
       </div>
     </main>
 
-    <!-- Sağ Panel: Görev Pusulası (Goal & Todos + Skills/MCP) -->
     <aside id="sidebar-right" class="sidebar sidebar-right">
       <div class="sidebar-header">
-        <button id="btn-collapse-right" class="collapse-btn" title="Sağ Paneli Gizle/Göster">▶</button>
-        <div class="sidebar-title-group">
-          <span class="sidebar-title">Görev Pusulası</span>
-        </div>
-        <button id="btn-refresh-workflow" class="zen-btn-ghost zen-btn-sm" title="Yenile">🔄</button>
+        <button id="btn-collapse-right" class="collapse-btn" title="Paneli Gizle">›</button>
+        <div class="sidebar-title-group"><span class="sidebar-title">Inspector</span></div>
+        <button id="btn-refresh-workflow" class="btn btn-ghost btn-sm" title="Yenile">↻</button>
       </div>
 
       <div class="sidebar-scrollable">
-        <!-- Aktif Otonom Hedef Kartı -->
         <div class="workflow-card" id="workflow-goal-card">
           <div class="workflow-card-head">
-            <div class="card-head-title">
-              <span class="goal-icon">🎯</span>
-              <span class="head-text">AKTİF HEDEF</span>
-            </div>
+            <div class="card-head-title"><span class="goal-icon">◇</span><span class="head-text">GOAL</span></div>
             <span id="goal-status-badge" class="status-badge badge-dim">Yok</span>
           </div>
           <div class="goal-body">
@@ -292,204 +217,185 @@
             <div id="goal-notes-list" class="goal-notes-list hidden"></div>
           </div>
           <div class="goal-actions">
-            <button id="btn-goal-set" class="zen-btn-primary zen-btn-xs">+ Hedef Belirle</button>
-            <button id="btn-goal-complete" class="zen-btn-ghost zen-btn-xs hidden">✓ Bitir</button>
-            <button id="btn-goal-cancel" class="zen-btn-ghost zen-btn-xs text-danger hidden">✕ İptal</button>
+            <button id="btn-goal-set" class="btn btn-primary btn-xs">+ Hedef</button>
+            <button id="btn-goal-complete" class="btn btn-ghost btn-xs hidden">Bitir</button>
+            <button id="btn-goal-cancel" class="btn btn-ghost btn-xs text-danger hidden">İptal</button>
           </div>
         </div>
 
-        <!-- Görev Listesi (Todos) -->
         <div class="workflow-card" id="workflow-todos-card">
           <div class="workflow-card-head">
-            <div class="card-head-title">
-              <span class="todos-icon">📋</span>
-              <span class="head-text">GÖREV LİSTESİ</span>
-            </div>
+            <div class="card-head-title"><span class="todos-icon">☰</span><span class="head-text">TASKS</span></div>
             <span id="todos-progress-badge" class="badge-count">0/0</span>
           </div>
-
           <div class="todo-add-form">
-            <input type="text" aria-label="Yeni görev" id="input-new-todo" class="todo-input" placeholder="Yeni görev maddesi ekle (Enter)...">
-            <button id="btn-add-todo" class="zen-btn-primary zen-btn-xs">+</button>
+            <input type="text" aria-label="Yeni görev" id="input-new-todo" class="todo-input" placeholder="Yeni Görev…">
+            <button id="btn-add-todo" class="btn btn-primary btn-xs">+</button>
           </div>
-
-          <div class="todos-list" id="todos-list">
-            <div class="empty-list-hint">Görev maddesi yok</div>
-          </div>
+          <div class="todos-list" id="todos-list"><div class="empty-list-hint">Görev Yok</div></div>
         </div>
 
-        <!-- Aktif Yetenekler & MCP Sunucuları -->
         <div class="workflow-card">
           <div class="workflow-card-head">
-            <div class="card-head-title">
-              <span class="skills-icon">⚡</span>
-              <span class="head-text">AKTİF YETENEKLER & MCP</span>
-            </div>
+            <div class="card-head-title"><span class="skills-icon">⚙</span><span class="head-text">TOOLS & MCP</span></div>
           </div>
           <div class="skills-tags-container">
-            <span id="mcp-server-count-tag" class="skill-tag mcp-tag">MCP yapılandırması yükleniyor…</span>
+            <span id="mcp-server-count-tag" class="skill-tag mcp-tag">MCP yükleniyor…</span>
           </div>
         </div>
       </div>
     </aside>
   </div>
 
-  <!-- Slash (/) Komut Paleti Açılır Menüsü -->
   <div id="command-palette" class="command-palette hidden">
     <div class="palette-header">
-      <span class="palette-icon">⚡</span>
-      <input type="text" aria-label="Komut ara" id="palette-search" class="palette-search" placeholder="Bir komut arayın... (ör: /model, /yolo)">
-      <span class="palette-hint">ESC kapatır</span>
+      <span class="palette-icon">/</span>
+      <input type="text" aria-label="Komut ara" id="palette-search" class="palette-search" placeholder="Komut Ara…">
+      <span class="palette-hint">Esc kapatır</span>
     </div>
     <div class="palette-items" id="palette-items">
-      <div class="palette-item selected" data-cmd="/model">
-        <span class="palette-cmd">/model</span>
-        <span class="palette-desc">LLM Modelini ve Sağlayıcısını Değiştir</span>
-      </div>
-      <div class="palette-item" data-cmd="/provider">
-        <span class="palette-cmd">/provider</span>
-        <span class="palette-desc">Sağlayıcı ve API Anahtarlarını Yönet</span>
-      </div>
-      <div class="palette-item" data-cmd="/yolo">
-        <span class="palette-cmd">/yolo</span>
-        <span class="palette-desc">Otonom Araç Çalıştırma Onayını Aç/Kapat</span>
-      </div>
-      <div class="palette-item" data-cmd="/goal">
-        <span class="palette-cmd">/goal</span>
-        <span class="palette-desc">Otonom Hedef Belirle veya Durumunu Yönet</span>
-      </div>
-      <div class="palette-item" data-cmd="/ram">
-        <span class="palette-cmd">/ram</span>
-        <span class="palette-desc">RAM Belleğini Boşalt (Çöp Toplayıcıyı Tetikle)</span>
-      </div>
-      <div class="palette-item" data-cmd="/doctor">
-        <span class="palette-cmd">/doctor</span>
-        <span class="palette-desc">Sistem Sağlığı, Node, Git ve MCP Teşhisi</span>
-      </div>
-      <div class="palette-item" data-cmd="/clear">
-        <span class="palette-cmd">/clear</span>
-        <span class="palette-desc">Mevcut Terminal Sohbetini ve Ekranı Temizle</span>
-      </div>
-      <div class="palette-item" data-cmd="/help">
-        <span class="palette-cmd">/help</span>
-        <span class="palette-desc">Tüm CLI & Cyber-Zen Komut Kılavuzunu Gör</span>
-      </div>
+      <div class="palette-item selected" data-cmd="/model"><span class="palette-cmd">/model</span><span class="palette-desc">Model ve Sağlayıcı Seç</span></div>
+      <div class="palette-item" data-cmd="/provider"><span class="palette-cmd">/provider</span><span class="palette-desc">Sağlayıcı ve API Anahtarı</span></div>
+      <div class="palette-item" data-cmd="/yolo"><span class="palette-cmd">/yolo</span><span class="palette-desc">Araç Onay Modunu Değiştir</span></div>
+      <div class="palette-item" data-cmd="/plan"><span class="palette-cmd">/plan</span><span class="palette-desc">Plan Oluştur veya Planı Uygula</span></div>
+      <div class="palette-item" data-cmd="/ultracode"><span class="palette-cmd">/ultracode</span><span class="palette-desc">Çok Aşamalı Ultracode Görevi Başlat</span></div>
+      <div class="palette-item" data-cmd="/subagents"><span class="palette-cmd">/subagents</span><span class="palette-desc">Alt Ajanlarla Paralel Görev Başlat</span></div>
+      <div class="palette-item" data-cmd="/goal"><span class="palette-cmd">/goal</span><span class="palette-desc">Otonom Hedef Yönet</span></div>
+      <div class="palette-item" data-cmd="/effort"><span class="palette-cmd">/effort</span><span class="palette-desc">Düşünme Eforunu Seç</span></div>
+      <div class="palette-item" data-cmd="/skills"><span class="palette-cmd">/skills</span><span class="palette-desc">Yetenekleri Listele</span></div>
+      <div class="palette-item" data-cmd="/sessions"><span class="palette-cmd">/sessions</span><span class="palette-desc">Oturumları Listele</span></div>
+      <div class="palette-item" data-cmd="/resume"><span class="palette-cmd">/resume</span><span class="palette-desc">Oturuma Devam Et</span></div>
+      <div class="palette-item" data-cmd="/imagegen"><span class="palette-cmd">/imagegen</span><span class="palette-desc">Görsel Üret veya Düzenle</span></div>
+      <div class="palette-item" data-cmd="/gui"><span class="palette-cmd">/gui</span><span class="palette-desc">Tarayıcı Görünürlüğü</span></div>
+      <div class="palette-item" data-cmd="/mcp"><span class="palette-cmd">/mcp</span><span class="palette-desc">MCP Bağlantıları</span></div>
+      <div class="palette-item" data-cmd="/bot"><span class="palette-cmd">/bot</span><span class="palette-desc">Telegram Botu</span></div>
+      <div class="palette-item" data-cmd="/ram"><span class="palette-cmd">/ram</span><span class="palette-desc">Belleği Boşalt</span></div>
+      <div class="palette-item" data-cmd="/tokens"><span class="palette-cmd">/tokens</span><span class="palette-desc">Token ve Bağlam Raporu</span></div>
+      <div class="palette-item" data-cmd="/memory"><span class="palette-cmd">/memory</span><span class="palette-desc">RAM ve Kayıtlı Bellek</span></div>
+      <div class="palette-item" data-cmd="/status"><span class="palette-cmd">/status</span><span class="palette-desc">Oturum Durumu</span></div>
+      <div class="palette-item" data-cmd="/doctor"><span class="palette-cmd">/doctor</span><span class="palette-desc">Sistem Teşhisi</span></div>
+      <div class="palette-item" data-cmd="/clear"><span class="palette-cmd">/clear</span><span class="palette-desc">Sohbeti Temizle</span></div>
+      <div class="palette-item" data-cmd="/help"><span class="palette-cmd">/help</span><span class="palette-desc">Komut Kılavuzu</span></div>
     </div>
   </div>
 
-  <!-- Model & Sağlayıcı & API Anahtarı Kurulum Modalı -->
   <div id="config-modal" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
-        <div class="modal-title-group">
-          <span class="modal-icon">🔑</span>
-          <span class="modal-title">Model, Sağlayıcı ve API Yapılandırması</span>
-        </div>
-        <button id="modal-btn-close-config" class="zen-btn-ghost">✕</button>
+        <div class="modal-title-group"><span class="modal-icon">⌘</span><span class="modal-title">Model, Sağlayıcı ve API</span></div>
+        <button id="modal-btn-close-config" class="btn btn-ghost">×</button>
       </div>
-
       <div class="modal-body">
         <div class="form-group">
-          <label for="select-provider">Sağlayıcı (Provider)</label>
-          <select id="select-provider" class="zen-select">
-            <option value="gemini">Google Gemini (Önerilen - Ücretsiz & Hızlı)</option>
-            <option value="anthropic">Anthropic Claude (Sonnet / Opus)</option>
-            <option value="openai">OpenAI (GPT-4o / o3-mini / o1)</option>
-            <option value="openrouter">OpenRouter (Çoklu Model Ağı)</option>
-            <option value="groq">Groq (Ultra Hızlı Llama 3.3)</option>
-            <option value="deepseek">DeepSeek (DeepSeek V3 / R1)</option>
-            <option value="ollama">Ollama (Tamamen Çevrimdışı & Yerel)</option>
-            <option value="lmstudio">LM Studio (Yerel Model)</option>
+          <label for="select-provider">Sağlayıcı</label>
+          <select id="select-provider" class="input">
+            <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="groq">Groq</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="ollama">Ollama (yerel)</option>
+            <option value="lmstudio">LM Studio (yerel)</option>
           </select>
         </div>
-
         <div class="form-group" id="api-key-group">
-          <label for="input-api-key">API Anahtarı (API Key)</label>
+          <label for="input-api-key">API Anahtarı</label>
           <div class="input-with-button">
-            <input type="password" id="input-api-key" class="zen-input" placeholder="sk-... veya API anahtarınızı yapıştırın">
-            <button id="btn-toggle-key-visibility" class="zen-btn-ghost zen-btn-sm" type="button">👁️</button>
-            <button id="btn-save-key" class="zen-btn-primary zen-btn-sm" type="button">Kaydet</button>
+            <input type="password" id="input-api-key" class="input" placeholder="API Anahtarını yapıştırın">
+            <button id="btn-toggle-key-visibility" class="btn btn-ghost btn-sm" type="button">Göster</button>
+            <button id="btn-save-key" class="btn btn-primary btn-sm" type="button">Kaydet</button>
           </div>
-          <span class="input-help" id="api-key-help">Anahtarınız bu makinedeki yerel kimlik bilgisi deposunda saklanır.</span>
+          <span class="input-help" id="api-key-help">Anahtar bu makinedeki yerel kimlik deposunda saklanır.</span>
         </div>
-
         <div class="form-group">
-          <label for="select-model">Model Seçimi</label>
-          <select id="select-model" class="zen-select">
-            <option value="gemini-2.5-pro">gemini-2.5-pro (En Yetenekli)</option>
-            <option value="gemini-2.5-flash">gemini-2.5-flash (Ultra Hızlı)</option>
+          <label for="select-model">Model</label>
+          <select id="select-model" class="input">
+            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
             <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           </select>
         </div>
-
         <div class="form-group">
           <label for="input-custom-model">Özel Model Adı (Opsiyonel)</label>
-          <input type="text" id="input-custom-model" class="zen-input" placeholder="Yukarıda listede yoksa model kodunu buraya yazabilirsiniz">
+          <input type="text" id="input-custom-model" class="input" placeholder="Listede yoksa model kodunu yazın">
         </div>
-
         <div class="form-group">
-          <label for="select-effort">Düşünme Eforu (Thinking Effort)</label>
-          <select id="select-effort" class="zen-select">
-            <option value="medium" selected>Orta (Medium - Dengeli & Hızlı)</option>
-            <option value="high">Yüksek (High - Detaylı Akıl Yürütme)</option>
-            <option value="xhigh">Maksimum (X-High - Karmaşık Kod & Mimari)</option>
-            <option value="low">Düşük (Low - Anında Yanıt)</option>
+          <label for="select-effort">Düşünme Eforu</label>
+          <select id="select-effort" class="input">
+            <option value="medium" selected>Orta</option>
+            <option value="high">Yüksek</option>
+            <option value="xhigh">Maksimum</option>
+            <option value="low">Düşük</option>
           </select>
         </div>
       </div>
-
       <div class="modal-footer">
-        <button id="modal-btn-cancel-config" class="zen-btn-ghost">İptal</button>
-        <button id="modal-btn-save-all-config" class="zen-btn-primary">✓ Yapılandırmayı Kaydet</button>
+        <button id="modal-btn-cancel-config" class="btn btn-ghost">İptal</button>
+        <button id="modal-btn-save-all-config" class="btn btn-primary">Kaydet</button>
       </div>
     </div>
   </div>
 
-  <!-- Doctor / Teşhis Modalı -->
+  <div id="mcp-modal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title-group"><span class="modal-icon">⌘</span><span class="modal-title">MCP Bağlantıları</span></div>
+        <button id="modal-btn-close-mcp" class="btn btn-ghost">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="mcp-status-list" class="mcp-status-list"></div>
+        <div class="form-group">
+          <label for="select-mcp-service">Servis</label>
+          <select id="select-mcp-service" class="input"></select>
+        </div>
+        <div class="form-group">
+          <label for="input-mcp-token">Erişim Tokenı (yalnızca yeni bağlantı veya yenileme için)</label>
+          <input type="password" id="input-mcp-token" class="input" placeholder="Token yapıştırın; boş bırakılırsa kayıtlı token kullanılır">
+          <span class="input-help">Token DPAPI/yerel kimlik deposunda saklanır; sohbet geçmişine yazılmaz.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="modal-btn-remove-mcp" class="btn btn-ghost text-danger">Kaldır</button>
+        <button id="modal-btn-connect-mcp" class="btn btn-primary">Bağlan / Yenile</button>
+      </div>
+    </div>
+  </div>
+
   <div id="doctor-modal" class="modal-backdrop hidden">
     <div class="modal-box modal-box-lg">
       <div class="modal-header">
-        <div class="modal-title-group">
-          <span class="modal-icon">🩺</span>
-          <span class="modal-title">T Bot Sistem Teşhisi (Doctor)</span>
-        </div>
-        <button id="modal-btn-close-doctor" class="zen-btn-ghost">✕</button>
+        <div class="modal-title-group"><span class="modal-icon">+</span><span class="modal-title">Sistem Teşhisi</span></div>
+        <button id="modal-btn-close-doctor" class="btn btn-ghost">×</button>
       </div>
-      <div class="modal-body" id="doctor-results">
-        <div class="doctor-loading">Teşhis kontrolleri yürütülüyor...</div>
-      </div>
+      <div class="modal-body" id="doctor-results"><div class="doctor-loading">Kontroller çalışıyor…</div></div>
       <div class="modal-footer">
-        <button id="modal-btn-rerun-doctor" class="zen-btn-primary zen-btn-sm">🔄 Yeniden Çalıştır</button>
-        <button id="modal-btn-close-doctor-btn" class="zen-btn-ghost zen-btn-sm">Kapat</button>
+        <button id="modal-btn-rerun-doctor" class="btn btn-primary btn-sm">Yeniden Çalıştır</button>
+        <button id="modal-btn-close-doctor-btn" class="btn btn-ghost btn-sm">Kapat</button>
       </div>
     </div>
   </div>
 
-  <!-- Hedef Belirleme Modalı -->
   <div id="goal-modal" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
-        <div class="modal-title-group">
-          <span class="modal-icon">🎯</span>
-          <span class="modal-title">Otonom Hedef Belirle</span>
-        </div>
-        <button id="modal-btn-close-goal" class="zen-btn-ghost">✕</button>
+        <div class="modal-title-group"><span class="modal-icon">◇</span><span class="modal-title">Otonom Hedef</span></div>
+        <button id="modal-btn-close-goal" class="btn btn-ghost">×</button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">Hedef çalışma alanına kaydedilir ve en fazla dört adımlı otonom döngü başlar. Araç izinleri seçtiğiniz onay moduna göre uygulanır.</p>
+        <p class="modal-desc">Hedef çalışma alanına kaydedilir. Araç izinleri seçtiğiniz onay moduna göre uygulanır.</p>
         <div class="form-group">
-          <label for="input-modal-goal">Hedef Açıklaması:</label>
-          <textarea id="input-modal-goal" class="zen-input" rows="3" placeholder="Örnek: Projedeki bellek sızıntılarını test et, gereksiz döngüleri optimize et ve testleri çalıştır."></textarea>
+          <label for="input-modal-goal">Hedef Açıklaması</label>
+          <textarea id="input-modal-goal" class="input" rows="4" placeholder="Örnek: Bellek sızıntılarını bul, düzelt ve testlerle doğrula."></textarea>
         </div>
       </div>
       <div class="modal-footer">
-        <button id="modal-btn-cancel-goal" class="zen-btn-ghost">Vazgeç</button>
-        <button id="modal-btn-start-goal" class="zen-btn-primary">🚀 Hedefi Başlat</button>
+        <button id="modal-btn-cancel-goal" class="btn btn-ghost">Vazgeç</button>
+        <button id="modal-btn-start-goal" class="btn btn-primary">Hedefi Başlat</button>
       </div>
     </div>
   </div>
 
-  <!-- Ana JavaScript Betiği -->
   <script src="app.js"></script>
 </body>
 </html>

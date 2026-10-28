@@ -198,8 +198,10 @@ const INTENT_GROUP_KEYWORDS = {
     ],
     process: [
         'process', 'process_write', 'arka plan', 'arkaplan', 'background', 'daemon',
-        'sunucu', 'server', 'pid', 'kill', 'stop', 'port', 'watch',
+        'sunucu', 'server', 'serve', 'pid', 'kill', 'stop', 'port', 'watch',
         'job', 'stdin', 'stdout', 'interactive', 'etkileşimli', 'input stream',
+        'npm run', 'npm', 'dev', 'start', 'başlat', 'baslat', 'çalıştır', 'calistir',
+        'uygulama çalıştır', 'uygulama başlat', 'run dev', 'dev server',
     ],
     memory: [
         'hatırla', 'hatirla', 'unut', 'hafıza', 'hafiza', 'bellek',

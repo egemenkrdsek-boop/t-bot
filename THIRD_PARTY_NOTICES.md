@@ -1,6 +1,6 @@
 # Third-party notices and provenance
 
-T Bot original code uses the [MIT License](LICENSE), Copyright (c) 2026 T Bot contributors. Version 2.1.0 includes specifically adapted MIT components identified below. These ports do not import either upstream repository's complete Git history, runtime, dependency tree, assets, or branding. The available T Bot history begins with its own `Initial T Bot CLI`; no broader ancestry or complete source similarity audit is claimed. No affiliation, endorsement, or upstream API compatibility is implied.
+T Bot original code uses the [MIT License](LICENSE), Copyright (c) 2026 T Bot contributors. Version 3.0.0 includes specifically adapted MIT components identified below. These ports do not import either upstream repository's complete Git history, runtime, dependency tree, assets, or branding. The available T Bot history begins with its own `Initial T Bot CLI`; no broader ancestry or complete source similarity audit is claimed. No affiliation, endorsement, or upstream API compatibility is implied.
 
 ## OpenCode: edit matching and line-ending preservation
 

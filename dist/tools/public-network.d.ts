@@ -1,6 +1,5 @@
 import http from 'node:http';
-/** Public-web tools cannot reach local services, including through DNS or IPv4-mapped IPv6. */
-export declare function isPrivateOrLocalHost(hostname: string): boolean;
+export { isPrivateOrLocalHost } from '../security/url.js';
 export declare function validatePublicUrl(raw: string): URL;
 /** The actual socket lookup validates every answer and pins the chosen address.
  * No preflight-DNS / later-fetch lookup gap is allowed. */

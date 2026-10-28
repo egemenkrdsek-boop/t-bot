@@ -1,5 +1,5 @@
 /**
- * T Bot 2.0 — Cyber-Zen Desktop UI Controller
+ * T Bot 3.0 — local agent desktop controller
  * Sıfır-Framework Vanilla JavaScript (ES2022)
  * Local renderer backed by the isolated preload bridge.
  */
@@ -22,6 +22,12 @@
     spinnerIndex: 0,
     turnAssistantTextProduced: false,
     yoloEnabled: false,
+    ultracodeMode: false,
+    workspacePermission: 'ask', // main'den gelen kalıcı çalışma alanı izni ('ask' | 'allow')
+    runMode: 'agent',
+    pendingPlan: null,
+    pendingPlanRequest: '',
+    turnPolicy: { active: false, yolo: false }, // çalışan turun efektif politikası
     currentStepCount: 0,
     attachedImages: [], // { mimeType: 'image/png', data: base64, name: string }
     currentApproval: null,
@@ -40,56 +46,13 @@
     todos: [],
     skills: [],
     mcpCount: 0,
-    theme: localStorage.getItem('tbot_theme') || 'light',
+    commands: [],
+    unavailableCommands: [],
+    theme: localStorage.getItem('tbot_theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   };
 
-  // Türkçe Araç Başlık Eşleştirmesi (CLI ile %100 Birebir)
-  const TOOL_TITLE_MAP = {
-    file_read: 'Dosya Okuma',
-    file_write: 'Dosya Yazma',
-    file_patch: 'Dosya Yamalama',
-    file_list: 'Dosya Listeleme',
-    file_search: 'Dosya Arama',
-    file_glob: 'Dosya Bulma',
-    file_outline: 'Dosya Özeti',
-    shell: 'Komut Satırı',
-    process_list: 'İşlem Listesi',
-    process_output: 'İşlem Çıktısı',
-    process_stop: 'İşlem Durdurma',
-    process_write: 'Süreç Girdisi Gönderme',
-    git_status: 'Git Durumu',
-    git_diff: 'Git Farkı',
-    git_log: 'Git Günlüğü',
-    git_add: 'Git Ekleme',
-    git_commit: 'Git İşleme',
-    git_push: 'Git Gönderme',
-    git_branch: 'Git Dalı',
-    web_search: 'Web Araması',
-    url_fetch: 'Web Sayfası Okuma',
-    browser_navigate: 'Tarayıcı Gezinme',
-    browser_click: 'Tarayıcı Tıklama',
-    browser_type: 'Tarayıcı Yazma',
-    browser_fill: 'Form Doldurma',
-    browser_press: 'Tarayıcı Tuş Basımı',
-    browser_scroll: 'Tarayıcı Kaydırma',
-    browser_hover: 'Tarayıcı Üzerine Gelme',
-    browser_evaluate: 'Tarayıcı Betik Çalıştırma',
-    browser_inspect: 'Sayfa İnceleme',
-    browser_tabs: 'Tarayıcı Sekme Yönetimi',
-    browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
-    computer: 'Bilgisayar Kontrolü',
-    image_generate: 'Görsel Üretimi',
-    memory_save: 'Bellek Kaydetme',
-    memory_recall: 'Bellek Hatırlama',
-    memory_forget: 'Hafıza Silme',
-    todo_manage: 'Görev Pusulası',
-    goal_manage: 'Hedef Yönetimi',
-    skill_create: 'Yetenek Oluşturma',
-    skill_list: 'Yetenek Listesi',
-    delegate_task: 'Alt Ajan Görevlendirme',
-    mcp_catalog: 'MCP Kataloğu',
-    mcp_call: 'MCP Çağrısı',
-  };
+  // Tool titles come from src/theme.ts through the main process; no second copy.
+  let TOOL_TITLE_MAP = {};
 
 
   const BRAILLE_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -125,6 +88,9 @@
 
     // Üst Bar & Stepper
     btnQuickYolo: document.getElementById('btn-quick-yolo'),
+    btnQuickPlan: document.getElementById('btn-quick-plan'),
+    btnQuickUltracode: document.getElementById('btn-quick-ultracode'),
+    btnQuickSubagents: document.getElementById('btn-quick-subagents'),
     yoloIcon: document.getElementById('yolo-icon'),
     yoloLabel: document.getElementById('yolo-label'),
     btnQuickConfig: document.getElementById('btn-quick-config'),
@@ -176,6 +142,7 @@
     btnSend: document.getElementById('btn-send'),
     hudModelVal: document.getElementById('hud-model-val'),
     hudEffortVal: document.getElementById('hud-effort-val'),
+    hudModeVal: document.getElementById('hud-mode-val'),
     hudSavingsVal: document.getElementById('hud-savings-val'),
     hudMiniBar: document.getElementById('hud-mini-bar'),
     hudTokensSaved: document.getElementById('hud-tokens-saved'),
@@ -201,6 +168,14 @@
     modalBtnCancelConfig: document.getElementById('modal-btn-cancel-config'),
     modalBtnSaveAllConfig: document.getElementById('modal-btn-save-all-config'),
 
+    mcpModal: document.getElementById('mcp-modal'),
+    mcpStatusList: document.getElementById('mcp-status-list'),
+    selectMcpService: document.getElementById('select-mcp-service'),
+    inputMcpToken: document.getElementById('input-mcp-token'),
+    modalBtnCloseMcp: document.getElementById('modal-btn-close-mcp'),
+    modalBtnConnectMcp: document.getElementById('modal-btn-connect-mcp'),
+    modalBtnRemoveMcp: document.getElementById('modal-btn-remove-mcp'),
+
     doctorModal: document.getElementById('doctor-modal'),
     doctorResults: document.getElementById('doctor-results'),
     modalBtnCloseDoctor: document.getElementById('modal-btn-close-doctor'),
@@ -224,7 +199,7 @@
   };
 
   // =========================================================================
-  // 3. 14x14 Cyber-Zen Piksel Logo Animasyonu (Canvas Rendering)
+  // 3. 14x14 pixel logo rendering (Canvas Rendering)
   // =========================================================================
   const LOGO_MATRIX = [
     'GGGGGGGGGGGGG.',
@@ -255,15 +230,14 @@
     const isLight = (document.documentElement.getAttribute('data-theme') || state.theme) !== 'dark';
     const wavePos = (frame % 80) * 0.45;
 
-    // Açık temada tam beyaz (#FFFFFF) zemin, koyu temada Deep Slate (#0D1117)
-    ctx.fillStyle = isLight ? '#FFFFFF' : '#0D1117';
+    ctx.fillStyle = isLight ? '#FFFFFF' : '#0A0F0B';
     ctx.fillRect(0, 0, size, size);
 
     for (let y = 0; y < 14; y++) {
       for (let x = 0; x < 14; x++) {
         const char = LOGO_MATRIX[y]?.[x] || '.';
         if (char === '.') {
-          ctx.fillStyle = isLight ? '#EDF3EB' : '#141C28';
+          ctx.fillStyle = isLight ? '#EEF4E9' : '#151B16';
           ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize - 0.2, pixelSize - 0.2);
           continue;
         }
@@ -273,27 +247,15 @@
         const isHighlight = diff < 2.5;
 
         if (char === 'W') {
-          // Saf Beyaz T Simgesi
-          ctx.fillStyle = isHighlight ? '#FFFFFF' : (isLight ? '#FFFFFF' : '#F4FCE8');
+          ctx.fillStyle = '#FFFFFF';
+        } else if (isHighlight) {
+          ctx.fillStyle = isLight ? '#65B817' : '#D6FF9A';
         } else {
-          // Tabit Yeşili Zemin
-          if (isHighlight) {
-            ctx.fillStyle = isLight ? '#65B817' : '#E2FAAA';
-          } else {
-            if (isLight) {
-              const t = (x + y) / 26;
-              const r = Math.round(77 + (101 - 77) * t);
-              const g = Math.round(154 + (184 - 154) * t);
-              const b = Math.round(15 + (23 - 15) * t);
-              ctx.fillStyle = `rgb(${r},${g},${b})`;
-            } else {
-              const t = (x + y) / 26;
-              const r = Math.round(132 + (184 - 132) * t);
-              const g = Math.round(204 + (236 - 204) * t);
-              const b = Math.round(50 + (110 - 50) * t);
-              ctx.fillStyle = `rgb(${r},${g},${b})`;
-            }
-          }
+          const t = (x + y) / 26;
+          const r = Math.round((isLight ? 77 : 132) + ((isLight ? 101 : 184) - (isLight ? 77 : 132)) * t);
+          const g = Math.round((isLight ? 154 : 204) + ((isLight ? 184 : 236) - (isLight ? 154 : 204)) * t);
+          const b = Math.round((isLight ? 15 : 50) + ((isLight ? 23 : 110) - (isLight ? 15 : 50)) * t);
+          ctx.fillStyle = `rgb(${r},${g},${b})`;
         }
 
         ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize - 0.2, pixelSize - 0.2);
@@ -314,10 +276,10 @@
 
     if (dom.themeToggleIcon && dom.themeToggleLabel) {
       if (state.theme === 'light') {
-        dom.themeToggleIcon.textContent = '☀️';
+        dom.themeToggleIcon.textContent = '◐';
         dom.themeToggleLabel.textContent = 'Açık';
       } else {
-        dom.themeToggleIcon.textContent = '🌙';
+        dom.themeToggleIcon.textContent = '◐';
         dom.themeToggleLabel.textContent = 'Koyu';
       }
     }
@@ -340,22 +302,53 @@
   // =========================================================================
   // 4. Ultracode Stepper & Hızlı Modlar
   // =========================================================================
+  // Görünen mod her zaman efektif moddur: YOLO + kalıcı alan izni + tur durumu.
+  function updateApprovalModeDisplay() {
+    const workspaceAuto = state.workspacePermission === 'allow';
+    const turnActive = state.turnPolicy.active;
+    const effectiveYolo = turnActive ? state.turnPolicy.yolo : state.yoloEnabled;
+    const auto = effectiveYolo || workspaceAuto;
+
+    dom.btnQuickYolo?.classList.toggle('yolo-active', auto);
+    dom.btnQuickYolo?.classList.toggle('yolo-turn', turnActive);
+    if (dom.yoloIcon) dom.yoloIcon.textContent = auto ? '●' : '○';
+    if (dom.yoloLabel) {
+      if (turnActive) dom.yoloLabel.textContent = effectiveYolo ? 'YOLO (Bu Tur)' : (workspaceAuto ? 'Oto (Alan)' : 'Onaylı (Bu Tur)');
+      else if (workspaceAuto) dom.yoloLabel.textContent = 'Oto (Alan)';
+      else dom.yoloLabel.textContent = effectiveYolo ? 'YOLO' : 'Onaylı';
+    }
+    dom.btnQuickYolo?.setAttribute('aria-pressed', String(auto));
+    dom.btnQuickYolo?.setAttribute('title', turnActive
+      ? (effectiveYolo ? 'Bu turda araçlar otomatik onaylanıyor' : 'Bu turda araçlar için onay isteniyor')
+      : (workspaceAuto ? 'Bu çalışma alanı için kalıcı otomatik onay açık' : (effectiveYolo ? 'YOLO Modu: Araçları onaysız otomatik yürüt' : 'Onaylı Mod: Araçlar için izin istenir')));
+  }
+
+  async function applyApprovalPolicy() {
+    try {
+      const policy = await tbot.getApprovalPolicy?.(state.workspace, state.yoloEnabled);
+      if (policy && typeof policy.workspacePermission === 'string') state.workspacePermission = policy.workspacePermission;
+    } catch {
+      // Politika alınamazsa mevcut görünümü koru.
+    }
+    updateApprovalModeDisplay();
+  }
+
   function toggleYoloMode() {
     state.yoloEnabled = !state.yoloEnabled;
-    if (state.yoloEnabled) {
-      dom.btnQuickYolo?.classList.add('yolo-active');
-      if (dom.yoloIcon) dom.yoloIcon.textContent = '⚡';
-      if (dom.yoloLabel) dom.yoloLabel.textContent = 'YOLO';
-    } else {
-      dom.btnQuickYolo?.classList.remove('yolo-active');
-      if (dom.yoloIcon) dom.yoloIcon.textContent = '🛡️';
-      if (dom.yoloLabel) dom.yoloLabel.textContent = 'Onaylı';
+    // Tur sürerken toggle mevcut turun politikasını günceller ("bu tur için geçerli").
+    if (state.turnPolicy.active) {
+      state.turnPolicy.yolo = state.yoloEnabled;
+      try {
+        tbot.setTurnPolicy?.(state.yoloEnabled)?.catch?.(error => appendErrorNotice(String(error)));
+      } catch (e) {
+        console.warn('tbot.setTurnPolicy hatası:', e);
+      }
     }
-    dom.btnQuickYolo?.setAttribute('aria-pressed', String(state.yoloEnabled));
+    updateApprovalModeDisplay();
   }
 
   // =========================================================================
-  // 5. Canlı Cyber-HUD ve Telemetri Güncellemesi
+  // 5. Live telemetry and status line
   // =========================================================================
   function renderMiniSavingsBar(percent, width = 5) {
     const clamped = Math.max(0, Math.min(100, percent || 0));
@@ -368,6 +361,11 @@
     if (dom.hudModelVal) dom.hudModelVal.textContent = state.model;
     const effortLabel = toTurkishTitleCase(state.effort);
     if (dom.hudEffortVal) dom.hudEffortVal.textContent = effortLabel;
+    const modeLabel = state.runMode === 'plan' ? (state.pendingPlan ? 'Plan Hazır' : 'Plan')
+      : state.runMode === 'ultracode' ? 'Ultracode'
+        : state.runMode === 'subagents' ? 'Subagents'
+          : state.runMode === 'plan-apply' ? 'Plan Uygula' : 'Ajan';
+    if (dom.hudModeVal) dom.hudModeVal.textContent = modeLabel;
 
     if (dom.hudSavingsVal) dom.hudSavingsVal.textContent = `%${state.telemetry.savingsPercent}`;
     if (dom.telemetrySavingsVal) dom.telemetrySavingsVal.textContent = state.telemetry.savingsPercent;
@@ -404,8 +402,27 @@
   }
 
   // =========================================================================
-  // 6. Canlı Cyber-Wave Düşünme Çubuğu & Zamanlayıcı
+  // 6. Run spine and elapsed timer
   // =========================================================================
+  const RUN_PHASES = ['Keşif', 'Plan', 'Uygulama', 'Doğrulama'];
+
+  function toolRunPhase(name) {
+    const tool = String(name || '');
+    if (tool === 'project_verify' || tool === 'artifact_read') return 4;
+    if (tool === 'todo_manage' || tool === 'goal_manage' || tool === 'delegate_task') return 2;
+    if (['file_read', 'file_outline', 'file_search', 'file_glob', 'file_list', 'repo_map', 'skill_list', 'skills_list', 'mcp_catalog'].includes(tool)) return 1;
+    return 3;
+  }
+
+  function updateRunSpine(step = 0) {
+    if (typeof document.querySelectorAll !== 'function') return;
+    const nodes = document.querySelectorAll('.run-node');
+    if (!nodes.length) return;
+    const active = Math.max(0, Math.min(nodes.length - 1, (step || 1) - 1));
+    nodes.forEach((node, index) => node.classList.toggle('active', index === active));
+    if (dom.thinkingStepBadge) dom.thinkingStepBadge.textContent = RUN_PHASES[active] || RUN_PHASES[0];
+  }
+
   function startThinking(label = 'Düşünülüyor…', step = null) {
     if (!state.isThinking) state.thinkingStartTime = Date.now();
     state.isThinking = true;
@@ -414,9 +431,7 @@
 
     dom.thinkingBar?.classList.remove('hidden');
     if (dom.thinkingLabel) dom.thinkingLabel.textContent = label;
-    if (dom.thinkingStepBadge) {
-      dom.thinkingStepBadge.textContent = state.currentStepCount > 0 ? `Adım ${state.currentStepCount}` : 'Çekirdek';
-    }
+    updateRunSpine(state.currentStepCount);
 
     if (state.thinkingTimerId) return;
     state.thinkingTimerId = setInterval(() => {
@@ -451,6 +466,22 @@
     stopThinking();
   }
 
+  // Tek Esc yönlendirmesi: onay kartı açıksa yalnız onayı reddeder ve durur;
+  // aksi halde çalışan turu iptal eder. Hem input hem global handler bunu kullanır.
+  function handleEscape() {
+    if (state.currentApproval) {
+      // Onay beklenirken tur iptal edilmez; zamanlayıcı da durdurulur.
+      stopThinking();
+      respondApproval(false);
+      return true;
+    }
+    if (state.isThinking) {
+      abortCurrentTurn();
+      return true;
+    }
+    return false;
+  }
+
   // =========================================================================
   // 7. Markdown Ayrıştırıcı (Hızlı & Sıfır Bağımlılık Vanilla Parser)
   // =========================================================================
@@ -464,9 +495,37 @@
       .replace(/'/g, '&#39;');
   }
 
+  const UI_CONJUNCTIONS = new Set(['ve', 'ile', 'veya', 'yahut', 'ya', 'da', 'de', 'ki', 'ama', 'fakat', 'lakin', 'ancak', 'için', 'gibi', 'kadar', 'üzere', 'mı', 'mi', 'mu', 'mü']);
+  const UI_ACRONYMS = new Map([
+    ['RAM', 'RAM'], ['CPU', 'CPU'], ['API', 'API'], ['APİ', 'API'], ['AST', 'AST'], ['MCP', 'MCP'],
+    ['CLI', 'CLI'], ['CLİ', 'CLI'], ['TUI', 'TUI'], ['TUİ', 'TUI'], ['HUD', 'HUD'], ['LLM', 'LLM'],
+    ['ID', 'ID'], ['İD', 'ID'], ['URL', 'URL'], ['JSON', 'JSON'], ['SSE', 'SSE'], ['YOLO', 'YOLO'],
+    ['GC', 'GC'], ['MB', 'MB'], ['GB', 'GB'], ['KB', 'KB'], ['PID', 'PID'], ['PİD', 'PID'], ['OK', 'OK'], ['UI', 'UI'], ['UX', 'UX'],
+  ]);
+
+  function titleWord(word, isFirst) {
+    if (!word) return word;
+    const upper = word.toLocaleUpperCase('tr-TR');
+    if (UI_ACRONYMS.has(upper)) return UI_ACRONYMS.get(upper);
+    const lower = word.toLocaleLowerCase('tr-TR');
+    if (!isFirst && UI_CONJUNCTIONS.has(lower)) return lower;
+    return word.charAt(0).toLocaleUpperCase('tr-TR') + word.slice(1).toLocaleLowerCase('tr-TR');
+  }
+
   function toTurkishTitleCase(str) {
     if (!str) return '';
-    return str.charAt(0).toLocaleUpperCase('tr-TR') + str.slice(1);
+    let index = 0;
+    return String(str).split(/(\s+)/).map(token => {
+      if (/^\s+$/.test(token)) return token;
+      const match = token.match(/^([^a-zA-ZçğıöşüÇĞİÖŞÜ0-9]*)(.*?)([^a-zA-ZçğıöşüÇĞİÖŞÜ0-9]*)$/);
+      if (!match) return token;
+      const [, leading, core, trailing] = match;
+      if (!core) return token;
+      const first = index === 0;
+      index++;
+      const cased = core.split(/([-/])/).map((part, partIndex) => part === '-' || part === '/' ? part : titleWord(part, first && partIndex === 0)).join('');
+      return leading + cased + trailing;
+    }).join('');
   }
 
   function parseMarkdown(mdText) {
@@ -581,6 +640,8 @@
 
   const TRANSCRIPT_PAGE_SIZE = 40;
   const TEXT_PAGE_CHARS = 16_000;
+  // Bellek üst sınırı: çok uzun oturumlarda en eski kayıtlar bellekten düşer.
+  const MAX_TRANSCRIPT_ENTRIES = 4000;
   const transcriptEntries = [];
   const renderedTranscriptEntries = new Set();
   const pinnedTranscriptEntries = new Set();
@@ -590,12 +651,44 @@
   let currentAssistantEntry = null;
   let assistantRenderTimer = null;
   const activeToolCards = new Map();
+  // Diskteki oturum geçmişinin sayfalı yükleme imleci.
+  const sessionHistory = { sessionId: null, total: 0, loadedFrom: 0, loading: false };
 
   function transcriptTime() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
+  // Diskte daha eski kayıt varsa IPC ile bir sayfa daha çeker (mevcut DOM
+  // sayfalamasını korur; yalnızca gerçek oturum yüklendiğinde etkin olur).
+  async function loadOlderHistory() {
+    const sessionId = sessionHistory.sessionId;
+    if (!sessionId || sessionHistory.loading || sessionHistory.loadedFrom <= 0) return;
+    if (typeof tbot.loadSessionMessages !== 'function') return;
+    sessionHistory.loading = true;
+    const limit = TRANSCRIPT_PAGE_SIZE;
+    const offset = Math.max(0, sessionHistory.loadedFrom - limit);
+    try {
+      const page = await tbot.loadSessionMessages(sessionId, state.workspace, { offset, limit });
+      if (sessionId !== state.currentSessionId || !page || !Array.isArray(page.messages)) return;
+      prependTranscriptMessages(page.messages);
+      sessionHistory.loadedFrom = typeof page.offset === 'number' ? page.offset : offset;
+      transcriptPageStart = 0;
+      followTranscript = false;
+      refreshTranscript();
+      if (dom.chatFeed) dom.chatFeed.scrollTop = 0;
+    } catch (error) {
+      appendErrorNotice(`Geçmiş yüklenemedi: ${String(error)}`);
+    } finally {
+      sessionHistory.loading = false;
+    }
+  }
+
   function transcriptPage(action) {
+    const wantsOlder = action === 'older' || action === 'first';
+    if (wantsOlder && transcriptPageStart === 0 && sessionHistory.sessionId && sessionHistory.loadedFrom > 0 && !sessionHistory.loading) {
+      void loadOlderHistory();
+      return;
+    }
     const latest = Math.max(0, transcriptEntries.length - TRANSCRIPT_PAGE_SIZE);
     transcriptPageStart = action === 'first' ? 0 : action === 'latest' ? latest : Math.max(0, Math.min(latest, transcriptPageStart + (action === 'older' ? -TRANSCRIPT_PAGE_SIZE : TRANSCRIPT_PAGE_SIZE)));
     followTranscript = transcriptPageStart === latest;
@@ -646,9 +739,26 @@
     transcriptPager.classList.toggle('hidden', transcriptEntries.length <= TRANSCRIPT_PAGE_SIZE);
   }
 
+  function dropTranscriptEntry(entry) {
+    if (!entry) return;
+    pinnedTranscriptEntries.delete(entry);
+    renderedTranscriptEntries.delete(entry);
+    if (entry.element) { entry.element.remove?.(); entry.element = null; }
+  }
+
+  function trimTranscriptEntries() {
+    let dropped = false;
+    while (transcriptEntries.length > MAX_TRANSCRIPT_ENTRIES) {
+      dropTranscriptEntry(transcriptEntries.shift());
+      dropped = true;
+    }
+    return dropped;
+  }
+
   function appendTranscriptEntry(entry, pinned = false) {
     transcriptEntries.push(entry);
     if (pinned) pinnedTranscriptEntries.add(entry);
+    trimTranscriptEntries();
     hideEmptyHero();
     refreshTranscript();
     return entry;
@@ -690,7 +800,7 @@
     } else if (entry.kind === 'tool') {
       const target = extractToolTarget(entry.call.arguments);
       const status = entry.status || 'running';
-      const label = { running: 'Çalışıyor…', success: '✓ Tamamlandı', error: '✗ Hata', stopped: 'Durduruldu' }[status];
+      const label = { running: 'Çalışıyor…', success: '✓ Tamamlandı', error: '✗ Hata', denied: '⊘ Reddedildi', stopped: 'Durduruldu' }[status];
       wrapper.dataset.id = entry.call.id;
       wrapper.innerHTML = `<div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle><div class="tool-header-left"><span class="tool-icon">◈</span><span class="tool-title">${escapeHtml(entry.title)}</span>${target ? `<span class="tool-target" title="${escapeHtml(target)}">› ${escapeHtml(target)}</span>` : ''}</div><div class="tool-header-right"><span class="tool-duration">${escapeHtml(entry.duration || '')}</span><span class="tool-badge ${status}">${label}</span><span class="tool-accordion-icon">▼</span></div></div><div class="tool-card-body hidden"></div>`;
       wrapper.transcriptEntry = entry;
@@ -712,8 +822,16 @@
   }
 
   function appendUserMessage(text, images = []) {
-    appendTranscriptEntry({ kind: 'user', text: String(text || '').trim(), images, time: transcriptTime() });
+    const entry = appendTranscriptEntry({ kind: 'user', text: String(text || '').trim(), images, time: transcriptTime() });
     scrollToBottom(followTranscript);
+    return entry;
+  }
+
+  // Gönderim sonrası base64 görsel verisini bırakır; DOM'da zaten önizleme kalmaz.
+  function releaseUserImages(entry) {
+    if (!entry || entry.kind !== 'user' || !entry.images || entry.images.length === 0) return;
+    entry.images = [];
+    if (entry.element) replaceTranscriptElement(entry);
   }
 
   function renderAssistantBuffer() {
@@ -807,6 +925,21 @@
     return exit ? exit[1].trim() !== '0' : /(?:^|\n)(?:Timed out|Aborted); process tree/.test(result);
   }
 
+  // Kullanıcı/ajan reddi ve bilinmeyen araç "Tamamlandı" sayılmamalıdır.
+  function isToolDenied(result) {
+    return /^\s*(?:Tool action denied|Tool denied:|Araç reddedildi)/i.test(result);
+  }
+
+  function isToolUnknown(result) {
+    return /^\s*(?:Unknown tool:|Bilinmeyen araç)/i.test(result);
+  }
+
+  function toolStatus(result, toolName) {
+    if (isToolDenied(result)) return 'denied';
+    if (isToolUnknown(result)) return 'error';
+    return isToolError(result, toolName) ? 'error' : 'success';
+  }
+
   function renderToolBody(card) {
     const entry = card.transcriptEntry;
     const body = card.querySelector('.tool-card-body');
@@ -883,7 +1016,7 @@
 
   function handleToolStart(call, toolTitleOverride = null) {
     finalizeAssistantMessage();
-    state.currentStepCount++;
+    state.currentStepCount = toolRunPhase(call.name);
     const entry = { kind: 'tool', call, title: toolTitleOverride || TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name), startTime: Date.now(), status: 'running' };
     activeToolCards.set(call.id, entry);
     appendTranscriptEntry(entry, true);
@@ -897,8 +1030,8 @@
       const ms = Date.now() - entry.startTime;
       entry.duration = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}sn`;
       entry.result = typeof result === 'string' ? result : JSON.stringify(result ?? '');
-      entry.status = isToolError(entry.result, call.name) ? 'error' : 'success';
-      entry.expanded = entry.expanded || entry.status === 'error';
+      entry.status = toolStatus(entry.result, call.name);
+      entry.expanded = entry.expanded || entry.status === 'error' || entry.status === 'denied';
       if (entry.element) replaceTranscriptElement(entry);
       pinnedTranscriptEntries.delete(entry);
       activeToolCards.delete(call.id);
@@ -913,7 +1046,8 @@
   // =========================================================================
   function renderApprovalRequest(req) {
     if (state.currentApproval) { state.approvalQueue.push(req); return; }
-    dom.thinkingBar?.classList.add('hidden');
+    // Onay beklerken düşünme zamanlayıcısı durur; karar sonrası yeniden başlar.
+    stopThinking();
     finalizeAssistantMessage();
     hideEmptyHero();
 
@@ -927,7 +1061,7 @@
 
     card.innerHTML = `
       <div class="approval-header">
-        <span>🛡️ Onay Bekleniyor:</span>
+        <span>Onay Bekleniyor:</span>
         <strong>${escapeHtml(toolTitle)} (${escapeHtml(req.tool)})</strong>
       </div>
       <div class="approval-argument-pages">${textPager('approval', 0, details.length)}</div>
@@ -935,7 +1069,7 @@
       <div class="approval-actions">
         <button id="btn-approval-allow" class="btn-approve">✓ İzin Ver (Enter)</button>
         <button id="btn-approval-deny" class="btn-reject">✗ Reddet (Esc)</button>
-        <button id="btn-approval-yolo" class="btn-yolo-session">⚡ Bu Turda Hep İzin Ver</button>
+        <button id="btn-approval-yolo" class="btn-yolo-session">Bu Turda İzin Ver</button>
       </div>
     `;
 
@@ -1145,37 +1279,41 @@
   // =========================================================================
   async function submitUserMessage(options = {}) {
     if (state.turnPending || state.sessionLoading || state.currentApproval || pendingImageReads) return;
-    const rawText = dom.userInput?.value || '';
+    const rawText = options.text != null ? String(options.text) : (dom.userInput?.value || '');
     const text = rawText.trim();
     const images = [...state.attachedImages];
 
     if (!text && images.length === 0) return;
 
-    // Komut kontrolü
-    if (text.startsWith('/')) {
-      handleSlashCommand(text);
+    if (!options.mode && text.startsWith('/')) {
+      await handleSlashCommand(text);
       if (dom.userInput) dom.userInput.value = '';
       return;
     }
 
-    if (dom.userInput) dom.userInput.value = '';
+    if (dom.userInput && options.text == null) dom.userInput.value = '';
     state.attachedImages = [];
     state.turnAssistantTextProduced = false;
     state.currentStepCount = 0;
+    const effectiveMode = options.mode || (options.goal ? 'goal' : state.ultracodeMode ? 'ultracode' : undefined);
+    state.runMode = effectiveMode || 'agent';
     renderAttachmentChips();
     autoResizeTextarea();
 
     state.turnPending = true;
+    state.turnPolicy = { active: true, yolo: state.yoloEnabled };
+    updateApprovalModeDisplay();
     setTurnControls();
     transcriptPage('latest');
-    appendUserMessage(text, images);
-    startThinking('T Bot Çözümlüyor…');
+    const userEntry = appendUserMessage(options.display || text, images);
+    startThinking(effectiveMode === 'plan' ? 'Plan Hazırlanıyor' : effectiveMode === 'ultracode' ? 'Ultracode Çalışıyor' : effectiveMode === 'subagents' ? 'Alt Ajanlar Çalışıyor' : 'T Bot Çözümlüyor');
 
     try {
       const res = await tbot.startTurn?.({
         message: text,
         images,
-        mode: options.goal ? 'goal' : undefined,
+        mode: effectiveMode,
+        plan: options.plan,
         workspace: state.workspace,
         sessionId: state.currentSessionId || undefined,
         yolo: state.yoloEnabled,
@@ -1187,21 +1325,17 @@
       if (res && res.ok === false) {
         if (!res.aborted) appendErrorNotice(res.error || 'İşlem başarısız oldu');
       } else {
-        if (res?.memoryStats) {
-          updateTelemetry(res.memoryStats);
+        if (res?.memoryStats) updateTelemetry(res.memoryStats);
+        if (options.mode === 'plan') {
+          state.pendingPlan = res?.lastAssistantText || null;
+          state.pendingPlanRequest = text;
+          if (state.pendingPlan) appendTranscriptEntry({ kind: 'notice', text: 'Plan hazır. Uygulamak için /plan apply yazın.', error: false });
+        } else if (options.mode === 'plan-apply') {
+          state.pendingPlan = null;
+          state.pendingPlanRequest = '';
         }
-
-        // Eğer akış (stream) sırasında hiç asistan metni ekrana basılmamışsa ama
-        // res.lastAssistantText veya res.messages içinde son asistan mesajı varsa hemen ekrana bas
-        if (!state.turnAssistantTextProduced) {
-          if (res?.lastAssistantText) {
-            appendAssistantTextChunk(res.lastAssistantText);
-          } else if (Array.isArray(res?.messages) && res.messages.length > 0) {
-            const lastAssistant = [...res.messages].reverse().find(m => m && m.role === 'assistant' && m.content);
-            if (lastAssistant && lastAssistant.content) {
-              appendAssistantTextChunk(lastAssistant.content);
-            }
-          }
+        if (!state.turnAssistantTextProduced && res?.lastAssistantText) {
+          appendAssistantTextChunk(res.lastAssistantText);
         }
       }
     } catch (err) {
@@ -1215,8 +1349,14 @@
       setTurnControls();
       finalizeAssistantMessage();
       stopThinking();
+      releaseUserImages(userEntry);
+      state.turnPolicy = { active: false, yolo: false };
+      state.runMode = state.pendingPlan ? 'plan' : state.ultracodeMode ? 'ultracode' : 'agent';
+      updateApprovalModeDisplay();
+      updateHudBar();
       loadSessionsList();
       refreshWorkflow();
+      applyApprovalPolicy();
     }
   }
 
@@ -1234,6 +1374,48 @@
   // =========================================================================
   // 14. Slash (/) Komut Paleti
   // =========================================================================
+  async function loadCommandMetadata() {
+    try {
+      const titles = await tbot.getToolTitles?.();
+      if (titles && typeof titles === 'object' && !Array.isArray(titles)) TOOL_TITLE_MAP = titles;
+    } catch {
+      // Tool titles are cosmetic; localized fallback still works.
+    }
+
+    try {
+      const catalog = await tbot.getCommands?.();
+      if (Array.isArray(catalog?.available)) {
+        state.commands = catalog.available.filter(command =>
+          command && typeof command.name === 'string' && typeof command.description === 'string');
+      }
+      if (Array.isArray(catalog?.unavailable)) {
+        state.unavailableCommands = catalog.unavailable.filter(command =>
+          command && typeof command.name === 'string');
+      }
+      renderPaletteCatalog();
+    } catch {
+      // The static palette remains available when metadata cannot be read.
+    }
+  }
+
+  function renderPaletteCatalog() {
+    if (!dom.paletteItems || state.commands.length === 0) return;
+    const items = state.commands.map((command, index) => {
+      const item = document.createElement('div');
+      item.className = `palette-item${index === 0 ? ' selected' : ''}`;
+      item.setAttribute('data-cmd', command.name);
+      const name = document.createElement('span');
+      name.className = 'palette-cmd';
+      name.textContent = command.name;
+      const description = document.createElement('span');
+      description.className = 'palette-desc';
+      description.textContent = command.description;
+      item.append(name, description);
+      return item;
+    });
+    dom.paletteItems.replaceChildren(...items);
+  }
+
   function openCommandPalette(filter = '') {
     dom.commandPalette?.classList.remove('hidden');
     if (dom.paletteSearch) {
@@ -1245,6 +1427,24 @@
 
   function closeCommandPalette() {
     dom.commandPalette?.classList.add('hidden');
+  }
+
+  function closeTopmostOverlay() {
+    const overlays = [
+      { element: dom.commandPalette, close: closeCommandPalette },
+      { element: dom.lightboxModal, close: closeLightbox },
+      { element: dom.configModal, close: closeConfigModal },
+      { element: dom.mcpModal, close: closeMcpModal },
+      { element: dom.doctorModal, close: () => dom.doctorModal?.classList.add('hidden') },
+      { element: dom.goalModal, close: closeGoalModal },
+    ];
+    for (const overlay of overlays) {
+      if (overlay.element && !overlay.element.classList.contains('hidden')) {
+        overlay.close();
+        return true;
+      }
+    }
+    return false;
   }
 
   function filterPaletteItems(query) {
@@ -1274,9 +1474,27 @@
     }
   }
 
-  function handleSlashCommand(cmd) {
-    const parts = cmd.trim().split(/\s+/);
-    const action = parts[0]?.toLowerCase();
+  async function handleSlashCommand(cmd) {
+    const text = String(cmd || '').trim();
+    const match = text.match(/^\/([a-z0-9_-]+)\s*([\s\S]*)$/i);
+    const action = match ? '/' + match[1].toLowerCase() : '';
+    const argument = match ? match[2].trim() : '';
+
+    const notice = (message) => {
+      appendTranscriptEntry({ kind: 'notice', text: message, error: false });
+      scrollToBottom(followTranscript);
+    };
+
+    const unavailable = state.unavailableCommands.find(command => command.name === action);
+    if (unavailable) {
+      notice(`\`${action}\` masaüstünde desteklenmiyor. Aynı komutu CLI/TUI üzerinde kullanabilirsiniz.`);
+      return;
+    }
+
+    const showReport = (title, rows) => {
+      appendAssistantTextChunk(`### ${title}\n\n${rows.map(row => `- ${row}`).join('\n')}`);
+      finalizeAssistantMessage();
+    };
 
     switch (action) {
       case '/model':
@@ -1286,19 +1504,273 @@
         openConfigModal();
         break;
 
-      case '/ultracode':
-        appendAssistantTextChunk('Bu masaüstü sürümü ayrı bir Ultracode yürütme modu sunmuyor. İnceleme ve düzeltme isteğinizi mesaj olarak yazın.');
-        finalizeAssistantMessage();
+      case '/tokens': {
+        const report = await tbot.getTokenReport?.();
+        if (!report) {
+          notice('Token raporu alınamadı.');
+          break;
+        }
+        showReport('Token ve Bağlam Raporu', [
+          `Ham token: **${Number(report.totalRawTokens || 0).toLocaleString('tr-TR')}**`,
+          `Gönderilen girdi: **${Number(report.totalSentInputTokens || 0).toLocaleString('tr-TR')}**`,
+          `Üretilen çıktı: **${Number(report.totalOutputTokens || 0).toLocaleString('tr-TR')}**`,
+          `Önbelleklenen: **${Number(report.totalCachedTokens || report.cachedTokens || 0).toLocaleString('tr-TR')}**`,
+          `Şema budaması: **${Number(report.totalPrunedSchemaTokens || 0).toLocaleString('tr-TR')}**`,
+          `Geçmiş sıkıştırma: **${Number(report.totalCompressedHistoryTokens || 0).toLocaleString('tr-TR')}**`,
+          `Bağlam önbelleği: **${Number(report.totalContextCacheSavedTokens || 0).toLocaleString('tr-TR')}**`,
+          `Yerel tasarruf: **${Number(report.totalSavedTokens || 0).toLocaleString('tr-TR')} tok (%${Number(report.savingsPercent || 0)})**`,
+          'Not: bu değerler yerel tahminlerdir; sağlayıcı faturası veya rakip ölçümü değildir.',
+        ]);
         break;
+      }
+
+      case '/memory': {
+        const factsRequest = tbot.getMemoryFacts ? tbot.getMemoryFacts(state.workspace) : Promise.resolve([]);
+        const statsRequest = tbot.getMemoryStats ? tbot.getMemoryStats() : Promise.resolve(null);
+        const [facts, stats] = await Promise.all([
+          factsRequest.catch(() => []),
+          statsRequest.catch(() => null),
+        ]);
+        const rows = [];
+        if (stats) rows.push(`Heap: **${Number(stats.heapUsedMB || 0)} MB** / ${Number(stats.heapTotalMB || 0)} MB · RSS: **${Number(stats.rssMB || 0)} MB** · baskı: **${stats.pressure || '—'}**`);
+        if (Array.isArray(facts) && facts.length) {
+          for (const fact of facts.slice(0, 20)) rows.push(`[${String(fact.scope || 'project').toUpperCase()}] **${escapeHtml(String(fact.key || ''))}** = ${escapeHtml(String(fact.value || ''))}`);
+          if (facts.length > 20) rows.push(`... ${facts.length - 20} madde daha`);
+        } else {
+          rows.push('Kayıtlı bellek maddesi yok.');
+        }
+        showReport('Bellek ve RAM Durumu', rows);
+        break;
+      }
+
+      case '/remember': {
+        const eq = argument.indexOf('=');
+        let key = '';
+        let value = '';
+        if (eq >= 0) {
+          key = argument.slice(0, eq).trim();
+          value = argument.slice(eq + 1).trim();
+        } else {
+          value = argument.trim();
+          key = value.split(/\s+/).slice(0, 3).join('_').toLowerCase().replace(/[^a-z0-9_]/g, '') || `fact_${Date.now()}`;
+        }
+        if (!value) {
+          notice('Kullanım: /remember <anahtar> = <değer>');
+          break;
+        }
+        const result = tbot.rememberFact
+          ? await tbot.rememberFact(state.workspace, key, value).catch(error => ({ ok: false, error: String(error) }))
+          : { ok: false, error: 'Masaüstü köprüsü bu sürümde bellek yazmayı desteklemiyor.' };
+        notice(result?.ok ? `Kaydedildi: **${escapeHtml(key)}**` : `Kaydedilemedi: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+        break;
+      }
+
+      case '/forget': {
+        if (!argument) {
+          notice('Kullanım: /forget <anahtar>');
+          break;
+        }
+        const result = tbot.forgetFact
+          ? await tbot.forgetFact(state.workspace, argument).catch(error => ({ ok: false, error: String(error) }))
+          : { ok: false, error: 'Masaüstü köprüsü bu sürümde bellek silmeyi desteklemiyor.' };
+        notice(result?.ok ? `Silindi: **${escapeHtml(argument)}**` : `Bulunamadı veya silinemedi: ${escapeHtml(String(result?.error || argument))}`);
+        break;
+      }
+
+      case '/skills': {
+        const result = tbot.getSkillsAndMcp
+          ? await tbot.getSkillsAndMcp(state.workspace).catch(() => null)
+          : null;
+        const all = [...(result?.builtinSkills || []), ...(result?.customSkills || [])];
+        if (!all.length) {
+          notice('Yetenek listesi alınamadı.');
+          break;
+        }
+        if (argument) {
+          const skill = all.find(item => String(item.id || '').toLowerCase() === argument.toLowerCase());
+          if (!skill) {
+            notice(`Yetenek bulunamadı: ${escapeHtml(argument)}`);
+            break;
+          }
+          showReport(`/${skill.id}`, [
+            escapeHtml(String(skill.description || '')),
+            escapeHtml(String(skill.guidance || 'Ek yönerge yok.')),
+          ]);
+          break;
+        }
+        showReport('Yetenekler', all.slice(0, 40).map(skill => `**/${escapeHtml(String(skill.id || '?'))}** — ${escapeHtml(String(skill.description || ''))}`));
+        break;
+      }
+
+      case '/effort': {
+        const levels = ['low', 'medium', 'high', 'xhigh', 'max'];
+        if (!argument) {
+          openConfigModal();
+          break;
+        }
+        const effort = argument.toLowerCase();
+        if (!levels.includes(effort)) {
+          notice('Kullanım: /effort low|medium|high|xhigh|max');
+          break;
+        }
+        try {
+          await tbot.saveConfig?.({ efforts: { [`${state.provider}:${state.model}`]: effort } });
+        } catch (error) {
+          appendErrorNotice(`Efor kaydedilemedi: ${String(error)}`);
+          break;
+        }
+        state.effort = effort;
+        updateHudBar();
+        notice(`Düşünme eforu: **${effort}**`);
+        break;
+      }
+
+      case '/sessions': {
+        const sessions = await tbot.listSessions?.(state.workspace).catch(() => []) || [];
+        if (!sessions.length) {
+          notice('Kayıtlı oturum yok.');
+          break;
+        }
+        showReport('Oturumlar', sessions.slice(0, 30).map(session =>
+          `\`${escapeHtml(String(session.id || ''))}\` — ${escapeHtml(String(session.title || 'Yeni Oturum'))} (${escapeHtml(String(session.updatedAt || ''))})`));
+        break;
+      }
+
+      case '/resume': {
+        if (!argument) {
+          notice('Kullanım: /resume <oturum-id>');
+          break;
+        }
+        if (state.turnPending || state.sessionLoading) {
+          notice('Oturum değiştirmek için önce çalışan turu durdurun.');
+          break;
+        }
+        await switchSession(argument);
+        if (state.currentSessionId === argument) notice(`Oturuma devam ediliyor: **${escapeHtml(argument)}**`);
+        break;
+      }
+
+      case '/gui': {
+        const mode = (argument || 'live').toLowerCase();
+        const result = await tbot.setGuiMode?.(mode).catch(error => ({ ok: false, error: String(error) }));
+        notice(result?.ok ? result.message : `GUI modu değiştirilemedi: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+        break;
+      }
+
+      case '/bot': {
+        const sub = (argument.split(/\s+/)[0] || 'status').toLowerCase();
+        if (sub === 'token') {
+          const token = argument.slice(argument.toLowerCase().indexOf('token') + 5).trim();
+          const result = await tbot.setBotToken?.(token, state.workspace).catch(error => ({ ok: false, error: String(error) }));
+          notice(result?.ok ? 'Telegram bot tokenı kaydedildi. Başlatmak için /bot start yazın.' : `Token kaydedilemedi: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+          break;
+        }
+        if (sub === 'allow') {
+          const chatId = argument.slice(argument.toLowerCase().indexOf('allow') + 5).trim();
+          const result = await tbot.allowBotChat?.(chatId).catch(error => ({ ok: false, error: String(error) }));
+          notice(result?.ok ? `İzinli sohbet eklendi: ${escapeHtml(chatId)}` : `Sohbet eklenemedi: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+          break;
+        }
+        if (sub === 'start') {
+          const result = await tbot.startBot?.(state.workspace).catch(error => ({ ok: false, error: String(error) }));
+          notice(result?.ok ? `Telegram botu aktif: @${escapeHtml(String(result.username || 'tbot'))}` : `Bot başlatılamadı: ${escapeHtml(String(result?.error || 'bilinmeyen hata'))}`);
+          break;
+        }
+        if (sub === 'stop') {
+          await tbot.stopBot?.().catch(() => undefined);
+          notice('Telegram botu durduruldu.');
+          break;
+        }
+        const status = await tbot.getBotStatus?.().catch(() => null);
+        notice(status?.running
+          ? `Telegram botu aktif: @${escapeHtml(String(status.username || 'tbot'))} · ${Number(status.handledCount || 0)} mesaj`
+          : 'Telegram botu pasif. Başlatmak için /bot start, token için /bot token <TOKEN>.');
+        break;
+      }
+
+      case '/imagegen': {
+        if (!argument) {
+          notice('Kullanım: /imagegen <istek>');
+          break;
+        }
+        await submitUserMessage({ text: `/imagegen ${argument}`, display: `/imagegen ${argument}`, mode: 'agent' });
+        break;
+      }
+
+      case '/mcp':
+        await openMcpModal();
+        break;
+
+      case '/status': {
+        showReport('Oturum Durumu', [
+          `Sağlayıcı: **${escapeHtml(state.provider || '—')}** · Model: **${escapeHtml(state.model || '—')}** · Efor: **${escapeHtml(state.effort || '—')}**`,
+          `Çalışma alanı: \`${escapeHtml(state.workspace || '—')}\``,
+          `Oturum: \`${escapeHtml(state.currentSessionId || 'yeni')}\``,
+          `Onay modu: **${state.yoloEnabled ? 'otomatik' : 'onaylı'}**`,
+          `RAM: **${Number(state.telemetry.ramMB || 0)} MB** · Bağlam tasarrufu: **%${Number(state.telemetry.savingsPercent || 0)}** (${Number(state.telemetry.savedTokens || 0).toLocaleString('tr-TR')} tok)`,
+        ]);
+        break;
+      }
+
+      case '/plan': {
+        if (!argument) {
+          notice('Kullanım: /plan <istek> veya /plan apply');
+          break;
+        }
+        if (argument.toLowerCase() === 'apply') {
+          if (!state.pendingPlan) {
+            notice('Uygulanacak plan yok. Önce /plan <istek> ile plan oluşturun.');
+            break;
+          }
+          await submitUserMessage({ text: state.pendingPlanRequest, display: '/plan apply', mode: 'plan-apply', plan: state.pendingPlan });
+          break;
+        }
+        await submitUserMessage({ text: argument, display: `/plan ${argument}`, mode: 'plan' });
+        break;
+      }
+
+      case '/ultracode': {
+        const toggle = argument.toLowerCase();
+        if (!argument || toggle === 'on' || toggle === 'off') {
+          state.ultracodeMode = toggle === 'on' ? true : toggle === 'off' ? false : !state.ultracodeMode;
+          notice(`Ultracode modu: **${state.ultracodeMode ? 'açık' : 'kapalı'}**`);
+          break;
+        }
+        await submitUserMessage({ text: argument, display: `/ultracode ${argument}`, mode: 'ultracode' });
+        break;
+      }
+
+      case '/subagents': {
+        if (!argument) {
+          notice('Kullanım: /subagents <görev>');
+          break;
+        }
+        await submitUserMessage({ text: argument, display: `/subagents ${argument}`, mode: 'subagents' });
+        break;
+      }
 
       case '/yolo':
         toggleYoloMode();
-        appendAssistantTextChunk(`🛡️ YOLO Modu: **${state.yoloEnabled ? 'Açık (Otomatik Onay)' : 'Kapalı (Onaylı)'}**`);
+        appendAssistantTextChunk(`YOLO Modu: **${state.yoloEnabled ? 'Açık (Otomatik Onay)' : 'Kapalı (Onaylı)'}**`);
         finalizeAssistantMessage();
         break;
 
       case '/goal':
-        openGoalModal();
+        if (argument) {
+          if (dom.inputModalGoal) dom.inputModalGoal.value = argument;
+          await startModalGoal();
+        } else {
+          const workflow = await tbot.getWorkflowState?.(state.workspace).catch(() => null);
+          if (workflow?.goal?.status === 'active' || workflow?.goal?.status === 'paused') {
+            showReport('Aktif Hedef', [
+              escapeHtml(String(workflow.goal.objective || '')),
+              `Durum: **${escapeHtml(String(workflow.goal.status))}**`,
+              ...(Array.isArray(workflow.goal.notes) ? workflow.goal.notes.slice(0, 10).map(note => `Not: ${escapeHtml(String(note))}`) : []),
+            ]);
+          } else {
+            notice('Aktif hedef yok. Yeni hedef için /goal <hedef> veya arayüzdeki “+ Hedef” düğmesini kullanın.');
+          }
+        }
         break;
 
       case '/ram':
@@ -1311,24 +1783,42 @@
         break;
 
       case '/clear':
-        clearChatTerminal();
+        void clearSession();
         break;
 
-      case '/help':
-        appendAssistantTextChunk(`
-### T Bot Komut Kılavuzu
-- \`/model\`, \`/provider\` — Model, Sağlayıcı ve API Anahtarlarını Yapılandır
-- \`/yolo\` — Araç Çalıştırma Otomatik Onayını Aç/Kapat
-- \`/goal\` — Otonom Hedef Başlat (.tbot/goal.json)
-- \`/ram\`, \`/gc\` — Belleği Boşalt ve Çöp Toplayıcıyı Çalıştır
-- \`/doctor\` — Sistem Teşhisi ve Sağlık Kontrolü
-- \`/clear\` — Sohbet Akışını Temizle
-        `);
-        finalizeAssistantMessage();
+      case '/help': {
+        let rows = state.commands.map(command => `\`${command.usage}\` — ${command.description}`);
+        if (!rows.length) {
+          const fallback = tbot.getCommandsHelp ? await tbot.getCommandsHelp().catch(() => '') : '';
+          if (fallback) {
+            appendAssistantTextChunk(`### T Bot Komut Kılavuzu\n\n\`\`\`\n${String(fallback)}\n\`\`\``);
+            finalizeAssistantMessage();
+            break;
+          }
+          rows = ['Komut kataloğu yüklenemedi. CLI/TUI üzerinde `/help` kullanın.'];
+        }
+        if (state.unavailableCommands.length) {
+          rows.push('');
+          rows.push(`Yalnızca CLI/TUI: ${state.unavailableCommands.map(command => command.name).join(', ')}`);
+        }
+        showReport('T Bot Komut Kılavuzu', rows);
         break;
+      }
+
+      case '/frontenddesign':
+      case '/backend':
+      case '/codereview':
+      case '/debuganalysis': {
+        if (!argument) {
+          notice(`Kullanım: ${action} <istek>`);
+          break;
+        }
+        await submitUserMessage({ text: `${action} ${argument}`, display: `${action} ${argument}`, mode: 'agent' });
+        break;
+      }
 
       default:
-        appendAssistantTextChunk(`Bilinmeyen komut: \`${cmd}\`. Kullanılabilir komutları görmek için \`/help\` yazın.`);
+        appendAssistantTextChunk(`Bilinmeyen komut: \`${action || text}\`. Kullanılabilir komutları görmek için \`/help\` yazın.`);
         finalizeAssistantMessage();
         break;
     }
@@ -1339,7 +1829,7 @@
   // =========================================================================
   async function triggerTrimMemory() {
     if (dom.btnTrimRam) {
-      dom.btnTrimRam.innerHTML = '<span class="action-icon">⌛</span> Boşaltılıyor…';
+      dom.btnTrimRam.innerHTML = '<span class="action-icon">…</span> Boşaltılıyor…';
       dom.btnTrimRam.disabled = true;
     }
 
@@ -1354,7 +1844,7 @@
       appendErrorNotice(String(error));
     } finally {
       if (dom.btnTrimRam) {
-        dom.btnTrimRam.innerHTML = '<span class="action-icon">🧹</span> RAM Boşalt';
+        dom.btnTrimRam.innerHTML = '<span class="action-icon">⌫</span> RAM';
         dom.btnTrimRam.disabled = false;
       }
     }
@@ -1373,34 +1863,56 @@
     transcriptPager = null;
     transcriptPageStart = 0;
     followTranscript = true;
+    sessionHistory.sessionId = null;
+    sessionHistory.total = 0;
+    sessionHistory.loadedFrom = 0;
+    sessionHistory.loading = false;
+    state.pendingPlan = null;
+    state.pendingPlanRequest = '';
+    state.runMode = 'agent';
     showEmptyHeroIfEmpty();
   }
 
-  function loadTranscriptMessages(messages) {
+  function buildTranscriptEntries(messages) {
+    const entries = [];
     const calls = new Map();
     for (const message of messages) {
-      if (message.role === 'user') transcriptEntries.push({ kind: 'user', text: message.content || '', images: message.images });
+      if (message.role === 'user') entries.push({ kind: 'user', text: message.content || '', images: message.images });
       if (message.role === 'assistant') {
-        if (message.content) transcriptEntries.push({ kind: 'assistant', text: message.content, textPage: 0 });
+        if (message.content) entries.push({ kind: 'assistant', text: message.content, textPage: 0 });
         for (const call of message.toolCalls || []) {
           const entry = { kind: 'tool', call, title: TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name), status: 'stopped' };
           calls.set(call.id, entry);
-          transcriptEntries.push(entry);
+          entries.push(entry);
         }
       }
       if (message.role === 'tool') {
         let entry = calls.get(message.toolCallId);
         if (!entry) {
           entry = { kind: 'tool', call: { id: message.toolCallId, name: 'tool_result', arguments: {} }, title: 'Araç Sonucu' };
-          transcriptEntries.push(entry);
+          entries.push(entry);
         }
         entry.result = message.content || '';
-        entry.status = isToolError(entry.result, entry.call.name) ? 'error' : 'success';
+        entry.status = toolStatus(entry.result, entry.call.name);
       }
     }
+    return entries;
+  }
+
+  function loadTranscriptMessages(messages) {
+    transcriptEntries.push(...buildTranscriptEntries(messages));
+    trimTranscriptEntries();
     if (transcriptEntries.length) hideEmptyHero();
     refreshTranscript();
     scrollToBottom(true);
+  }
+
+  function prependTranscriptMessages(messages) {
+    const entries = buildTranscriptEntries(messages);
+    if (!entries.length) return;
+    transcriptEntries.unshift(...entries);
+    trimTranscriptEntries();
+    hideEmptyHero();
   }
 
   // =========================================================================
@@ -1434,7 +1946,7 @@
             <span class="session-title">${escapeHtml(title)}</span>
             <span class="session-meta">${date} · ${count} mesaj</span>
           </div>
-          <button class="session-btn-delete" title="Oturumu Sil" data-delete-session>🗑️</button>
+          <button class="session-btn-delete" title="Oturumu Sil" data-delete-session>×</button>
         `;
         item.querySelector('[data-delete-session]')?.addEventListener('click', e => window.tbotDeleteSession(e, s.id));
         item.tabIndex = 0;
@@ -1469,10 +1981,43 @@
     clearChatTerminal();
     loadSessionsList();
     try {
-      const data = await tbot.loadSession?.(id, state.workspace);
-      if (Array.isArray(data?.messages)) loadTranscriptMessages(data.messages);
+      if (typeof tbot.loadSessionMessages === 'function') {
+        // Yalnızca en yeni sayfa IPC ile gelir; eskisi talep üzerine çekilir.
+        const page = await tbot.loadSessionMessages(id, state.workspace, { offset: -1, limit: TRANSCRIPT_PAGE_SIZE });
+        if (Array.isArray(page?.messages)) {
+          loadTranscriptMessages(page.messages);
+          sessionHistory.sessionId = id;
+          sessionHistory.total = typeof page.total === 'number' ? page.total : page.messages.length;
+          sessionHistory.loadedFrom = typeof page.offset === 'number' ? page.offset : 0;
+        }
+      } else {
+        const data = await tbot.loadSession?.(id, state.workspace);
+        if (Array.isArray(data?.messages)) loadTranscriptMessages(data.messages);
+      }
     } catch (error) {
       appendErrorNotice(`Oturum yüklenemedi: ${String(error)}`);
+    } finally {
+      state.sessionLoading = false;
+      setTurnControls();
+    }
+  }
+
+  // /clear gerçek IPC ile oturumu boşaltır; hata olursa sessizce başarı gösterme.
+  async function clearSession() {
+    if (state.turnPending || state.sessionLoading) return;
+    state.sessionLoading = true;
+    setTurnControls();
+    try {
+      const res = await tbot.clearSession?.(state.currentSessionId || undefined, state.workspace);
+      if (!res || res.ok === false || !res.session?.id) {
+        throw new Error(res?.error || 'Oturum temizlenemedi.');
+      }
+      state.currentSessionId = res.session.id;
+      clearChatTerminal();
+      await loadSessionsList();
+      applyApprovalPolicy();
+    } catch (error) {
+      appendErrorNotice(`Oturum temizlenemedi: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       state.sessionLoading = false;
       setTurnControls();
@@ -1535,7 +2080,7 @@
     const todos = Array.isArray(todosArray) ? todosArray : [];
 
     if (todos.length === 0) {
-      dom.todosList.innerHTML = '<div class="empty-list-hint">Görev maddesi yok</div>';
+      dom.todosList.innerHTML = '<div class="empty-list-hint">Görev Maddesi Yok</div>';
       if (dom.todosProgressBadge) dom.todosProgressBadge.textContent = '0/0';
       return;
     }
@@ -1620,6 +2165,60 @@
     catalogRequest++;
     dom.configModal?.classList.add('hidden');
     if (dom.inputApiKey) { dom.inputApiKey.value = ''; dom.inputApiKey.type = 'password'; }
+  }
+
+  async function openMcpModal() {
+    dom.mcpModal?.classList.remove('hidden');
+    if (dom.inputMcpToken) dom.inputMcpToken.value = '';
+    const data = await tbot.listMcp?.().catch(error => ({ error: String(error) }));
+    if (data?.error) {
+      appendErrorNotice(`MCP listesi alınamadı: ${data.error}`);
+      return;
+    }
+    const presets = Array.isArray(data?.presets) ? data.presets : [];
+    if (dom.selectMcpService) {
+      dom.selectMcpService.replaceChildren(...presets.map(preset => {
+        const option = document.createElement('option');
+        option.value = String(preset.id);
+        option.textContent = `${preset.label}${preset.enabled ? ' — bağlı' : ''}`;
+        return option;
+      }));
+    }
+    if (dom.mcpStatusList) {
+      dom.mcpStatusList.innerHTML = presets.length
+        ? presets.map(preset => `<div class="mcp-status-row"><span>${escapeHtml(String(preset.label || preset.id))}</span><span class="${preset.enabled ? 'mcp-on' : 'mcp-off'}">${preset.enabled ? (preset.hasToken ? 'bağlı' : 'token yok') : 'kapalı'}</span></div>`).join('')
+        : '<div class="empty-list-hint">MCP servisi tanımlı değil.</div>';
+    }
+  }
+
+  function closeMcpModal() {
+    dom.mcpModal?.classList.add('hidden');
+    if (dom.inputMcpToken) dom.inputMcpToken.value = '';
+  }
+
+  async function connectMcpFromModal() {
+    const service = dom.selectMcpService?.value;
+    const token = dom.inputMcpToken?.value?.trim() || '';
+    if (!service) return;
+    const result = await tbot.connectMcp?.(service, token || undefined, state.workspace).catch(error => ({ ok: false, error: String(error) }));
+    if (!result?.ok) {
+      appendErrorNotice(`MCP bağlantısı kurulamadı: ${result?.error || 'bilinmeyen hata'}`);
+      return;
+    }
+    if (result.warning) appendTranscriptEntry({ kind: 'notice', text: String(result.warning), error: false });
+    if (dom.inputMcpToken) dom.inputMcpToken.value = '';
+    await openMcpModal();
+  }
+
+  async function removeMcpFromModal() {
+    const service = dom.selectMcpService?.value;
+    if (!service) return;
+    const result = await tbot.removeMcp?.(service).catch(error => ({ ok: false, error: String(error) }));
+    if (!result?.ok) {
+      appendErrorNotice(`MCP bağlantısı kaldırılamadı: ${result?.error || 'bilinmeyen hata'}`);
+      return;
+    }
+    await openMcpModal();
   }
 
   function populateModelsSelect(models) {
@@ -1719,7 +2318,7 @@
     if (!text) return;
     if (state.turnPending) return;
     closeGoalModal();
-    appendAssistantTextChunk(`🎯 Yeni Hedef Başlatılıyor: **${text}**`);
+    appendAssistantTextChunk(`Yeni Hedef Başlatılıyor: **${text}**`);
     finalizeAssistantMessage();
 
     await tbot.manageWorkflow?.('goal_manage', { action: 'set', goal: text }, state.workspace);
@@ -1732,12 +2331,24 @@
   // =========================================================================
   // 19. Olay Dinleyicileri (Event Listeners Setup)
   // =========================================================================
+  function setSidebar(side, collapsed) {
+    const panel = side === 'left' ? dom.sidebarLeft : dom.sidebarRight;
+    if (!panel) return;
+    panel.classList.toggle('collapsed', collapsed);
+    const grid = typeof document.querySelector === 'function' ? document.querySelector('.workspace-grid') : null;
+    grid?.classList.toggle(`${side}-collapsed`, collapsed);
+    if (typeof document.querySelectorAll === 'function') {
+      document.querySelectorAll(`[data-toggle-sidebar="${side}"]`).forEach(button => {
+        button.setAttribute('aria-expanded', String(!collapsed));
+        button.classList.toggle('is-active', !collapsed);
+      });
+    }
+  }
+
   function toggleSidebar(side) {
     const panel = side === 'left' ? dom.sidebarLeft : dom.sidebarRight;
-    panel?.classList.toggle('collapsed');
-    const collapsed = panel?.classList.contains('collapsed');
-    document.querySelector('.workspace-grid')?.classList.toggle(`${side}-collapsed`, collapsed);
-    document.querySelectorAll(`[data-toggle-sidebar="${side}"]`).forEach(button => button.setAttribute('aria-expanded', String(!collapsed)));
+    if (!panel) return;
+    setSidebar(side, !panel.classList.contains('collapsed'));
   }
 
   function setupEventListeners() {
@@ -1764,7 +2375,7 @@
       }
     });
     document.querySelectorAll('.hero-card').forEach(card => { card.tabIndex = 0; card.setAttribute('role', 'button'); });
-    const dialogs = [dom.configModal, dom.doctorModal, dom.goalModal, dom.lightboxModal].filter(Boolean);
+    const dialogs = [dom.configModal, dom.mcpModal, dom.doctorModal, dom.goalModal, dom.lightboxModal].filter(Boolean);
     const dialogFocus = new WeakMap();
     for (const dialog of dialogs) {
       dialog.setAttribute('role', 'dialog');
@@ -1807,6 +2418,14 @@
     dom.btnClose?.addEventListener('click', () => tbot.windowControl?.('close'));
     dom.btnPin?.addEventListener('click', () => tbot.windowControl?.('toggle-pin'));
 
+    // Pencere gizliyken gelen onay isteği, pencere öne geldiğinde görünür olsun.
+    window.addEventListener('focus', () => {
+      if (!state.currentApproval) return;
+      const card = document.getElementById('live-approval-card');
+      card?.scrollIntoView?.({ block: 'center' });
+      card?.querySelector?.('#btn-approval-allow')?.focus?.();
+    });
+
     // 2. Çalışma Klasörü Seçici
     dom.btnWorkspace?.addEventListener('click', async () => {
       const selected = await tbot.selectWorkspace?.();
@@ -1817,6 +2436,7 @@
         if (dom.workspacePath) dom.workspacePath.textContent = selected;
         refreshWorkflow();
         loadSessionsList();
+        applyApprovalPolicy();
       }
     });
 
@@ -1828,7 +2448,18 @@
     dom.btnQuickYolo?.addEventListener('click', toggleYoloMode);
     dom.btnQuickConfig?.addEventListener('click', openConfigModal);
     dom.btnQuickDoctor?.addEventListener('click', runDoctorDiagnostics);
-    dom.btnQuickClear?.addEventListener('click', clearChatTerminal);
+    dom.btnQuickClear?.addEventListener('click', () => void clearSession());
+    const primeMode = (prefix) => {
+      if (state.turnPending || state.sessionLoading) return;
+      if (dom.userInput) {
+        dom.userInput.value = prefix;
+        dom.userInput.focus();
+        autoResizeTextarea();
+      }
+    };
+    dom.btnQuickPlan?.addEventListener('click', () => primeMode('/plan '));
+    dom.btnQuickUltracode?.addEventListener('click', () => primeMode('/ultracode '));
+    dom.btnQuickSubagents?.addEventListener('click', () => primeMode('/subagents '));
 
     // 5. Yan Panel Aç/Kapa
     dom.btnCollapseLeft?.addEventListener('click', () => {
@@ -1905,8 +2536,9 @@
       } else if (e.key === 'Escape') {
         if (!dom.commandPalette?.classList.contains('hidden')) {
           closeCommandPalette();
-        } else if (state.isThinking) {
-          abortCurrentTurn();
+        } else if (handleEscape()) {
+          // Aynı guard: onay açıkken yalnız onay reddedilir, tur iptal edilmez.
+          e.stopPropagation();
         }
       } else if (!dom.commandPalette?.classList.contains('hidden')) {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -1968,12 +2600,13 @@
 
     // 13. Komut Paleti Olayları
     dom.paletteSearch?.addEventListener('input', (e) => filterPaletteItems(e.target?.value || ''));
-    dom.paletteItems?.querySelectorAll('.palette-item').forEach((item) => {
-      item.addEventListener('click', () => {
-        const cmd = item.getAttribute('data-cmd');
-        if (cmd) handleSlashCommand(cmd);
-        closeCommandPalette();
-      });
+    // The palette is rebuilt from the shared command catalog after startup.
+    // Delegate clicks on the container so replaced items keep working.
+    dom.paletteItems?.addEventListener('click', (event) => {
+      const item = event.target?.closest?.('.palette-item');
+      const cmd = item?.getAttribute('data-cmd');
+      if (cmd) handleSlashCommand(cmd);
+      closeCommandPalette();
     });
 
     // 14. Modallar & Lightbox Kapatma
@@ -1984,6 +2617,10 @@
     dom.modalBtnCancelConfig?.addEventListener('click', closeConfigModal);
     dom.modalBtnSaveAllConfig?.addEventListener('click', saveAllConfig);
     dom.selectProvider?.addEventListener('change', (e) => updateModelDropdown(e.target?.value));
+
+    dom.modalBtnCloseMcp?.addEventListener('click', closeMcpModal);
+    dom.modalBtnConnectMcp?.addEventListener('click', connectMcpFromModal);
+    dom.modalBtnRemoveMcp?.addEventListener('click', removeMcpFromModal);
 
     dom.btnToggleKeyVisibility?.addEventListener('click', () => {
       if (dom.inputApiKey) {
@@ -1996,10 +2633,13 @@
       const prov = dom.selectProvider?.value || state.provider;
       if (!key) return;
       try {
-        await tbot.setApiKey?.(prov, key);
+        const result = await tbot.setApiKey?.(prov, key);
+        if (result?.error) throw new Error(result.error);
         dom.inputApiKey.value = '';
         dom.inputApiKey.type = 'password';
         dom.inputApiKey.placeholder = 'Anahtar kaydedildi';
+        if (result?.warning) appendTranscriptEntry({ kind: 'notice', text: String(result.warning), error: false });
+        await updateModelDropdown(prov);
       } catch (error) { appendErrorNotice(String(error)); }
     });
 
@@ -2017,15 +2657,9 @@
         e.preventDefault();
         openCommandPalette();
       } else if (e.key === 'Escape') {
-        if (state.currentApproval) { respondApproval(false); return; }
-        closeCommandPalette();
-        closeLightbox();
-        closeConfigModal();
-        closeGoalModal();
-        dom.doctorModal?.classList.add('hidden');
-        if (state.isThinking) {
-          abortCurrentTurn();
-        }
+        if (state.currentApproval) { handleEscape(); return; }
+        if (closeTopmostOverlay()) return;
+        handleEscape();
       }
     });
   }
@@ -2066,9 +2700,13 @@
         handleToolStart(event.call, event.toolTitle);
         break;
 
-      case 'tool_end':
+      case 'tool_end': {
         handleToolEnd(event.call, event.result, event.toolTitle);
+        // Görev Pusulası'nı canlı tut: workflow araçları bitince hemen yenile.
+        const toolName = event.call?.name;
+        if (toolName === 'todo_manage' || toolName === 'goal_manage') void refreshWorkflow();
         break;
+      }
 
       case 'status': {
         const msg = event.message || '';
@@ -2078,6 +2716,9 @@
         const goalMatch = msg.match(/Otonom Hedef\s*\[Adım\s*(\d+)\s*\/\s*(\d+)\]/i);
         if (goalMatch) {
           state.currentStepCount = parseInt(goalMatch[1], 10);
+          void refreshWorkflow();
+        } else if (/Otonom Hedef\s*\[(?:Tamamlandı|Hedef)/i.test(msg)) {
+          void refreshWorkflow();
         }
         break;
       }
@@ -2129,7 +2770,7 @@
       state.approvalQueue = state.approvalQueue.filter(request => request.requestId !== requestId);
       if (state.currentApproval?.requestId !== requestId) return;
       state.currentApproval = null;
-      finishApprovalCard('Onay süresi doldu; işlem reddedildi.');
+      finishApprovalCard('Onay zaman aşımı (120 sn): işlem güvenli şekilde reddedildi.');
       if (state.approvalQueue.length) { renderApprovalRequest(state.approvalQueue.shift()); return; }
       if (state.turnPending) startThinking('Yanıt Hazırlanıyor…');
     });
@@ -2162,6 +2803,10 @@
     setupEventListeners();
     setupDragAndDrop();
     setupIpcListeners();
+    setSidebar('left', false);
+    setSidebar('right', false);
+    if (window.innerWidth < 1080) setSidebar('right', true);
+    if (window.innerWidth < 760) setSidebar('left', true);
 
     // Başlangıç ayarlarını al
     try {
@@ -2172,6 +2817,10 @@
         if (cfg.provider) state.provider = cfg.provider;
         if (cfg.model) state.model = cfg.model;
         if (cfg.efforts?.[`${state.provider}:${state.model}`]) state.effort = cfg.efforts[`${state.provider}:${state.model}`];
+      }
+      if (initial?.requiresApiKey && initial?.hasApiKey === false) {
+        appendTranscriptEntry({ kind: 'notice', text: 'Sağlayıcı API anahtarı yapılandırılmamış. Ayarlar açılıyor; anahtar olmadan ajan turu başlatılamaz.', error: false });
+        openConfigModal();
       }
     } catch {
       // ignore
@@ -2187,9 +2836,12 @@
       // ignore
     }
 
+    await loadCommandMetadata();
     updateHudBar();
+    updateApprovalModeDisplay();
     loadSessionsList();
     refreshWorkflow();
+    applyApprovalPolicy();
   }
 
   // DOM Yüklendiğinde Başlat

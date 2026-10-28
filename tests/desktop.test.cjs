@@ -18,7 +18,7 @@ function renderer(bridge = {}, elements = {}, documentMethods = {}) {
   };
   vm.createContext(context);
   vm.runInContext(source('renderer/app.js').replace('  function parseMarkdown(mdText) {', '  function parseMarkdown(mdText) { window.renderMetrics.markdownCalls++; window.renderMetrics.markdownChars += (mdText || \'\').length; window.renderMetrics.maxMarkdownChars = Math.max(window.renderMetrics.maxMarkdownChars, (mdText || \'\').length);').replace('  // DOM Yüklendiğinde Başlat',
-    '  window.test = { parseMarkdown, updateTelemetry, state, isToolError, setToolExpanded, switchSession, submitUserMessage, loadSessionsList, startThinking, stopThinking, updateModelDropdown, openConfigModal, renderApprovalRequest, respondApproval, applyAppVersion, transcriptEntries, renderedTranscriptEntries, pinnedTranscriptEntries, loadTranscriptMessages, transcriptPage, appendUserMessage, appendAssistantTextChunk, renderAssistantBuffer, finalizeAssistantMessage, handleToolStart, handleToolEnd, changeTextPage, clearChatTerminal, handleAgentEvent, copyTranscriptText, closeLightbox };\n  // DOM Yüklendiğinde Başlat'), context);
+    '  window.test = { parseMarkdown, updateTelemetry, state, isToolError, isToolDenied, isToolUnknown, toolStatus, setToolExpanded, switchSession, submitUserMessage, loadSessionsList, startThinking, stopThinking, updateModelDropdown, openConfigModal, renderApprovalRequest, respondApproval, applyAppVersion, transcriptEntries, renderedTranscriptEntries, pinnedTranscriptEntries, loadTranscriptMessages, prependTranscriptMessages, transcriptPage, appendUserMessage, appendAssistantTextChunk, renderAssistantBuffer, finalizeAssistantMessage, handleToolStart, handleToolEnd, changeTextPage, clearChatTerminal, handleAgentEvent, handleEscape, clearSession, applyApprovalPolicy, updateApprovalModeDisplay, releaseUserImages, loadOlderHistory, sessionHistory, copyTranscriptText, closeLightbox, handleSlashCommand, toggleSidebar, setSidebar, loadCommandMetadata, closeTopmostOverlay };\n  // DOM Yüklendiğinde Başlat'), context);
   return { ...context.window.test, document: context.document, renderMetrics: context.window.renderMetrics, clipboardWrites };
 }
 
@@ -55,6 +55,7 @@ function transcriptDom() {
     get innerHTML() { return this._html; }
     get nextSibling() { const list = this.parentElement?.children || []; return list[list.indexOf(this) + 1] || null; }
     appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
+    append(...children) { for (const child of children) this.appendChild(child); }
     prepend(child) { child.remove(); child.parentElement = this; this.children.unshift(child); }
     insertBefore(child, next) { child.remove(); child.parentElement = this; const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index, 0, child); }
     remove() { if (!this.parentElement) return; const list = this.parentElement.children; const i = list.indexOf(this); if (i >= 0) list.splice(i, 1); this.parentElement = null; }
@@ -112,14 +113,26 @@ function ipcHarness(overrides = {}) {
   const webContents = { mainFrame: frame };
   const context = {
     ipcMain: { handle: (channel, listener) => handlers.set(channel, listener) },
-    mainWindow: { webContents }, activeTurnContext: null, turnInProgress: false, turnAbortController: null,
+    mainWindow: { webContents }, tray: null, activeTurnContext: null, turnInProgress: false, turnAbortController: null,
     desktopQuitting: false, activeMcpConnections: new Set(),
     closeDesktopMcp: async connection => { if (context.activeMcpConnections.delete(connection)) await connection.close(); },
     AbortController, setTimeout, clearTimeout, randomUUID: () => 'approval-id',
     getWorkspacePermission: () => 'ask', TOOL_TITLE_MAP: {}, formatToolTitle: value => value,
     resolve: path => path, statSync: () => ({ isDirectory: () => true }),
     getDefaultWorkspace: () => '/workspace', loadConfig: async () => ({}),
+    saveConfig: async () => undefined,
     resolveProviderConfig: async () => ({}), createProvider: () => ({}),
+    PROVIDER_CATALOG: [{ id: 'openai', requiresApiKey: true }],
+    listProviderModels: async () => ({ providers: [], currentProvider: 'openai', currentModel: 'old', models: [] }),
+    storeProviderApiKey: async () => ({}),
+    resolveImageProviderConfig: async () => undefined,
+    runTurnMode: async (input, options) => context.runAgent ? await context.runAgent(input, options) : [],
+    getTelegramBotStatus: () => ({ running: false, allowedChats: [], handledCount: 0 }),
+    startTelegramBotBridge: async () => ({ ok: false, error: 'not configured' }),
+    stopTelegramBotBridge: () => undefined,
+    getCustomSecret: async () => undefined,
+    setCustomSecret: async () => undefined,
+    prepareApiKey: value => value,
     configDirectory: () => '/config', SessionStore: class {}, createSession: () => ({ id: 'session', messages: [] }),
     ...overrides,
   };
@@ -193,6 +206,44 @@ test('enabled MCP tools reach the agent and close after success or failure', asy
     assert.equal(result.ok, !fail);
     assert.equal(closed, 1);
   }
+});
+
+test('desktop passes the shared image provider into every agent turn', async () => {
+  let captured;
+  const h = ipcHarness({
+    loadConfig: async () => ({ provider: 'openai', model: 'gpt-image-model' }),
+    loadConnections: async () => ({}),
+    SessionStore: class { async save() {} },
+    getDesktopMemoryStats: () => ({}),
+    resolveImageProviderConfig: async () => ({ provider: 'openai', apiKey: 'test-key' }),
+    runTurnMode: async input => { captured = input; return []; },
+  });
+  h.context.mainWindow.isDestroyed = () => false;
+  h.context.mainWindow.webContents.send = () => {};
+  const result = await h.handlers.get('agent:start-turn')(h.event, { message: 'draw a diagram' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(captured.imageProvider, { provider: 'openai', apiKey: 'test-key' });
+});
+
+test('desktop model catalog delegates to the shared resolver with the selected provider', async () => {
+  let seen;
+  const h = ipcHarness({
+    loadConfig: async () => ({ provider: 'custom', model: 'local-model', baseUrl: 'http://127.0.0.1:1234/v1' }),
+    listProviderModels: async (config, provider) => {
+      seen = { config, provider };
+      return { providers: [], currentProvider: provider, currentModel: config.model, models: ['a'] };
+    },
+  });
+  const result = await h.handlers.get('config:model-catalog')(h.event, 'openai');
+  assert.equal(seen.config.baseUrl, 'http://127.0.0.1:1234/v1');
+  assert.equal(seen.provider, 'openai');
+  assert.equal(result.currentProvider, 'openai');
+});
+
+test('command palette uses delegated clicks so catalog replacement cannot detach handlers', () => {
+  const script = source('renderer/app.js');
+  assert.match(script, /paletteItems\?\.addEventListener\('click'/);
+  assert.doesNotMatch(script, /querySelectorAll\('\.palette-item'\)\.forEach\(\(item\) => \{\s*item\.addEventListener\('click'/);
 });
 
 test('renderer policy blocks remote scripts, connections, objects and inline event handlers', () => {
@@ -819,4 +870,334 @@ test('explicit new sessions remain supported and resumed sessions preserve host 
   assert.equal((await h.handlers.get('agent:start-turn')(h.event, { message: 'new conversation' })).ok, true);
   assert.equal(created, 1);
   assert.equal(saved.id, 'new');
+});
+
+// ---------------------------------------------------------------------------
+// Desktop P1 state/flow regressions
+// ---------------------------------------------------------------------------
+
+test('/clear persists an empty history so the next turn cannot resend old messages', async () => {
+  const stored = {
+    id: 'session', workspace: '/workspace', createdAt: 'x', updatedAt: 'x',
+    messages: [{ role: 'user', content: 'old question' }, { role: 'assistant', content: 'old answer' }],
+  };
+  let saved, history;
+  const h = ipcHarness({
+    SessionStore: class { async get() { return stored; } async save(value) { saved = value; } },
+    createSession: () => ({ id: 'fresh', messages: [] }),
+    loadConnections: async () => ({}), getDesktopMemoryStats: () => ({}),
+    runAgent: async input => { history = input.history; return []; },
+  });
+  h.context.mainWindow.isDestroyed = () => false;
+  h.context.mainWindow.webContents.send = () => {};
+
+  const cleared = await h.handlers.get('sessions:clear')(h.event, { sessionId: 'session', workspace: '/workspace' });
+  assert.equal(cleared.ok, true);
+  assert.equal(cleared.session.messages.length, 0);
+  assert.equal(saved, stored);
+  assert.equal(saved.messages.length, 0);
+
+  const turn = await h.handlers.get('agent:start-turn')(h.event, { sessionId: 'session', message: 'fresh question' });
+  assert.equal(turn.ok, true);
+  assert.equal(Array.isArray(history), true);
+  assert.equal(history.length, 0, 'the cleared session must send an empty history');
+});
+
+test('clearing an unknown session reports the failure instead of a silent success', async () => {
+  const h = ipcHarness({ SessionStore: class { async get() { return null; } async save() {} } });
+  const cleared = await h.handlers.get('sessions:clear')(h.event, { sessionId: 'missing', workspace: '/workspace' });
+  assert.equal(cleared.ok, false);
+  assert.match(cleared.error, /bulunamadı/);
+});
+
+test('renderer /clear uses the real IPC reset and keeps the session identity', async () => {
+  const dom = transcriptDom();
+  const cleared = [];
+  const ui = renderer({
+    clearSession: async (sessionId, workspace) => { cleared.push([sessionId, workspace]); return { ok: true, session: { id: sessionId || 'created', messages: [] } }; },
+    listSessions: async () => [],
+    getApprovalPolicy: async () => ({ workspacePermission: 'ask' }),
+  }, dom.elements, dom.document);
+  ui.state.currentSessionId = 'session-1';
+  ui.state.workspace = '/workspace';
+  ui.appendUserMessage('old text');
+  await ui.clearSession();
+  assert.deepEqual(cleared[0], ['session-1', '/workspace']);
+  assert.equal(ui.state.currentSessionId, 'session-1');
+  assert.equal(ui.transcriptEntries.length, 0);
+});
+
+test('Escape with an open approval denies only that request and never aborts the turn', () => {
+  const dom = transcriptDom();
+  const decisions = [];
+  let aborts = 0;
+  const ui = renderer({
+    respondApproval: (...args) => { decisions.push(args); },
+    abortTurn: () => { aborts++; return Promise.resolve(); },
+  }, dom.elements, dom.document);
+
+  ui.startThinking('çalışıyor');
+  assert.notEqual(ui.state.thinkingTimerId, null);
+  ui.renderApprovalRequest({ requestId: 'r1', tool: 'shell', arguments: {} });
+  // Onay beklerken düşünme zamanlayıcısı durur.
+  assert.equal(ui.state.thinkingTimerId, null);
+
+  assert.equal(ui.handleEscape(), true);
+  assert.equal(aborts, 0);
+  assert.equal(decisions[0][0], 'r1');
+  assert.equal(decisions[0][1], false);
+
+  // Onay yokken aynı guard turu iptal eder.
+  ui.startThinking('devam');
+  assert.equal(ui.handleEscape(), true);
+  assert.equal(aborts, 1);
+});
+
+test('Escape closes an open modal before it can abort an active turn', () => {
+  const dom = transcriptDom();
+  const modal = new dom.Element();
+  modal.id = 'config-modal';
+  modal.className = 'modal-backdrop';
+  dom.elements['config-modal'] = modal;
+  let aborts = 0;
+  const ui = renderer({ abortTurn: () => { aborts++; return Promise.resolve(); } }, dom.elements, dom.document);
+  ui.startThinking('çalışıyor');
+  assert.equal(ui.state.isThinking, true);
+  assert.equal(ui.closeTopmostOverlay(), true);
+  assert.ok(modal.classList.contains('hidden'));
+  assert.equal(aborts, 0);
+  assert.equal(ui.state.isThinking, true);
+  ui.stopThinking();
+});
+
+test('denied and unknown tool results are classified as denied or error, never success', () => {
+  const { toolStatus, isToolDenied, isToolUnknown } = renderer();
+  assert.equal(toolStatus('Tool action denied by user.', 'shell'), 'denied');
+  assert.equal(toolStatus('Araç reddedildi: Bu ajan salt okunur araçlarla sınırlandırılmıştır.', 'shell'), 'denied');
+  assert.equal(toolStatus('Tool denied: policy', 'shell'), 'denied');
+  assert.equal(isToolDenied('Tool action denied by user.'), true);
+  assert.equal(toolStatus('Unknown tool: secret_tool', 'secret_tool'), 'error');
+  assert.equal(toolStatus('Bilinmeyen araç: x', 'x'), 'error');
+  assert.equal(isToolUnknown('Unknown tool: x'), true);
+  assert.equal(toolStatus('done', 'shell'), 'success');
+
+  const dom = transcriptDom();
+  const ui = renderer({}, dom.elements, dom.document);
+  const call = { id: 'denied-tool', name: 'shell', arguments: {} };
+  ui.handleToolStart(call);
+  ui.handleToolEnd(call, 'Tool action denied by user.');
+  ui.stopThinking();
+  const entry = ui.transcriptEntries.find(item => item.kind === 'tool');
+  assert.equal(entry.status, 'denied');
+  assert.match(entry.element.innerHTML, /Reddedildi/);
+  assert.doesNotMatch(entry.element.innerHTML, /Tamamlandı/);
+});
+
+test('workflow compass refreshes on todo_manage tool_end and on autonomous goal status', async () => {
+  const dom = transcriptDom();
+  for (const id of ['goal-objective', 'goal-status-badge', 'goal-notes-list', 'todos-list', 'todos-progress-badge', 'mcp-server-count-tag']) {
+    dom.elements[id] = new dom.Element();
+  }
+  let reads = 0;
+  const ui = renderer({
+    getWorkflowState: async () => { reads++; return { goal: null, todos: [] }; },
+    getSkillsAndMcp: async () => ({ mcpConnections: {} }),
+  }, dom.elements, dom.document);
+
+  ui.handleAgentEvent({ type: 'tool_end', call: { id: 'todo', name: 'todo_manage' }, result: 'ok' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(reads >= 1, 'todo_manage tool_end must refresh the compass');
+  ui.stopThinking();
+
+  const afterTodo = reads;
+  ui.handleAgentEvent({ type: 'tool_end', call: { id: 'read', name: 'file_read' }, result: 'ok' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(reads, afterTodo, 'unrelated tools must not refresh the compass');
+  ui.stopThinking();
+
+  ui.handleAgentEvent({ type: 'status', message: 'Otonom Hedef [Adım 2/4] · Hedef' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(reads > afterTodo, 'goal step status must refresh the compass');
+});
+
+test('an approval request in a hidden window flashes, notifies and marks the taskbar', async () => {
+  const flashes = [], balloons = [], progress = [];
+  let decision;
+  const h = ipcHarness({
+    tray: { displayBalloon: options => balloons.push(options) },
+    loadConnections: async () => ({}), getDesktopMemoryStats: () => ({}),
+    SessionStore: class { async save() {} },
+    runAgent: async input => { decision = await input.approve({ tool: 'shell', arguments: {}, description: 'run' }); return []; },
+  });
+  h.context.mainWindow.isDestroyed = () => false;
+  h.context.mainWindow.isVisible = () => false;
+  h.context.mainWindow.isFocused = () => false;
+  h.context.mainWindow.flashFrame = value => flashes.push(value);
+  h.context.mainWindow.setProgressBar = value => progress.push(value);
+  h.context.mainWindow.webContents.send = (channel, request) => {
+    if (channel === 'agent:approval-request') h.handlers.get('agent:approval-response')(h.event, { requestId: request.requestId, approved: false });
+  };
+
+  const result = await h.handlers.get('agent:start-turn')(h.event, { message: 'hello' });
+  assert.equal(result.ok, true);
+  assert.equal(decision, false);
+  assert.ok(flashes.includes(true), 'a hidden window must flash');
+  assert.ok(balloons.length >= 1, 'a tray balloon must be raised');
+  assert.ok(progress.includes(2), 'the taskbar indicator must turn on');
+  assert.ok(progress.includes(-1), 'the taskbar indicator must clear afterwards');
+});
+
+test('approval policy is exposed from one source and the running turn can be retargeted', async () => {
+  const h = ipcHarness({ getWorkspacePermission: () => 'allow' });
+  const policy = await h.handlers.get('agent:approval-policy')(h.event, { workspace: '/workspace', yolo: false });
+  assert.equal(policy.workspacePermission, 'allow');
+  assert.equal(policy.effectiveAuto, true);
+
+  const h2 = ipcHarness({ getWorkspacePermission: () => 'ask' });
+  const asked = await h2.handlers.get('agent:approval-policy')(h2.event, { workspace: '/workspace', yolo: true });
+  assert.equal(asked.effectiveAuto, true);
+  assert.equal((await h2.handlers.get('agent:approval-policy')(h2.event, { workspace: '/workspace', yolo: false })).effectiveAuto, false);
+  assert.equal(h2.handlers.get('agent:set-turn-policy')(h2.event, { yolo: true }).updated, false);
+});
+
+test('turn responses omit the full history and history is fetched in bounded pages', async () => {
+  const messages = Array.from({ length: 100 }, (_, i) => ({ role: 'user', content: `m${i}` }));
+  const h = ipcHarness({
+    SessionStore: class { async get() { return { id: 'session', workspace: '/workspace', createdAt: 'x', updatedAt: 'x', messages }; } async save() {} },
+    loadConnections: async () => ({}), getDesktopMemoryStats: () => ({}),
+    runAgent: async () => messages,
+  });
+  h.context.mainWindow.isDestroyed = () => false;
+  h.context.mainWindow.webContents.send = () => {};
+
+  const turn = await h.handlers.get('agent:start-turn')(h.event, { sessionId: 'session', message: 'go', yolo: false });
+  assert.equal(turn.ok, true);
+  assert.equal(turn.messages, undefined, 'the full history must not travel in the turn response');
+  assert.equal(turn.messageCount, 100);
+
+  const page = await h.handlers.get('sessions:messages')(h.event, { sessionId: 'session', workspace: '/workspace', offset: -1, limit: 40 });
+  assert.equal(page.total, 100);
+  assert.equal(page.messages.length, 40);
+  assert.equal(page.offset, 60);
+  assert.equal(page.messages[0].content, 'm60');
+  const older = await h.handlers.get('sessions:messages')(h.event, { sessionId: 'session', workspace: '/workspace', offset: 20, limit: 40 });
+  assert.equal(older.offset, 20);
+  assert.equal(older.messages[0].content, 'm20');
+  const clamped = await h.handlers.get('sessions:messages')(h.event, { sessionId: 'session', workspace: '/workspace', limit: 5000 });
+  assert.equal(clamped.limit, 200);
+});
+
+test('mid-turn YOLO retargeting is read live by the approval callback', async () => {
+  const decisions = [];
+  let approvalRequests = 0;
+  const h = ipcHarness({
+    loadConnections: async () => ({}), getDesktopMemoryStats: () => ({}),
+    SessionStore: class { async save() {} },
+    runAgent: async input => {
+      decisions.push(await input.approve({ tool: 'shell', arguments: {}, description: 'ask first' }));
+      h.handlers.get('agent:set-turn-policy')(h.event, { yolo: true });
+      decisions.push(await input.approve({ tool: 'shell', arguments: {}, description: 'now auto' }));
+      return [];
+    },
+  });
+  h.context.mainWindow.isDestroyed = () => false;
+  h.context.mainWindow.webContents.send = (channel, request) => {
+    if (channel === 'agent:approval-request') {
+      approvalRequests++;
+      h.handlers.get('agent:approval-response')(h.event, { requestId: request.requestId, approved: false });
+    }
+  };
+
+  const result = await h.handlers.get('agent:start-turn')(h.event, { message: 'x', yolo: false });
+  assert.equal(result.ok, true);
+  // İlk onay YOLO kapalıyken sorulur; ikincisi canlı politika ile otomatik onaylanır.
+  assert.deepEqual(decisions, [false, true]);
+  assert.equal(approvalRequests, 1);
+});
+
+test('renderer releases user base64 images after the turn and caps transcript entries', async () => {
+  const dom = transcriptDom();
+  const ui = renderer({ startTurn: async () => ({ ok: true, sessionId: 's' }) }, dom.elements, dom.document);
+  const entry = ui.appendUserMessage('with image', [{ mimeType: 'image/png', data: 'YQ==' }]);
+  assert.equal(entry.images.length, 1);
+  ui.releaseUserImages(entry);
+  assert.equal(entry.images.length, 0, 'base64 image data must be released after the turn');
+  assert.equal(ui.sessionHistory.sessionId, null);
+});
+
+
+test('desktop slash commands route plan and ultracode modes to the host', async () => {
+  const calls = [];
+  const dom = transcriptDom();
+  const ui = renderer({
+    startTurn: async payload => { calls.push(payload); return { ok: true, sessionId: 'session-plan', lastAssistantText: 'Plan body' }; },
+    listSessions: async () => [],
+    manageWorkflow: async () => '',
+    getApprovalPolicy: async () => ({ workspacePermission: 'ask' }),
+    getMemoryStats: async () => ({}),
+    getSkillsAndMcp: async () => ({ mcpConnections: {} }),
+  }, dom.elements, dom.document);
+  await ui.handleSlashCommand('/plan fix the parser');
+  assert.equal(calls[0].mode, 'plan');
+  assert.equal(calls[0].message, 'fix the parser');
+  assert.equal(ui.state.pendingPlan, 'Plan body');
+  await ui.handleSlashCommand('/plan apply');
+  assert.equal(calls[1].mode, 'plan-apply');
+  assert.equal(calls[1].plan, 'Plan body');
+  await ui.handleSlashCommand('/ultracode audit the auth boundary');
+  assert.equal(calls[2].mode, 'ultracode');
+  assert.equal(calls[2].message, 'audit the auth boundary');
+  await ui.handleSlashCommand('/subagents inspect the repository');
+  assert.equal(calls[3].mode, 'subagents');
+  assert.equal(calls[3].message, 'inspect the repository');
+});
+
+
+test('desktop loads its command palette and inherited exclusions from the shared host catalog', async () => {
+  const dom = transcriptDom();
+  const palette = new dom.Element();
+  palette.id = 'palette-items';
+  dom.elements['palette-items'] = palette;
+  const ui = renderer({
+    getCommands: async () => ({
+      available: [
+        { name: '/tokens', usage: '/tokens', description: 'Token raporu', argument: 'none' },
+        { name: '/memory', usage: '/memory', description: 'Bellek durumu', argument: 'none' },
+      ],
+      unavailable: [{ name: '/bot', description: 'Telegram' }],
+    }),
+  }, dom.elements, dom.document);
+  await ui.loadCommandMetadata();
+  assert.equal(ui.state.commands.length, 2);
+  assert.equal(ui.state.unavailableCommands[0].name, '/bot');
+  assert.equal(palette.children.length, 2);
+  assert.equal(palette.children[0].attributes['data-cmd'], '/tokens');
+  assert.equal(palette.children[0].children[0].textContent, '/tokens');
+  assert.equal(palette.children[1].children[1].textContent, 'Bellek durumu');
+});
+
+test('sidebar toggles update the grid, panel and aria state without stale clicks', () => {
+  const dom = transcriptDom();
+  const panel = new dom.Element('aside');
+  panel.id = 'sidebar-left';
+  panel.className = 'sidebar sidebar-left';
+  dom.elements['sidebar-left'] = panel;
+  const grid = new dom.Element();
+  grid.className = 'workspace-grid';
+  const toggle = new dom.Element('button');
+  toggle.className = 'quick-btn';
+  toggle.dataset = { toggleSidebar: 'left' };
+  dom.document.querySelector = selector => selector === '.workspace-grid' ? grid : null;
+  dom.document.querySelectorAll = selector => selector.includes('left') ? [toggle] : [];
+  const ui = renderer({}, dom.elements, dom.document);
+  ui.setSidebar('left', true);
+  assert.equal(panel.classList.contains('collapsed'), true);
+  assert.equal(grid.classList.contains('left-collapsed'), true);
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.equal(toggle.classList.contains('is-active'), false);
+  ui.setSidebar('left', false);
+  assert.equal(panel.classList.contains('collapsed'), false);
+  assert.equal(grid.classList.contains('left-collapsed'), false);
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  assert.equal(toggle.classList.contains('is-active'), true);
 });

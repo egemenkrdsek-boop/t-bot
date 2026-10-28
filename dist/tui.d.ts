@@ -27,14 +27,12 @@ export interface EventPrinter {
     stopSpinner: () => void;
     isThinking: () => boolean;
 }
-export declare const TOOL_TITLE_MAP: Record<string, string>;
-export declare function formatToolTitle(toolName: string): string;
 /**
  * Sıfır-Kırpışmalı (DEC ?2026h/?2026l), Sıfır-Taşmalı (truncateAnsi),
  * Görsel Görev Ağacı ve Ultracode Stepper destekli Cyber-Zen EventPrinter.
  */
 export declare function createEventPrinter(options: EventPrinterOptions): EventPrinter;
-/** Print comprehensive help menu with modern cyber-minimalist categories. */
+/** Print the shared CLI command catalog with terminal styling. */
 export declare function printHelp(): void;
 export interface TuiOptions {
     workspace: string;

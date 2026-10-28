@@ -236,7 +236,7 @@ export function createProvider(config: ProviderConfig): Provider {
   if (!base) throw new Error('Özel bir uç nokta gereklidir.');
   safeUrl(base);
   if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model)) return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey!, effort: config.effort, timeoutMs: config.timeoutMs });
-  return { id: spec.id, label: spec.label, async *stream(messages: Message[], tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
+  return { id: spec.id, label: spec.label, model: config.model, async *stream(messages: Message[], tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
     const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]);
     try {
       let url: string; let body: Obj; const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'text/event-stream' };

@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { configDirectory } from './config.js';
 import { windowsSystemExecutable } from './windows-system.js';
+import { childEnvironment } from './security/env.js';
+export { redactSecrets } from './security/redact.js';
 export const secretCache = new Map();
 export class SecretStorageError extends Error {
     code;
@@ -38,7 +41,7 @@ function run(command, args, input = '') {
     const TIMEOUT_MS = 10_000;
     return new Promise((resolve, reject) => {
         let settled = false;
-        const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: childEnvironment() });
         let output = '';
         const timer = setTimeout(() => {
             if (settled)
@@ -71,16 +74,43 @@ function run(command, args, input = '') {
         child.stdin.end(input);
     });
 }
-async function secureDirectory() {
-    const dir = secretDir();
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (process.platform === 'win32') {
-        // Replace inherited and explicit access with a rule for the current user only.
-        const script = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false); $p=[Console]::In.ReadToEnd(); $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.AddAccessRule($r); (New-Object System.IO.DirectoryInfo($p)).SetAccessControl($a)";
-        await run(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], dir);
+function windowsAccount() {
+    const name = process.env.USERNAME || userInfo().username;
+    const domain = process.env.USERDOMAIN;
+    return domain ? `${domain}\\${name}` : name;
+}
+// SID-based ACL fallback used only when icacls is unavailable.
+async function applyPowerShellAcl(dir) {
+    const script = "$ErrorActionPreference='Stop'; [Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false); $p=[Console]::In.ReadToEnd(); $a=New-Object System.Security.AccessControl.DirectorySecurity; $a.SetAccessRuleProtection($true,$false); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $r=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $a.AddAccessRule($r); (New-Object System.IO.DirectoryInfo($p)).SetAccessControl($a)";
+    await run(powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], dir);
+}
+/**
+ * Restrict a data directory to the current user, SYSTEM and Administrators.
+ * Windows uses icacls with inheritance removed; Unix uses mode 0700.
+ */
+export async function secureDataDirectory(directory) {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') {
+        await chmod(directory, 0o700);
+        return;
     }
-    else
-        await chmod(dir, 0o700);
+    const root = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows';
+    if (!/^(?:[a-z]:[\\/]|\\\\)/i.test(root))
+        throw new SecretStorageError('security');
+    const icacls = join(root, 'System32', 'icacls.exe');
+    try {
+        await run(icacls, [directory, '/inheritance:r', '/grant:r',
+            `${windowsAccount()}:(OI)(CI)F`, 'SYSTEM:(OI)(CI)F', 'Administrators:(OI)(CI)F']);
+    }
+    catch {
+        await applyPowerShellAcl(directory);
+    }
+}
+async function secureDirectory() {
+    await secureDataDirectory(secretDir());
+    // Harden the surrounding T Bot config and session directories too.
+    await secureDataDirectory(configDirectory()).catch(() => undefined);
+    await secureDataDirectory(join(configDirectory(), 'sessions')).catch(() => undefined);
 }
 async function dpapi(input, decrypt) {
     const action = decrypt ? 'Unprotect' : 'Protect';

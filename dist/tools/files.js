@@ -8,6 +8,8 @@ import { globalContextCache } from '../context-cache.js';
 import { estimateTokens, globalTokenTracker } from '../token-optimizer.js';
 import { handleShellTool } from './shell.js';
 import { applyEdit } from './edit-match.js';
+import { assertNotSensitivePath, isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
+import { redactSecrets } from '../secrets.js';
 const string = (args, key) => {
     const value = args[key];
     if (typeof value !== 'string' || !value)
@@ -116,45 +118,9 @@ export const fileToolDefinitions = [
     },
 ];
 const LIMIT = 100_000;
-function inside(root, target) {
-    const normRoot = process.platform === 'win32' ? root.toLowerCase() : root;
-    const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
-    const relative = path.relative(normRoot, normTarget);
-    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
 /** Reject symlinks, including existing ancestors. These checks are not atomic against a concurrent filesystem actor. */
 async function resolveSafe(workspace, input) {
-    if (input.includes('\0'))
-        throw new Error('Path must not contain null bytes');
-    const root = await fs.realpath(workspace);
-    let target;
-    if (path.isAbsolute(input) || /^[a-zA-Z]:/.test(input)) {
-        const candidate = path.resolve(input);
-        if (!inside(root, candidate)) {
-            throw new Error('Path escapes workspace');
-        }
-        target = candidate;
-    }
-    else {
-        target = path.resolve(root, input);
-        if (!inside(root, target))
-            throw new Error('Path escapes workspace');
-    }
-    let current = root;
-    const relPath = path.relative(root, target);
-    for (const part of relPath.split(path.sep).filter(Boolean)) {
-        current = path.join(current, part);
-        try {
-            if ((await fs.lstat(current)).isSymbolicLink())
-                throw new Error('Symbolic links are not allowed');
-        }
-        catch (e) {
-            if (e.code === 'ENOENT')
-                break;
-            throw e;
-        }
-    }
-    return target;
+    return resolveWorkspacePath(workspace, input);
 }
 async function atomicWrite(target, content, workspace, input, signal, expected) {
     if (content.includes('\0') || Buffer.from(content, 'utf8').toString('utf8') !== content) {
@@ -324,7 +290,9 @@ export async function handleFileTool(name, args, workspace, signal) {
         }
         if (!output.startsWith('[İKİLİ DOSYA ENGELİ'))
             globalGroundingLedger.recordFileRevision(target, before, workspace);
-        return output;
+        // Reading a protected file is allowed only after approval (enforced by the
+        // tool dispatcher), and secret-looking values are masked here.
+        return isSensitivePath(target) ? redactSecrets(output) : output;
     });
 }
 async function handleFileToolInTransaction(name, args, workspace, signal) {
@@ -519,6 +487,7 @@ async function handleFileToolInTransaction(name, args, workspace, signal) {
         });
     }
     if (name === 'file_write') {
+        assertNotSensitivePath(target, { operation: 'write' });
         if (typeof args.content !== 'string')
             throw new Error('content must be a string');
         if (Buffer.byteLength(args.content) > 1_000_000)
@@ -576,6 +545,7 @@ async function handleFileToolInTransaction(name, args, workspace, signal) {
         return msg;
     }
     if (name === 'file_patch') {
+        assertNotSensitivePath(target, { operation: 'write' });
         const patches = [];
         if (Array.isArray(args.patches) && args.patches.length > 0) {
             if (args.patches.length > 32)

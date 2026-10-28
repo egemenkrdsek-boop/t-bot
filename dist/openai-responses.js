@@ -2,7 +2,7 @@ import { describeEffort } from './effort.js';
 import { sse } from './providers.js';
 /** Stateless Responses API adapter for models that require it for function calls. */
 export function createOpenAIResponsesProvider(config) {
-    return { id: 'openai', label: 'OpenAI', async *stream(messages, tools, options = {}) {
+    return { id: 'openai', label: 'OpenAI', model: config.model, async *stream(messages, tools, options = {}) {
             const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]) : AbortSignal.timeout(config.timeoutMs ?? 120_000);
             try {
                 const input = [];

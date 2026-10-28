@@ -55,6 +55,8 @@ export interface ProviderStreamOptions {
 export interface Provider {
     id: string;
     label: string;
+    /** Model identifier, when the adapter knows it. Used for local budget profiles. */
+    model?: string;
     stream(messages: Message[], tools: ToolDefinition[], options?: ProviderStreamOptions): AsyncIterable<ProviderEvent>;
 }
 export interface ApprovalRequest {
@@ -117,6 +119,7 @@ export interface TokenSavingsReport {
     totalCachedTokens: number;
     totalPrunedSchemaTokens: number;
     totalCompressedHistoryTokens: number;
+    totalContextCacheSavedTokens?: number;
     totalSavedTokens: number;
     savingsPercent: number;
     turnsCount: number;

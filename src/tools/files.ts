@@ -9,6 +9,8 @@ import { globalContextCache } from '../context-cache.js';
 import { estimateTokens, globalTokenTracker } from '../token-optimizer.js';
 import { handleShellTool } from './shell.js';
 import { applyEdit } from './edit-match.js';
+import { assertNotSensitivePath, isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
+import { redactSecrets } from '../secrets.js';
 
 const string = (args: Record<string, unknown>, key: string): string => {
   const value = args[key];
@@ -135,42 +137,9 @@ export const fileToolDefinitions: ToolDefinition[] = [
 
 const LIMIT = 100_000;
 
-function inside(root: string, target: string): boolean {
-  const normRoot = process.platform === 'win32' ? root.toLowerCase() : root;
-  const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
-  const relative = path.relative(normRoot, normTarget);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
-
 /** Reject symlinks, including existing ancestors. These checks are not atomic against a concurrent filesystem actor. */
 async function resolveSafe(workspace: string, input: string): Promise<string> {
-  if (input.includes('\0')) throw new Error('Path must not contain null bytes');
-  const root = await fs.realpath(workspace);
-  let target: string;
-
-  if (path.isAbsolute(input) || /^[a-zA-Z]:/.test(input)) {
-    const candidate = path.resolve(input);
-    if (!inside(root, candidate)) {
-      throw new Error('Path escapes workspace');
-    }
-    target = candidate;
-  } else {
-    target = path.resolve(root, input);
-    if (!inside(root, target)) throw new Error('Path escapes workspace');
-  }
-
-  let current = root;
-  const relPath = path.relative(root, target);
-  for (const part of relPath.split(path.sep).filter(Boolean)) {
-    current = path.join(current, part);
-    try {
-      if ((await fs.lstat(current)).isSymbolicLink()) throw new Error('Symbolic links are not allowed');
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') break;
-      throw e;
-    }
-  }
-  return target;
+  return resolveWorkspacePath(workspace, input);
 }
 
 async function atomicWrite(target: string, content: string, workspace: string, input: string, signal: AbortSignal | undefined, expected: string | null): Promise<void> {
@@ -340,7 +309,9 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       throw new Error('File changed during inspection; read the file again');
     }
     if (!output.startsWith('[İKİLİ DOSYA ENGELİ')) globalGroundingLedger.recordFileRevision(target, before, workspace);
-    return output;
+    // Reading a protected file is allowed only after approval (enforced by the
+    // tool dispatcher), and secret-looking values are masked here.
+    return isSensitivePath(target) ? redactSecrets(output) : output;
   });
 }
 
@@ -541,6 +512,7 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
   }
 
   if (name === 'file_write') {
+    assertNotSensitivePath(target, { operation: 'write' });
     if (typeof args.content !== 'string') throw new Error('content must be a string');
     if (Buffer.byteLength(args.content) > 1_000_000) throw new Error('Content exceeds 1 MB');
 
@@ -603,6 +575,7 @@ async function handleFileToolInTransaction(name: string, args: Record<string, un
   }
 
   if (name === 'file_patch') {
+    assertNotSensitivePath(target, { operation: 'write' });
     const patches: Array<{ old_text: string; new_text: string }> = [];
     if (Array.isArray(args.patches) && args.patches.length > 0) {
       if (args.patches.length > 32) throw new Error('A patch batch may contain at most 32 hunks');

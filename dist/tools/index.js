@@ -1,5 +1,8 @@
 import { fileToolDefinitions, handleFileTool } from './files.js';
-import { shellToolDefinitions, handleShellTool } from './shell.js';
+import { shellToolDefinitions, handleShellTool, SHELL_EXIT_MARKER } from './shell.js';
+import { artifactToolDefinitions, handleArtifactTool } from './artifacts.js';
+import { verifyToolDefinitions, handleVerifyTool } from './verify.js';
+import { isSensitivePath, resolveWorkspacePath } from '../security/paths.js';
 import { browserToolDefinitions, handleBrowserTool } from './browser.js';
 import { computerToolDefinitions, handleComputerTool } from './computer.js';
 import { gitToolDefinitions, handleGitTool } from './git.js';
@@ -27,14 +30,20 @@ export function isToolResultOk(name, output) {
     if (trimmed.startsWith('{') && /"ok"\s*:\s*false/.test(trimmed)) {
         return false;
     }
-    if (name === 'shell') {
+    if (name === 'shell' || name === 'run_command' || name === 'execute_command') {
         if (output.includes('Timed out') || output.includes('Aborted')) {
             return false;
         }
-        const exitMatch = output.match(/Exit code:\s*(\d+)/i);
-        if (exitMatch && Number(exitMatch[1]) !== 0) {
-            return false;
-        }
+        // The unique marker is appended last, so it is authoritative. Fall back to
+        // the LAST "Exit code:" line, never the first.
+        const markers = [...output.matchAll(new RegExp(`\\[${SHELL_EXIT_MARKER}:\\s*(-?\\d+|signal)\\]`, 'gi'))];
+        const lastMarker = markers.length ? markers[markers.length - 1][1].trim() : undefined;
+        if (lastMarker !== undefined)
+            return lastMarker === '0';
+        const exits = [...output.matchAll(/Exit code:\s*(-?\d+)/gi)];
+        const lastExit = exits.length ? exits[exits.length - 1][1] : undefined;
+        if (lastExit !== undefined)
+            return Number(lastExit) === 0;
         if (/Exit code:\s*(?:-\d+|signal\b)/i.test(output)) {
             return false;
         }
@@ -211,6 +220,8 @@ function buildLocalToolDefinitions() {
     const all = [
         ...fileToolDefinitions,
         ...shellToolDefinitions,
+        ...artifactToolDefinitions,
+        ...verifyToolDefinitions,
         ...browserToolDefinitions,
         ...computerToolDefinitions,
         ...gitToolDefinitions,
@@ -272,6 +283,7 @@ export const READ_ONLY_TOOLS = new Set([
     'file_glob',
     'file_search',
     'file_outline',
+    'artifact_read',
     'git_status',
     'git_diff',
     'git_log',
@@ -281,7 +293,6 @@ export const READ_ONLY_TOOLS = new Set([
     'skill_list',
     'delegate_task',
     'web_search',
-    'url_fetch',
 ]);
 export function getToolDefinitions(connectionsOrPolicy, policy = 'all') {
     let connections;
@@ -321,6 +332,9 @@ function redact(value) {
     }
     return value;
 }
+const FILE_READ_PATH_TOOLS = new Set(['file_read', 'file_outline', 'file_list', 'file_glob', 'file_search']);
+const FILE_WRITE_PATH_TOOLS = new Set(['file_write', 'file_patch']);
+const TERMINAL_TARGET = /terminal|console|command prompt|cmd(?:\.exe)?\b|powershell|pwsh|bash|wsl|shell/i;
 export const APPROVAL_REQUIRED_TOOLS = [
     'shell',
     'file_write',
@@ -332,6 +346,8 @@ export const APPROVAL_REQUIRED_TOOLS = [
     'git_commit',
     'git_branch',
     'git_push',
+    'url_fetch',
+    'project_verify',
 ];
 let activeKillSwitchCallback = null;
 export function registerGuiKillSwitch(cb) {
@@ -392,24 +408,54 @@ export async function executeTool(call, context) {
             globalGroundingLedger.recordToolResult(toolName, args, err, false);
             return err;
         }
+        // Protected-path policy: reads need approval, writes are refused outright.
+        let sensitiveReadPath;
+        if (typeof actualArgs.path === 'string' && (FILE_READ_PATH_TOOLS.has(toolName) || FILE_WRITE_PATH_TOOLS.has(toolName))) {
+            try {
+                const resolved = await resolveWorkspacePath(context.workspace, actualArgs.path);
+                if (FILE_WRITE_PATH_TOOLS.has(toolName) && isSensitivePath(resolved)) {
+                    const err = `Tool error: Refusing to write to a protected path: ${actualArgs.path}`;
+                    globalGroundingLedger.recordToolResult(toolName, args, err, false);
+                    return err;
+                }
+                if (FILE_READ_PATH_TOOLS.has(toolName) && isSensitivePath(resolved))
+                    sensitiveReadPath = resolved;
+            }
+            catch { /* Path resolution errors are surfaced by the tool handler. */ }
+        }
         const isGuiTool = actualCall.name === 'computer' || actualCall.name.startsWith('browser_');
         // GUI access can submit forms, send messages and operate terminals. Default
         // to the same approval boundary as shell; trusted/YOLO callers may approve.
         const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL !== 'false';
-        const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) || (isGuiTool && requireGuiApproval);
+        const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
+            (isGuiTool && requireGuiApproval) || sensitiveReadPath !== undefined;
         if (isApprovalRequired) {
             const description = remote
                 ? `Allow remote MCP tool ${actualCall.name} with the supplied arguments.`
                 : actualCall.name === 'shell'
                     ? 'Run this shell command with your user permissions; it can modify or delete files and access resources outside the workspace.'
-                    : actualCall.name === 'skill_create'
-                        ? `Save ${actualArgs.scope === 'global' ? 'global instructions for future tasks across workspaces' : 'project instructions for future tasks'}; review the complete skill content before approving.`
-                        : `Allow ${actualCall.name} with the supplied arguments.`;
+                    : actualCall.name === 'url_fetch'
+                        ? `Download this URL from the public internet: ${String(actualArgs.url ?? actualArgs.target_url ?? '').slice(0, 2000)}`
+                        : actualCall.name === 'project_verify'
+                            ? `Run the project's declared verification scripts: ${Array.isArray(actualArgs.commands) ? actualArgs.commands.join(', ') : 'typecheck/check/lint/test (auto-detected)'}. The scripts execute with your user permissions.`
+                            : actualCall.name === 'skill_create'
+                                ? `Save ${actualArgs.scope === 'global' ? 'global instructions for future tasks across workspaces' : 'project instructions for future tasks'}; review the complete skill content before approving.`
+                                : sensitiveReadPath !== undefined
+                                    ? `Read the protected file "${String(actualArgs.path)}"; it may contain credentials or private keys.`
+                                    : `Allow ${actualCall.name} with the supplied arguments.`;
+            // Show the actual text that will be typed (truncated, never masked) so the
+            // user can review what will be submitted.
             const approvalArgs = remote
                 ? redact(actualArgs)
                 : actualCall.name === 'computer' && 'text' in actualArgs
-                    ? { ...actualArgs, text: '[redacted]' }
-                    : actualArgs;
+                    ? { ...actualArgs, text: String(actualArgs.text).slice(0, 2000) }
+                    : { ...actualArgs };
+            // Typing into a terminal (or submitting with Enter) is a second, higher
+            // risk action; the renderer can require an extra confirmation for it.
+            if (actualCall.name === 'computer' &&
+                (actualArgs.press_enter === true || TERMINAL_TARGET.test(String(actualArgs.target ?? actualArgs.handle ?? '')))) {
+                approvalArgs.requires_second_approval = true;
+            }
             if (!await context.approve({ tool: actualCall.name, description, arguments: approvalArgs })) {
                 const denied = 'Tool action denied by user.';
                 globalGroundingLedger.recordToolResult(toolName, args, denied, false);
@@ -456,6 +502,12 @@ export async function executeTool(call, context) {
         }
         else if (toolName === 'web_search' || toolName === 'url_fetch') {
             output = `[Untrusted web content]\n${await executeWebTool(toolName, actualArgs, context.signal)}`;
+        }
+        else if (toolName === 'artifact_read') {
+            output = await handleArtifactTool(toolName, actualArgs, context.workspace);
+        }
+        else if (toolName === 'project_verify') {
+            output = await handleVerifyTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
         }
         else if (toolName === 'todo_manage' || toolName === 'goal_manage') {
             output = await executeWorkflowTool(toolName, actualArgs, context.workspace);

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { shellEnvironment } from './shell.js';
+import { childEnvironment } from '../security/env.js';
 export const gitToolDefinitions = [
     {
         name: 'git_status',
@@ -108,12 +108,13 @@ export async function resolveGitExecutable(workspace, source = process.env) {
 }
 function runGit(executable, cwd, args, signal) {
     signal?.throwIfAborted();
-    const env = shellEnvironment();
+    const env = childEnvironment();
     for (const key of Object.keys(env))
         if (key.toUpperCase().startsWith('GIT_'))
             delete env[key];
     return new Promise((resolvePromise, reject) => {
-        execFile(executable, ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=false', ...args], {
+        // `-c core.hooksPath=` disables repository hooks for every invocation.
+        execFile(executable, ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=false', ...args], {
             cwd, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true, signal,
             env: { ...env, GIT_PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', GIT_EXTERNAL_DIFF: '', GIT_CONFIG_NOSYSTEM: '1' },
         }, (error, stdout, stderr) => {
@@ -134,6 +135,12 @@ export async function handleGitTool(name, args, context) {
     const inside = relative(root, workspace);
     if (isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`))
         throw new Error('Workspace is outside the Git repository');
+    const atRepoRoot = inside === '';
+    const insideWorkspace = (value) => {
+        const resolved = resolve(workspace, value);
+        const rel = relative(workspace, resolved);
+        return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+    };
     if (name === 'git_status') {
         return run(['status', '--porcelain=v1', '--no-renames', '--untracked-files=normal', '--', '.']);
     }
@@ -154,7 +161,10 @@ export async function handleGitTool(name, args, context) {
         for (const p of rawPaths) {
             if (typeof p !== 'string' || !p.trim())
                 throw new Error('paths elements must be non-empty strings');
-            paths.push(p.trim());
+            const value = p.trim();
+            if (!insideWorkspace(value))
+                throw new Error('Refusing to stage a path outside the workspace');
+            paths.push(value);
         }
         const output = await run(['add', '--', ...paths]);
         return output.trim() === '(no output)' || !output.trim() ? 'Files staged successfully.' : output;
@@ -164,7 +174,12 @@ export async function handleGitTool(name, args, context) {
             throw new Error('message must be a non-empty string');
         if (args.all !== undefined && typeof args.all !== 'boolean')
             throw new Error('all must be a boolean');
-        const commitArgs = ['commit', ...(args.all ? ['-a'] : []), '-m', args.message.trim()];
+        // `-a` would stage tracked files anywhere in the repository; only allow it
+        // when the workspace is the repository root. Always scope to the workspace.
+        if (args.all && !atRepoRoot) {
+            throw new Error('git_commit "all" is not allowed outside the repository root; stage explicit paths first');
+        }
+        const commitArgs = ['commit', ...(args.all ? ['-a'] : []), '-m', args.message.trim(), '--', '.'];
         return run(commitArgs);
     }
     if (name === 'git_branch') {

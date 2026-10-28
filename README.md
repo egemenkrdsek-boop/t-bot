@@ -1,12 +1,19 @@
-![T Bot Logosu](assets/tabit.webp)
+![T Bot logosu](assets/tabit.webp)
 
-# T Bot 2.2.1
+# T Bot 3.1
 
-T Bot; terminalden veya Windows masaüstü uygulamasından kullanılan yerel bir yapay zekâ ajanıdır. Kod ve dosya araçları, sağlayıcı bağlantıları, Windows masaüstü kontrolü, Playwright tarayıcısı ve Telegram ağ geçidi içerir. Gemini, OpenAI, Anthropic, OpenRouter ve uyumlu yerel model sunucularıyla yapılandırılabilir.
+T Bot, terminalden veya Windows masaüstü uygulamasından kullanılan **yerel** bir yapay zekâ kodlama ajanıdır. Aynı çekirdek; CLI/TUI, Electron masaüstü ve Telegram girişlerinden çalışır. Ayrı bir bulut backend'i yoktur; model çağrıları, tarayıcı, MCP ve Telegram gibi dış bağlantılar kullanıcı tarafından yapılandırılır.
 
-## Tek komutla CLI kurulumu / güncelleme
+3.1'in odağı dört başlıktır:
 
-Önce **Node.js >=22.12.0, npm ve Git** kurulu olmalıdır. Komutlar GitHub `main` dalını indirir ve derler; internet erişimi ve npm global dizinine yazma izni gerekir. İndirdiğiniz betiğin içeriğini çalıştırmadan önce inceleyebilirsiniz.
+- **Odaklı ajan:** görev sözleşmesi, faz sırası, cerrahi okuma/yama ve gerçek doğrulama.
+- **Token ekonomisi:** büyük araç çıktıları yerel artifact'lara taşınır; bağlam model profiline göre bütçelenir; prompt önbelleği korunur.
+- **Sade arayüz:** OpenCode'un terminal estetiğinden ilham alan, tek vurgu rengi, monospace kod, düşük gürültü ve klavye öncelikli masaüstü/TUI.
+- **Tek komut ve sınır katmanı:** CLI/TUI ve masaüstü aynı komut kataloğunu kullanır; kullanıcının açık “dokunma/çalıştırma” sınırları oturum boyunca saklanır ve araç çalışmadan önce uygulanır.
+
+## Kurulum
+
+Önce **Node.js >=22.12.0, npm ve Git** kurulu olmalıdır.
 
 Windows PowerShell:
 
@@ -20,13 +27,21 @@ Linux / macOS:
 sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, kaynak sürümünü ve yardımını doğrular, ardından hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz; global kurulum aşamasındaki disk/izin hataları için otomatik rollback garantisi yoktur. Kurulan sürüm de kaynak sürümüyle karşılaştırılır. Windows kullanıcı PATH'ini günceller; Unix betiği gerekiyorsa shell profilinizde eklemeniz gereken dizini gösterir. Aynı komutu tekrar çalıştırarak güncelleyebilirsiniz. Bunlar Windows masaüstü yükleyicisini kurmaz. Doğrudan `npm install -g git+...` yolu npm 11 global Git hazırlığında başarısız olduğu için desteklenen kurulum yolu değildir.
+Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, sürüm/yardım kontrolü yapar ve hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz. Kurulumdan sonra:
 
-Tekrarlanabilir kurulum ve CI için host ortamında `TBOT_INSTALL_REVISION` tam 40 karakterli commit SHA'sına ayarlanabilir; betik aynı upstream'den yalnız bu commit'i seçip HEAD eşitliğini denetler. Ayar yoksa `main` kullanılır; branch/tag veya bayrak kabul edilmez. Ayrıntılar [kurulum belgesinde](docs/install.md).
+```text
+tbot config                 Sağlayıcı ve API anahtarını yapılandır
+tbot providers              Sağlayıcıları listele
+tbot doctor                 Ortamı denetle
+tbot -w <dizin>             Çalışma alanı seç
+tbot "isteğiniz"            Tek istek çalıştır
+tbot --help                 Seçenekleri göster
+tbot --version              Sürümü göster
+```
 
 ## Windows masaüstü uygulaması
 
-Dağıtılmış bir yükleyici varsa [Releases](https://github.com/egemenkrdsek-boop/t-bot/releases) sayfasındaki sürümü ve dosyayı kontrol edin. Kaynaktan **Windows x64** yükleyicisi oluşturmak ve yerelde kurmak için PowerShell'de:
+Kaynaktan Windows x64 yükleyicisi üretmek için:
 
 ```powershell
 git clone https://github.com/egemenkrdsek-boop/t-bot.git
@@ -36,27 +51,62 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-Bu akış Electron ve NSIS derleme araçlarını indirir. `release/T-Bot-Setup-2.2.1.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler; böylece aynı sürüm numaralı eski bir kurulum başarı sayılmaz. Manifest ve yükleyiciyi birlikte saklayın. Mevcut uygulamayı kapatır; açık çalışmalarınızı kaydedin. Geliştirme için `npm run desktop` kullanın. CLI kurulumu Electron indirmesini atladıysa önce `node node_modules/electron/install.js` çalıştırın.
+Bu akış `release/T-Bot-Setup-3.1.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler. Manifest ve yükleyiciyi birlikte saklayın. Yayımlama işlemi bu deponun sorumluluğunda değildir.
 
-## Başlangıç
+Geliştirme için:
 
-```text
-tbot config                    Sağlayıcı ve API anahtarını yapılandır
-tbot providers                 Sağlayıcıları listele
-tbot doctor                    Ortamı denetle
-tbot -w <dizin>                 Çalışma alanı seç
-tbot "isteğiniz"                Tek istek çalıştır
-tbot --help                    Geçerli seçenekleri göster
-tbot --version                 Kurulu sürümü göster
+```powershell
+npm run desktop
 ```
 
-Etkileşimli oturumda `/help` komutuyla güncel komutları görün. Dosya okuma/yazma/yama, sembol arama, kabuk ve süreç yönetimi, Git, hedefler, bellek, beceriler ve alt ajan araçları bulunur. `/ultracode`, `/goal`, `/tokens`, `/gui`, `/mcp` gibi komutların kullanılabilirliği ve etkisi yapılandırmaya bağlıdır.
+## 3.1 ile gelenler
 
-Tarayıcı araçları Google Chrome'u veya Playwright ile uyumlu bir Chromium kurulumunu gerektirir. Windows masaüstü araçları etkileşimli Windows oturumu ister; Linux/macOS için aynı masaüstü kontrolü vaat edilmez. Model hizmetleri ve Telegram internet bağlantısı gerektirir; bulut sağlayıcısı kullanıldığında gönderilen içerik o sağlayıcıya gider. Yerel çalıştırma, tüm verilerin cihazda kaldığı anlamına gelmez.
+### Ajan çekirdeği
+
+- Görev sözleşmesi ve üç veya daha fazla adımlı işlerde plan/todo disiplini.
+- `locate → plan → act → verify → report` fazları; her fazda yalnızca uygun araçlar.
+- `project_verify`: `package.json` içinde tanımlı `typecheck`, `lint`, `check` veya `test` script'lerini onayla çalıştırır; keyfi komut kabul etmez.
+- Okuma-sonrası-yazma, revizyon kontrolü, atomik yama ve hata sonrası alternatif yaklaşım.
+- Kullanıcının açık sınırları (`README.md` dosyasına dokunma, `npm test` çalıştırma, yalnızca belirli bir dosyayı değiştirme) oturum boyunca saklanır; araç onaya gitmeden önce yerel olarak reddedilir. Sınırlar yalnızca açık ifadelerden çıkarılır; “testleri unutma” gibi cümleler yanlış yorumlanmaz.
+- CLI/TUI, masaüstü ve Telegram aynı komut kataloğunu kullanır; `/effort`, `/skills`, `/sessions`, `/resume`, `/imagegen`, `/gui`, `/mcp` ve `/bot` masaüstünde de çalışır. Desteklenmeyen komut sessizce yok sayılmaz, açıkça bildirilir.
+- Görsel sağlayıcı, model kataloğu ve API anahtarı doğrulaması `host-services.ts` üzerinden iki yüzeyde ortaktır; özel uç nokta model listesi base URL'i korur.
+- Küçük modeller için tek araç/tek adım modu, daraltılmış şema seti ve daha kısa bağlam bütçesi.
+
+### Token ve bağlam
+
+- 6 KB üzerindeki araç çıktıları `.tbot/artifacts/` altında saklanır; modele özet + `artifact_read` kimliği döner. Aynı içerik tekrar üretilirse aynı artifact kimliği kullanılır; disk ve bağlam şişmez.
+- `context-budget.ts` model ailesine göre yerel geçmiş bütçesi, tur ve araç limitleri belirler.
+- Sistem prompt'u İngilizce ve kararlı; yanıt dili kullanıcının diliyle eşleşir.
+- Prompt sırası önbellek dostudur: güvenlik → görev → beceriler → repo haritası → bellek → odak.
+- Sağlayıcı `usage` değeri ile yerel tahmin ayrı raporlanır; tasarruf iddiası ölçümsüz sunulmaz.
+
+### Arayüz
+
+- Masaüstü: sade üç bölge (oturumlar, transcript, inspector), tek Tabit yeşili vurgu, emoji yok.
+- `Run Spine`: gerçek araç olaylarından türetilen `Keşif → Plan → Uygulama → Doğrulama` düğümleri; aktif faz görünür.
+- Masaüstü ve CLI'da `/plan`, `/plan apply`, `/ultracode` ve `/subagents` akışları; `/tokens`, `/memory`, `/remember`, `/forget` ve `/doctor` iki yüzeyde de çalışır.
+- Browser Use, Computer Use ve arka plan geliştirme sunucuları için araç yönergeleri.
+- Kapalı araç kartlarında DOM üretilmez; büyük geçmiş 40 kayıtla sınırlıdır.
+- Komut paleti `Ctrl+K`; `Esc` durdur; `Enter` gönder.
+- Animasyonlar yalnızca opacity/transform ve 120–160 ms; `prefers-reduced-motion` tümünü kapatır.
+- TUI paleti aynı grafit/Tabit yeşili dile taşındı.
+
+### Güvenlik
+
+- Gizli anahtarlar Windows'ta DPAPI + kullanıcıya özel ACL ile saklanır; alt süreç ortamından sır adları çıkarılır.
+- Açık kullanıcı sınırları model talimatından bağımsız olarak araç çağrısı katmanında uygulanır; kabuk üzerinden korunan bir dosyaya yazma denemesi de reddedilir. Bu, eksiksiz bir OS sandbox değildir.
+- Kabuk, dosya yazma, GUI, URL indirme ve doğrulama komutları varsayılan olarak onay ister.
+- Hassas yollar okumada onaya, yazmada redde tabidir.
+- Web/MCP/tool içeriği güvenilmeyen kanıt olarak işaretlenir; prompt injection için kesin garanti değildir.
+- Kabuk gerçek kullanıcı izinleriyle çalışır. OS sandbox yoktur; süreç ağacı, ortam filtresi ve onay sınırı uygulanır.
+
+## Sağlayıcılar
+
+Gemini, OpenAI (Chat Completions ve Responses), Anthropic, OpenRouter, Groq, DeepSeek, xAI, Mistral, Ollama, LM Studio ve OpenAI uyumlu özel uç noktalar desteklenir. Model listesi sağlayıcıdan canlı alınır; çevrimdışıysa yerel fallback kullanılır.
 
 ## Telegram
 
-BotFather'dan aldığınız tokenı ve izin verilen sohbet kimliklerini yapılandırın; ardından `tbot --bot` çalıştırın. PowerShell örneği:
+BotFather'dan aldığınız tokenı ve izin verilen sohbet kimliklerini yapılandırın:
 
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = '<bot-token>'
@@ -64,16 +114,19 @@ $env:TELEGRAM_ALLOWED_CHATS = '<chat-id>'
 tbot --bot
 ```
 
-Ağ geçidi yerel makineden long polling yapar; makine ve T Bot açık kalmalıdır. Bot tokenınızı paylaşmayın. Araç onayları ve yetkilendirme ayarlarını ihtiyacınıza göre inceleyin. `--yolo` otomatik onay verdiği için yalnızca güvendiğiniz görevlerde kullanın.
+İlk eşleştirme için yerel terminalde tek kullanımlık `/pair <32-karakter hex kod>` gösterilir. Kod 10 dakika geçerlidir ve toplam 10 deneme hakkı vardır. Yetkili grup sohbetindeki tüm üyeler ortak yetkiyi paylaşır.
 
-İzin verilen chat listesi boşsa ilk bağlantı için yerel terminalde `/pair <32-karakter hex kod>` gösterilir. Bu tek kullanımlık kod 10 dakika geçerlidir ve tüm chatler için toplam 10 denemeye izin verir. Kodu yalnızca yetkilendireceğiniz chat'e gönderin. Süre veya deneme sınırı dolarsa ağ geçidini yerelden durdurup yeniden başlatın; uzaktan yeni kod üretilemez. Allowlist önceden yapılandırılmışsa eşleştirme açılmaz. Yetkili grup chat'indeki üyeler ortak chat yetkisini paylaşır.
+## Doğrulama ve sınırlar
 
-## Doğruluk ve performans sınırları
+- Testler birim/bileşen ve kaydedilmiş protokol fixture'larıdır; E2E, canlı sağlayıcı, gerçek tarayıcı veya gerçek Telegram akışı çalıştırılmaz.
+- 3.1 kaynak doğrulaması: **224 test, 0 hata/atlama**, typecheck ve build başarılı. Ayrıntılar [doğrulama kaydında](docs/verification.md).
+- “Dünya #1” veya rakiplere göre %50–75 tasarruf iddiası bu depoda bağımsız benchmark olmadan kanıtlanmış sayılmaz. Ölçülebilir hedef, aynı fixture setinde 2.2.1'e göre daha az bağlam göndermektir.
+- TypeScript/JavaScript ve JSON kontrolleri tüm diller için doğrulama garantisi değildir.
+- Gizli anahtar redaksiyonu sezgiseldir; bilinmeyen biçimleri yakalama garantisi yoktur.
+- Windows dışı masaüstü kontrolü vaat edilmez.
 
-Diferansiyel dosya okuma, bağlam sıkıştırma ve araç şeması seçimi tekrarlanan bağlamı azaltmayı amaçlar. Token tasarrufu görev, model ve önbellek kullanımına bağlıdır; ölçülmüş genel bir %50–%75 tasarruf veya dünya sıralaması iddiası yoktur. Yerel tasarruf tahminleri sağlayıcının fatura ölçümü değildir.
+## Üçüncü taraf bileşenler
 
-Dosya erişimi ve sözdizimi kontrolleri bazı hataları erken yakalayabilir. Bunlar model yanılgılarını, çalışma zamanı hatalarını veya yanlış kodu ortadan kaldırmaz; gerçek derleme/test sonuçlarıyla birlikte değerlendirin. TypeScript/JavaScript ve JSON denetimleri tüm diller için doğrulama garantisi sağlamaz. Bellek izleme de tüm bellek sızıntılarını önleme garantisi vermez.
+OpenCode'un sabit commit'ten uyarlanmış Unicode düzenleme eşleştirme/satır sonu koruma yordamları ve Hermes Agent'ın token bütçesine göre bağlam penceresi planlaması kullanılır. Bunlar MIT lisanslı bileşen uyarlamalarıdır; upstream çalışma zamanının tamamı veya fork geçmişi taşınmaz. Kaynaklar, commit'ler ve lisans metinleri [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) ve [THIRD_PARTY_DEPENDENCIES.md](THIRD_PARTY_DEPENDENCIES.md) dosyalarındadır.
 
-2.1.0 ile eklenen ve 2.2.1 içinde korunan, sabit commitlerden uyarlanmış iki MIT bileşeni vardır: OpenCode'un Unicode düzenleme eşleştirme/satır sonu koruma yordamları ve Hermes Agent'ın token bütçesine göre bağlam penceresi planlaması. T Bot bu bileşenleri kendi dosya araçlarına ve ajanına bağlar; tüm upstream çalışma zamanını, bağımlılıklarını veya fork geçmişini içerdiğini iddia etmez. Kesin kaynaklar, uyarlama farkları ve tam lisans metinleri [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) dosyasındadır. Kaynak kodunun eksiksiz köken denetimi yapılmış sayılmaz; 2.2.1 test/paket/yayın durumu [doğrulama kaydında](docs/verification.md) tutulur.
-
-Ayrıntılar: [Mimari](docs/architecture.md), [Kurulum](docs/install.md), [Doğrulama kapsamı](docs/verification.md), [MIT lisansı](LICENSE).
+Ayrıntılar: [Mimari](docs/architecture.md), [Kurulum](docs/install.md), [Doğrulama](docs/verification.md), [Rakiplik boşluk matrisi](docs/competitor-gaps.md), [Lisans](LICENSE).

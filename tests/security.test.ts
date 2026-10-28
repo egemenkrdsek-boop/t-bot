@@ -64,7 +64,10 @@ function stubHttp(responses: Array<{ status?: number; location?: string; body?: 
     });
     return request;
   });
-  return { restore: () => stub.mock.restore(), calls: () => calls };
+  // Public URL validation now performs a DNS preflight; keep it offline.
+  const lookup = mock.method(dns, 'lookup', (_host: unknown, _options: unknown, callback: Function) =>
+    callback(null, [{ address: '93.184.216.34', family: 4 }]));
+  return { restore: () => { lookup.mock.restore(); stub.mock.restore(); }, calls: () => calls };
 }
 
 test('redirect to metadata is rejected before any second request', async () => {
@@ -125,8 +128,11 @@ test('shell environment preserves runtime paths and omits inherited credentials'
   const env = shellEnvironment({ PATH: 'runtime-path', SystemRoot: 'windows', OPENAI_API_KEY: 'sensitive',
     TELEGRAM_BOT_TOKEN: 'sensitive', TBOT_API_KEY: 'sensitive', AWS_SECRET_ACCESS_KEY: 'sensitive',
     CUSTOM_PASSWORD: 'sensitive', CI: 'false' });
-  assert.deepEqual(env, { PATH: 'runtime-path', SystemRoot: 'windows', CI: 'true',
-    GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' });
+  // The allowlist now forwards only safe runtime variables and adds the
+  // Windows cwd-hardening flag; no inherited credential survives.
+  assert.deepEqual(env, { PATH: 'runtime-path', SystemRoot: 'windows',
+    ...(process.platform === 'win32' ? { NoDefaultCurrentDirectoryInExePath: '1' } : {}),
+    CI: 'true', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' });
 });
 
 test('Windows system helper selection ignores cwd and PATH and requires an absolute OS root', () => {

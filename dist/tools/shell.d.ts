@@ -1,6 +1,8 @@
 import { type ChildProcess } from 'node:child_process';
 import type { Writable } from 'node:stream';
 import type { ToolDefinition } from '../types.js';
+/** Unique, parseable marker carrying the real exit code of a finished command. */
+export declare const SHELL_EXIT_MARKER = "TBOT_EXIT";
 interface ProcessScope {
     workspace: string;
     conversation: string;

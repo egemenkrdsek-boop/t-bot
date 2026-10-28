@@ -10,6 +10,7 @@ files:
   - build/icon.*
   - package.json
   - LICENSE
+  - CHANGELOG.md
   - THIRD_PARTY_NOTICES.md
   - THIRD_PARTY_DEPENDENCIES.md
   - docs/**/*

@@ -31,8 +31,8 @@ export declare function getMemoryStats(): MemoryStats;
 /**
  * Reclaims memory when under pressure ('moderate' | 'high') or when force is true:
  * 0. Prunes completed shell processes and their buffers.
- * 1. Compacts older large tool outputs (>1500 chars) in session messages (preserving last 4),
- *    and clears old image attachments (preserving only the latest message's image).
+ * 1. Releases old image attachments while retaining the latest three image messages and current user image.
+ *    Transcript text stays authoritative; provider context selection owns temporary history reduction.
  * 2. Closes idle browser instance if active.
  * 3. Triggers V8 garbage collector if available (global.gc).
  * 4. Trims Windows physical working set if force is true or beforeStats.pressure === 'high'.

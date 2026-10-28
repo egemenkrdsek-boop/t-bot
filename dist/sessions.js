@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { withFileLock } from './lock.js';
+import { redactSecrets } from './security/redact.js';
+export { redactSecrets } from './security/redact.js';
 // Enumerable symbols survive {...session} without becoming persisted/model-visible JSON fields.
 const REVISION = Symbol('sessionCheckpointRevision');
 const queues = new Map();
@@ -11,14 +13,6 @@ const SEGMENT_BYTES = 1024 * 1024;
 const DEFAULT_LOAD_BYTES = 256 * 1024 * 1024;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
-/** Redact common credentials before persistence. This cannot recognize every possible secret. */
-export function redactSecrets(text) {
-    return text
-        .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, '$1 [REDACTED]')
-        .replace(/\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})\b/g, '[REDACTED]')
-        .replace(/((?:api[_-]?key|token|password|secret|credential|authorization)["']?\s*[=:]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED]')
-        .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g, '[REDACTED PRIVATE KEY]');
-}
 function redact(value) {
     if (typeof value === 'string')
         return redactSecrets(value);

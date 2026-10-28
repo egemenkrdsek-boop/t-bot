@@ -9,19 +9,23 @@ app.commandLine.appendSwitch('js-flags', '--expose-gc');
 app.commandLine.appendSwitch('disable-features', 'Translate,AutofillServerCommunication,CalculateNativeWinOcclusion,SpareRendererForSitePerProcess,MediaRouter,AudioServiceOutOfProcess');
 app.commandLine.appendSwitch('disable-spell-checking');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
-// Core T Bot 2.0 modules
-import { runAgent } from '../agent.js';
+// Core T Bot 3.0 modules
+import { runTurnMode } from '../turn-runner.js';
 import { loadConfig, saveConfig, resolveProviderConfig, getWorkspacePermission, configDirectory, } from '../config.js';
-import { setApiKey, getApiKey } from '../secrets.js';
+import { getCustomSecret, prepareApiKey, setCustomSecret } from '../secrets.js';
+import { listProviderModels, resolveImageProviderConfig, storeProviderApiKey } from '../host-services.js';
 import { SessionStore, createSession } from '../sessions.js';
-import { getGoal, getTodos, getActiveFocusSummary, executeWorkflowTool, runGoal } from '../workflows.js';
+import { getGoal, getTodos, getActiveFocusSummary, executeWorkflowTool } from '../workflows.js';
 import { BUILTIN_SKILLS, loadCustomSkills } from '../skills.js';
-import { loadConnections, getMcpToken } from '../mcp-config.js';
+import { loadConnections, getMcpToken, saveConnection, setMcpToken, removeConnection } from '../mcp-config.js';
+import { getTelegramBotStatus, startTelegramBotBridge, stopTelegramBotBridge } from '../bot.js';
 import { connectMcp } from '../mcp.js';
 import { MCP_PRESETS } from '../mcp-presets.js';
 import { PROVIDER_CATALOG, createProvider } from '../providers.js';
-import { discoverModels, fallbackModels } from '../models.js';
 import { TOOL_TITLE_MAP, formatToolTitle } from '../theme.js';
+import { commandCatalog, commandsFor, helpFor } from '../commands.js';
+import { globalTokenTracker } from '../token-optimizer.js';
+import { recallFacts, rememberFact, forgetFact } from '../memory.js';
 import { trimDesktopMemory, trimDesktopMemoryUnderPressure, getDesktopMemoryStats } from './memory-trimmer.js';
 import { registerDesktopQuitCleanup } from './quit-cleanup.js';
 import { closeBrowser } from '../tools/browser.js';
@@ -65,6 +69,7 @@ registerDesktopQuitCleanup(app, () => {
         resolver(false);
     activeTurnContext?.pendingApprovals.clear();
     stopAllBackgroundProcesses();
+    stopTelegramBotBridge();
 }, async () => {
     await Promise.allSettled([
         Promise.resolve().then(closeBrowser),
@@ -153,7 +158,7 @@ function createMainWindow() {
       </head>
       <body>
         <div class="spinner"></div>
-        <div class="title">T Bot Cyber-Zen Desktop Başlatılıyor...</div>
+        <div class="title">T Bot başlatılıyor...</div>
         <div class="sub">Arayüz bileşenleri yükleniyor</div>
       </body>
       </html>
@@ -237,6 +242,47 @@ function registerIpcHandlers() {
             return listener(event, ...args);
         });
     };
+    // Approval attention helpers: a hidden or unfocused window still needs to
+    // tell the user that a tool is blocked. Fail-closed is preserved; visibility
+    // is best-effort and never blocks the decision path.
+    const setApprovalTaskbarIndicator = (active) => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.setProgressBar === 'function') {
+                if (active)
+                    mainWindow.setProgressBar(2, { mode: 'indeterminate' });
+                else
+                    mainWindow.setProgressBar(-1);
+            }
+        }
+        catch { /* Taskbar indicator is cosmetic. */ }
+    };
+    const signalApprovalNeeded = (title, body) => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                const hidden = typeof mainWindow.isVisible === 'function' && !mainWindow.isVisible();
+                const unfocused = typeof mainWindow.isFocused === 'function' && !mainWindow.isFocused();
+                if ((hidden || unfocused) && typeof mainWindow.flashFrame === 'function')
+                    mainWindow.flashFrame(true);
+            }
+        }
+        catch { /* Flashing is cosmetic. */ }
+        try {
+            const notifier = tray;
+            if (notifier && typeof notifier.displayBalloon === 'function') {
+                notifier.displayBalloon({ title, content: body, iconType: 'warning' });
+            }
+        }
+        catch { /* Tray balloons are unavailable on some platforms. */ }
+        setApprovalTaskbarIndicator(true);
+    };
+    const clearApprovalIndicators = () => {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed() && typeof mainWindow.flashFrame === 'function')
+                mainWindow.flashFrame(false);
+        }
+        catch { /* Cosmetic. */ }
+        setApprovalTaskbarIndicator(false);
+    };
     // Window control: minimize, maximize, close, isMaximized
     handle('window:control', (_event, action) => {
         if (!mainWindow || mainWindow.isDestroyed())
@@ -267,7 +313,20 @@ function registerIpcHandlers() {
     });
     // Config handlers
     handle('config:get', async () => {
-        return { config: await loadConfig(), appVersion: app.getVersion() };
+        const config = await loadConfig();
+        let hasApiKey = false;
+        try {
+            hasApiKey = Boolean((await resolveProviderConfig(config)).apiKey);
+        }
+        catch { /* config error is surfaced by doctor/start-turn */ }
+        const requiresApiKey = Boolean(PROVIDER_CATALOG.find(provider => provider.id === config.provider)?.requiresApiKey);
+        return {
+            config,
+            appVersion: app.getVersion(),
+            hasApiKey,
+            requiresApiKey,
+            providerSpec: PROVIDER_CATALOG.find(provider => provider.id === config.provider),
+        };
     });
     handle('config:save', async (_event, partialConfig) => {
         const current = await loadConfig();
@@ -278,6 +337,22 @@ function registerIpcHandlers() {
         }
         if (typeof partialConfig?.model === 'string')
             current.model = partialConfig.model;
+        if (typeof partialConfig?.baseUrl === 'string') {
+            if (partialConfig.baseUrl.trim())
+                current.baseUrl = partialConfig.baseUrl.trim();
+            else
+                delete current.baseUrl;
+        }
+        if (partialConfig?.guiMode === 'live' || partialConfig?.guiMode === 'headless') {
+            current.guiMode = partialConfig.guiMode;
+            if (partialConfig.guiMode === 'headless')
+                process.env.TBOT_HEADLESS = 'true';
+            else
+                delete process.env.TBOT_HEADLESS;
+        }
+        if (Array.isArray(partialConfig?.telegramAllowedChatIds)) {
+            current.telegramAllowedChatIds = partialConfig.telegramAllowedChatIds.filter(value => typeof value === 'string');
+        }
         if (partialConfig?.efforts && typeof partialConfig.efforts === 'object') {
             current.efforts = { ...current.efforts, ...partialConfig.efforts };
         }
@@ -285,26 +360,14 @@ function registerIpcHandlers() {
         return current;
     });
     handle('config:set-api-key', async (_event, { provider, apiKey }) => {
-        return await setApiKey(provider, apiKey);
+        if (typeof provider !== 'string' || !provider.trim() || typeof apiKey !== 'string') {
+            return { error: 'Geçersiz sağlayıcı veya API anahtarı.' };
+        }
+        return await storeProviderApiKey(provider.trim(), apiKey);
     });
     handle('config:model-catalog', async (_event, providerId) => {
         const config = await loadConfig();
-        if (providerId && PROVIDER_CATALOG.some(provider => provider.id === providerId))
-            config.provider = providerId;
-        const apiKey = await getApiKey(config.provider);
-        let liveModels = fallbackModels(config.provider);
-        try {
-            liveModels = await discoverModels(config.provider, apiKey);
-        }
-        catch {
-            // Offline fallback
-        }
-        return {
-            providers: PROVIDER_CATALOG,
-            currentProvider: config.provider,
-            currentModel: config.model,
-            models: liveModels,
-        };
+        return await listProviderModels(config, typeof providerId === 'string' ? providerId : undefined);
     });
     // Workspace handlers
     handle('workspace:select-dialog', async () => {
@@ -346,6 +409,44 @@ function registerIpcHandlers() {
         await store.save(session);
         return session;
     });
+    // Real conversation reset: an empty history is persisted so the next turn
+    // cannot reload the previous session.messages from disk.
+    handle('sessions:clear', async (_event, { sessionId, workspace }) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        if (sessionId && activeTurnContext?.sessionId === sessionId) {
+            throw new Error('Çalışan oturum temizlenemez; önce turu durdurun.');
+        }
+        const store = new SessionStore(configDirectory());
+        let session;
+        if (sessionId) {
+            const existing = await store.get(sessionId, resolvedWorkspace);
+            if (!existing)
+                return { ok: false, error: 'Seçili oturum bulunamadı. Oturum listesini yenileyin.' };
+            session = existing;
+        }
+        else {
+            session = createSession(resolvedWorkspace);
+        }
+        session.messages = [];
+        session.updatedAt = new Date().toISOString();
+        await store.save(session);
+        return { ok: true, session: { id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt, messages: [] } };
+    });
+    // Bounded history pages keep the full transcript out of a single IPC payload.
+    handle('sessions:messages', async (_event, { sessionId, workspace, offset, limit }) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        if (!sessionId)
+            return { messages: [], total: 0, offset: 0, limit: 0 };
+        const store = new SessionStore(configDirectory());
+        const session = await store.get(sessionId, resolvedWorkspace);
+        if (!session)
+            return { messages: [], total: 0, offset: 0, limit: 0, error: 'Oturum bulunamadı.' };
+        const total = session.messages.length;
+        const safeLimit = Math.max(1, Math.min(200, Number.isFinite(limit) ? Number(limit) : 40));
+        const requested = Number.isFinite(offset) ? Number(offset) : -1;
+        const start = requested < 0 ? Math.max(0, total - safeLimit) : Math.max(0, Math.min(total, requested));
+        return { messages: session.messages.slice(start, start + safeLimit), total, offset: start, limit: safeLimit };
+    });
     // Workflows handlers
     handle('workflows:get-state', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
@@ -370,6 +471,45 @@ function registerIpcHandlers() {
             mcpPresets: MCP_PRESETS,
             mcpConnections,
         };
+    });
+    handle('mcp:list', async () => {
+        const connections = await loadConnections().catch(() => ({}));
+        const rows = await Promise.all(MCP_PRESETS.map(async (preset) => ({
+            ...preset,
+            enabled: Boolean(connections[preset.id]?.enabled),
+            hasToken: Boolean(await getMcpToken(preset.id).catch(() => undefined)),
+        })));
+        return { presets: rows };
+    });
+    handle('mcp:connect', async (_event, { service, token, workspace } = {}) => {
+        if (typeof service !== 'string' || !MCP_PRESETS.some(preset => preset.id === service)) {
+            return { ok: false, error: 'Geçersiz MCP servisi.' };
+        }
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        const existing = (await loadConnections().catch(() => ({})))[service] || {};
+        let accessToken = typeof token === 'string' && token.trim() ? token.trim() : await getMcpToken(service);
+        if (!accessToken)
+            return { ok: false, error: 'Bu MCP servisi için erişim tokenı gerekli.' };
+        const connection = await connectMcp(service, accessToken, { ...existing, workspace: resolvedWorkspace, signal: AbortSignal.timeout(15_000) });
+        let warning;
+        try {
+            if (typeof token === 'string' && token.trim()) {
+                const stored = await setMcpToken(service, token.trim());
+                warning = stored.warning;
+            }
+            await saveConnection(service, { enabled: true, readOnly: false });
+            return { ok: true, tools: connection.definitions.length, ...(warning ? { warning } : {}) };
+        }
+        finally {
+            await connection.close().catch(() => undefined);
+        }
+    });
+    handle('mcp:remove', async (_event, { service } = {}) => {
+        if (typeof service !== 'string' || !MCP_PRESETS.some(preset => preset.id === service)) {
+            return { ok: false, error: 'Geçersiz MCP servisi.' };
+        }
+        await removeConnection(service);
+        return { ok: true };
     });
     handle('sys:doctor', async (_event, workspace) => {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
@@ -400,6 +540,88 @@ function registerIpcHandlers() {
     handle('sys:mem-stats', () => {
         return getDesktopMemoryStats(mainWindow || undefined);
     });
+    // Shared command catalog: the renderer must not maintain a second, stale list.
+    handle('bot:status', () => getTelegramBotStatus());
+    handle('bot:start', async (_event, workspace) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        const token = await getCustomSecret('telegram_bot_token');
+        if (!token?.trim()) {
+            return { ok: false, error: 'Telegram bot tokenı yok. Önce /bot token <TOKEN> ile kaydedin.' };
+        }
+        const config = await loadConfig();
+        const bridgeSession = createSession(resolvedWorkspace);
+        return await startTelegramBotBridge({
+            config: config,
+            session: bridgeSession,
+            workspace: resolvedWorkspace,
+            getYolo: () => getWorkspacePermission(config, resolvedWorkspace) === 'allow',
+            activeSkills: BUILTIN_SKILLS.map(skill => skill.id),
+            mcpTools: [],
+            onLog: text => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('agent:event', { type: 'status', message: text });
+                }
+            },
+        });
+    });
+    handle('bot:stop', () => {
+        stopTelegramBotBridge();
+        return { ok: true, ...getTelegramBotStatus() };
+    });
+    handle('bot:set-token', async (_event, { token, workspace } = {}) => {
+        if (typeof token !== 'string' || !token.trim())
+            return { ok: false, error: 'Bot tokenı boş olamaz.' };
+        const prepared = prepareApiKey(token);
+        await setCustomSecret('telegram_bot_token', prepared);
+        const config = await loadConfig();
+        config.telegramBotToken = true;
+        await saveConfig(config);
+        return { ok: true, workspace };
+    });
+    handle('bot:allow', async (_event, { chatId } = {}) => {
+        if (typeof chatId !== 'string' || !chatId.trim())
+            return { ok: false, error: 'Chat ID gerekli.' };
+        const config = await loadConfig();
+        const allowed = Array.isArray(config.telegramAllowedChatIds) ? [...config.telegramAllowedChatIds] : [];
+        if (!allowed.includes(chatId.trim()))
+            allowed.push(chatId.trim());
+        config.telegramAllowedChatIds = allowed;
+        await saveConfig(config);
+        return { ok: true, allowed };
+    });
+    handle('commands:list', () => ({
+        available: commandCatalog('desktop'),
+        unavailable: commandsFor('cli')
+            .filter(command => !command.surfaces.includes('desktop'))
+            .map(command => ({ name: command.name, description: command.description })),
+    }));
+    handle('commands:help', () => helpFor('desktop'));
+    handle('sys:tool-titles', () => TOOL_TITLE_MAP);
+    handle('sys:token-report', () => globalTokenTracker.getReport());
+    handle('sys:memory-facts', async (_event, workspace) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        return await recallFacts(resolvedWorkspace);
+    });
+    handle('sys:remember-fact', async (_event, { workspace, key, value } = {}) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        if (typeof key !== 'string' || !key.trim() || typeof value !== 'string' || !value.trim()) {
+            return { ok: false, error: 'Anahtar ve değer boş olamaz.' };
+        }
+        if (key.length > 200 || value.length > 10_000) {
+            return { ok: false, error: 'Anahtar veya değer izin verilen sınırı aşıyor.' };
+        }
+        await rememberFact(resolvedWorkspace, key.trim(), value.trim(), 'project');
+        return { ok: true, key: key.trim() };
+    });
+    handle('sys:forget-fact', async (_event, { workspace, key } = {}) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        if (typeof key !== 'string' || !key.trim())
+            return { ok: false, error: 'Silinecek anahtar gerekli.' };
+        if (key.length > 200)
+            return { ok: false, error: 'Anahtar izin verilen sınırı aşıyor.' };
+        const removed = await forgetFact(resolvedWorkspace, key.trim());
+        return { ok: removed, key: key.trim() };
+    });
     handle('sys:trim-memory', async () => {
         const result = await trimDesktopMemory(mainWindow || undefined, true);
         const stats = getDesktopMemoryStats(mainWindow || undefined);
@@ -407,6 +629,24 @@ function registerIpcHandlers() {
             mainWindow.webContents.send('sys:memory-update', stats);
         }
         return { result, stats };
+    });
+    handle('gui:set-mode', async (_event, mode) => {
+        if (mode === 'stop') {
+            await closeBrowser().catch(() => undefined);
+            stopAllBackgroundProcesses();
+            return { ok: true, mode: 'live', message: 'Tarayıcı ve arka plan süreçleri durduruldu.' };
+        }
+        if (mode !== 'live' && mode !== 'headless') {
+            return { ok: false, error: 'Kullanım: /gui [live|headless|stop]' };
+        }
+        const config = await loadConfig();
+        config.guiMode = mode;
+        await saveConfig(config);
+        if (mode === 'headless')
+            process.env.TBOT_HEADLESS = 'true';
+        else
+            delete process.env.TBOT_HEADLESS;
+        return { ok: true, mode, message: mode === 'headless' ? 'Tarayıcı arka planda çalışacak.' : 'Tarayıcı görünür modda çalışacak.' };
     });
     // Agent turn execution & approvals
     handle('agent:approval-response', (_event, { requestId, approved, alwaysAllowSession }) => {
@@ -423,6 +663,24 @@ function registerIpcHandlers() {
         }
         return { handled: false, error: 'Onay isteği bulunamadı veya süresi doldu.' };
     });
+    // Single source of truth for the effective approval mode shown in the UI.
+    handle('agent:approval-policy', async (_event, { workspace, yolo } = {}) => {
+        const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
+        const config = await loadConfig();
+        const workspacePermission = getWorkspacePermission(config, resolvedWorkspace);
+        const turnActive = Boolean(activeTurnContext);
+        const turnYolo = activeTurnContext?.yolo === true;
+        const effectiveAuto = yolo === true || workspacePermission === 'allow' || turnYolo || activeTurnContext?.alwaysAllowSession === true;
+        return { workspacePermission, turnActive, turnYolo, effectiveAuto };
+    });
+    // Lets the renderer change the running turn's policy; the turn reads this
+    // live value for every approval, so turning YOLO off mid-turn takes effect.
+    handle('agent:set-turn-policy', (_event, { yolo } = {}) => {
+        if (!activeTurnContext)
+            return { updated: false, reason: 'Aktif bir çalışan tur bulunmuyor.' };
+        activeTurnContext.yolo = yolo === true;
+        return { updated: true, yolo: activeTurnContext.yolo };
+    });
     handle('agent:abort-turn', () => {
         turnAbortController?.abort();
         if (activeTurnContext) {
@@ -431,8 +689,10 @@ function registerIpcHandlers() {
                 resolver(false);
             }
             activeTurnContext.pendingApprovals.clear();
+            clearApprovalIndicators();
             return { aborted: true };
         }
+        clearApprovalIndicators();
         return { aborted: turnInProgress };
     });
     handle('agent:start-turn', async (_event, payload) => {
@@ -502,11 +762,13 @@ function registerIpcHandlers() {
                 session,
                 pendingApprovals,
                 alwaysAllowSession: false,
+                yolo: payload.yolo === true,
             };
             const approve = async (request) => {
                 if (abortController.signal.aborted)
                     return false;
-                if (payload.yolo === true || activeTurnContext?.alwaysAllowSession) {
+                // Read the live turn policy so a mid-turn YOLO toggle is honoured.
+                if (activeTurnContext?.yolo === true || activeTurnContext?.alwaysAllowSession) {
                     return true;
                 }
                 const perm = getWorkspacePermission(config, targetWorkspace);
@@ -521,19 +783,24 @@ function registerIpcHandlers() {
                     const timer = setTimeout(() => {
                         pendingApprovals.delete(requestId);
                         resolveApproval(false);
+                        clearApprovalIndicators();
                         try {
-                            if (mainWindow && !mainWindow.isDestroyed())
-                                mainWindow.webContents.send('agent:approval-expired', { requestId });
+                            if (mainWindow && !mainWindow.isDestroyed()) {
+                                mainWindow.webContents.send('agent:approval-expired', { requestId, reason: 'timeout', timeoutMs: 120_000 });
+                                signalApprovalNeeded('T Bot onay zaman aşımı', `${toolTitle} için 120 saniye içinde onay verilmedi; işlem güvenli şekilde reddedildi.`);
+                            }
                         }
                         catch { /* The approval already failed closed if its renderer is gone. */ }
                     }, 120_000);
                     const settle = (approved) => {
                         clearTimeout(timer);
                         pendingApprovals.delete(requestId);
+                        clearApprovalIndicators();
                         resolveApproval(approved);
                     };
                     pendingApprovals.set(requestId, settle);
                     try {
+                        signalApprovalNeeded('T Bot araç onayı bekliyor', `${toolTitle} çalıştırılmak isteniyor. Pencereye dönüp onaylayın veya reddedin.`);
                         mainWindow.webContents.send('agent:approval-request', {
                             requestId,
                             tool: request.tool,
@@ -587,6 +854,7 @@ function registerIpcHandlers() {
                     }
                 }
                 const history = [...session.messages];
+                const imageProvider = await resolveImageProviderConfig(config);
                 const input = {
                     processOwner: `desktop:${session.id}`,
                     message: payload.message,
@@ -598,9 +866,16 @@ function registerIpcHandlers() {
                     approve,
                     signal: abortController.signal,
                     mcpTools,
+                    imageProvider,
                 };
-                const runner = (step) => runAgent(step, { workspace: targetWorkspace, session, onEvent });
-                const updatedMessages = payload.mode === 'goal' ? await runGoal(input, runner) : await runner(input);
+                const updatedMessages = await runTurnMode(input, {
+                    mode: payload.mode,
+                    plan: payload.plan,
+                    workerProvider: provider,
+                    session,
+                    workspace: targetWorkspace,
+                    onEvent,
+                });
                 session.messages = updatedMessages;
                 await store.save(session);
                 const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant');
@@ -610,11 +885,13 @@ function registerIpcHandlers() {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('sys:memory-update', memStats);
                 }
+                // The full message history stays in the session store; the renderer
+                // fetches bounded pages through sessions:messages instead.
                 return {
                     ok: true,
                     sessionId: session.id,
                     lastAssistantText,
-                    messages: session.messages,
+                    messageCount: session.messages.length,
                     memoryStats: memStats,
                 };
             }
@@ -632,6 +909,7 @@ function registerIpcHandlers() {
                 for (const resolver of pendingApprovals.values())
                     resolver(false);
                 pendingApprovals.clear();
+                clearApprovalIndicators();
                 // ALWAYS emit turn_end to ensure the renderer UI never gets stuck in thinking state
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send('agent:event', { type: 'turn_end' });
@@ -674,6 +952,16 @@ app.on('second-instance', () => {
     }
 });
 app.whenReady().then(async () => {
+    try {
+        const bootConfig = await loadConfig();
+        if (bootConfig.guiMode === 'headless')
+            process.env.TBOT_HEADLESS = 'true';
+        else
+            delete process.env.TBOT_HEADLESS;
+    }
+    catch {
+        // A damaged config must not prevent the desktop from opening.
+    }
     registerIpcHandlers();
     createMainWindow();
     if (isHeadlessVerify) {

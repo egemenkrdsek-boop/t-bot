@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('tbot', {
   abortTurn: () => ipcRenderer.invoke('agent:abort-turn'),
   respondApproval: (requestId, approved, alwaysAllowSession) =>
     ipcRenderer.invoke('agent:approval-response', { requestId, approved, alwaysAllowSession }),
+  getApprovalPolicy: (workspace, yolo) => ipcRenderer.invoke('agent:approval-policy', { workspace, yolo }),
+  setTurnPolicy: (yolo) => ipcRenderer.invoke('agent:set-turn-policy', { yolo }),
   onAgentEvent: (callback) => {
     const listener = (_e, data) => callback(data);
     ipcRenderer.on('agent:event', listener);
@@ -35,6 +37,9 @@ contextBridge.exposeInMainWorld('tbot', {
   openExternalPath: (targetPath) => ipcRenderer.invoke('workspace:open-path', targetPath),
   listSessions: (workspace) => ipcRenderer.invoke('sessions:list', workspace),
   loadSession: (sessionId, workspace) => ipcRenderer.invoke('sessions:load', { sessionId, workspace }),
+  loadSessionMessages: (sessionId, workspace, options) =>
+    ipcRenderer.invoke('sessions:messages', { sessionId, workspace, ...(options || {}) }),
+  clearSession: (sessionId, workspace) => ipcRenderer.invoke('sessions:clear', { sessionId, workspace }),
   deleteSession: (sessionId, workspace) => ipcRenderer.invoke('sessions:delete', { sessionId, workspace }),
   createSession: (workspace, title) => ipcRenderer.invoke('sessions:create', { workspace, title }),
   getWorkflowState: (workspace) => ipcRenderer.invoke('workflows:get-state', workspace),
@@ -43,5 +48,21 @@ contextBridge.exposeInMainWorld('tbot', {
   runDoctor: (workspace) => ipcRenderer.invoke('sys:doctor', workspace),
   getMemoryStats: () => ipcRenderer.invoke('sys:mem-stats'),
   trimMemory: () => ipcRenderer.invoke('sys:trim-memory'),
+  setGuiMode: (mode) => ipcRenderer.invoke('gui:set-mode', mode),
+  getBotStatus: () => ipcRenderer.invoke('bot:status'),
+  startBot: (workspace) => ipcRenderer.invoke('bot:start', workspace),
+  stopBot: () => ipcRenderer.invoke('bot:stop'),
+  setBotToken: (token, workspace) => ipcRenderer.invoke('bot:set-token', { token, workspace }),
+  allowBotChat: (chatId) => ipcRenderer.invoke('bot:allow', { chatId }),
+  listMcp: () => ipcRenderer.invoke('mcp:list'),
+  connectMcp: (service, token, workspace) => ipcRenderer.invoke('mcp:connect', { service, token, workspace }),
+  removeMcp: (service) => ipcRenderer.invoke('mcp:remove', { service }),
+  getCommands: () => ipcRenderer.invoke('commands:list'),
+  getCommandsHelp: () => ipcRenderer.invoke('commands:help'),
+  getToolTitles: () => ipcRenderer.invoke('sys:tool-titles'),
+  getTokenReport: () => ipcRenderer.invoke('sys:token-report'),
+  getMemoryFacts: (workspace) => ipcRenderer.invoke('sys:memory-facts', workspace),
+  rememberFact: (workspace, key, value) => ipcRenderer.invoke('sys:remember-fact', { workspace, key, value }),
+  forgetFact: (workspace, key) => ipcRenderer.invoke('sys:forget-fact', { workspace, key }),
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
 });

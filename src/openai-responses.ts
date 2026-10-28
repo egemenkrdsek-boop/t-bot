@@ -8,7 +8,7 @@ interface Config { model: string; apiKey: string; effort?: EffortLevel; timeoutM
 
 /** Stateless Responses API adapter for models that require it for function calls. */
 export function createOpenAIResponsesProvider(config: Config): Provider {
-  return { id: 'openai', label: 'OpenAI', async *stream(messages, tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
+  return { id: 'openai', label: 'OpenAI', model: config.model, async *stream(messages, tools: ToolDefinition[], options: ProviderStreamOptions = {}): AsyncGenerator<ProviderEvent> {
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]) : AbortSignal.timeout(config.timeoutMs ?? 120_000);
     try {
       const input: Item[] = []; let pendingImages: Item[] = [];

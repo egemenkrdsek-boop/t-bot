@@ -1,4 +1,5 @@
-import { fetchPublicText, validatePublicUrl } from './public-network.js';
+import { fetchPublicText } from './public-network.js';
+import { assertPublicHttpUrl } from '../security/url.js';
 export { isPrivateOrLocalHost, validatePublicUrl } from './public-network.js';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 function decodeHtmlEntities(text) {
@@ -271,7 +272,7 @@ export function htmlToCleanMarkdown(html) {
  * Downloads a web page or API endpoint, formatting JSON or converting HTML to clean Markdown.
  */
 export async function fetchUrlContent(rawUrl, maxChars = 12000, signal) {
-    const urlObj = validatePublicUrl(rawUrl);
+    const urlObj = await assertPublicHttpUrl(rawUrl);
     const limit = Math.max(100, Math.min(100000, Number(maxChars) || 12000));
     const timeoutSignal = AbortSignal.timeout(12000);
     const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;

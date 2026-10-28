@@ -1,4 +1,5 @@
 import { EFFORT_LEVELS } from './effort.js';
+import { helpFor } from './commands.js';
 import { APP_VERSION } from './version.js';
 export const HELP = `T Bot ${APP_VERSION} — AI Ajanı ve Komut Merkezi
 
@@ -27,17 +28,8 @@ Seçenekler:
   -h, --help             Yardım Menüsünü Gösterir
   -v, --version          Sürüm Bilgisini Gösterir
 
-T Bot 2.0 Komutları ve İş Akışları (Etkileşimli TUI):
-  /bot [start|stop|token|status|allow]  Telegram Bot Köprüsü Yönetimi
-  /tokens                               Canlı Token Tasarrufu ve Optimizasyon Raporu
-  /memory                               RAM Kullanımı ve Kayıtlı Proje/Küresel Bellek
-  /remember <anahtar> = <değer>         Kalıcı Proje Belleğine Bilgi Kaydeder
-  /forget <anahtar>                     Kayıtlı Hafıza Maddesini Siler
-  /gc                                   Bellek Koruyucusu ve Garbage Collection Çalıştırır
-  /ultracode [on|off]                   Özerk Araştırma, Kodlama ve Test Modu
-  /subagents [model]                    Paralel Alt Ajan Araştırma Koordinatörü
-  /goal [hedef|status|pause|cancel]     Otonom Hedef Belirleme ve Döngüsel Yürütme
-  /plan [istek|apply]                   Gereksinim Analizi ve Adım Adım Plan Yürütme`;
+Komutlar (etkileşimli TUI ve masaüstü):
+${helpFor('cli')}`;
 export function printUsage() {
     console.log(HELP);
 }

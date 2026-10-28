@@ -308,7 +308,6 @@ Onaylamak için \`/onay\`, reddetmek için \`/red\` yazın veya aşağıdaki but
 async function executeAgentTurn(message, chatId, token, options, signal, mode = 'agent') {
     isAgentBusy = true;
     const startTime = Date.now();
-    const sessionStore = new SessionStore(configDirectory());
     const discoveredPaths = new Set();
     // Send periodic "typing" notification every 4.5 seconds
     void sendChatAction(token, chatId, 'typing');
@@ -391,7 +390,14 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
             updatedMessages = await runAgent(agentInput);
         }
         options.session.messages = updatedMessages;
-        await sessionStore.save(options.session).catch(() => { });
+        let persisted = true;
+        try {
+            await new SessionStore(configDirectory()).save(options.session);
+        }
+        catch {
+            persisted = false;
+            options.onLog?.('[Telegram Bot] Üretilen turun oturum kaydı saklanamadı; son mesajlar yalnızca bellekte olabilir.');
+        }
         // Send latest assistant response
         const lastAssistant = [...updatedMessages]
             .reverse()
@@ -400,7 +406,10 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
             await sendTelegramMessage(token, chatId, lastAssistant.content);
         }
         else {
-            await sendTelegramMessage(token, chatId, '[TAMAMLANDI] İşlem Tamamlandı.');
+            await sendTelegramMessage(token, chatId, '[BİLGİ] Ajan turu sona erdi; gösterilecek metin yanıtı bulunmuyor.');
+        }
+        if (!persisted) {
+            await sendTelegramMessage(token, chatId, '[KAYIT UYARISI] Yanıt üretilmiş veya araç işlemleri gerçekleşmiş olabilir; bu turun oturum kaydı saklanamadı. Son mesajlar yalnızca bellekte olabilir ve yeniden başlatmada kaybolabilir. Bu uyarı araç işlemlerinin geri alındığı anlamına gelmez.');
         }
         // Inspect disk for newly produced images or screenshots
         const scanned = await collectGeneratedImages(options.workspace, startTime);
@@ -415,10 +424,10 @@ async function executeAgentTurn(message, chatId, token, options, signal, mode = 
             await sendTelegramPhoto(token, chatId, imgPath, caption);
         }
     }
-    catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        options.onLog?.(`[Telegram Bot] Ajan çalıştırma hatası: ${errorMsg}`);
-        await sendTelegramMessage(token, chatId, `*[HATA]* ${escapeMarkdown(errorMsg)}`);
+    catch {
+        // Provider/transport errors may contain credential-bearing URLs or response bodies.
+        options.onLog?.('[Telegram Bot] Ajan turu tamamlanamadı; hata ayrıntıları hassas bilgi içerebileceği için gösterilmedi.');
+        await sendTelegramMessage(token, chatId, '[HATA] Ajan turu tamamlanamadı. Önceden gerçekleşmiş araç işlemleri olabilir; yeniden denemeden önce mevcut durumu kontrol edin.');
     }
     finally {
         clearInterval(typingTimer);
@@ -603,12 +612,34 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
     }
     // 5. /clear (Yarış durumunu önlemek için isAgentBusy kontrolünden sonra çalıştırılır)
     if (text === '/clear') {
-        options.session.messages = [];
-        globalGroundingLedger.clear();
-        const reclaimResult = await reclaimMemory(options.session, true);
-        const sessionStore = new SessionStore(configDirectory());
-        await sessionStore.save(options.session).catch(() => { });
-        await sendTelegramMessage(token, chatId, `*[TEMİZLENDİ] Oturum Temizlendi*\n\nMesaj geçmişi sıfırlandı ve bellek boşaltıldı.\n• Öncesi: \`${reclaimResult.beforeMB} MB\`\n• Sonrası: \`${reclaimResult.afterMB} MB\`\n• Geri Kazanılan: \`${reclaimResult.freedMB} MB\``);
+        isAgentBusy = true;
+        try {
+            // Preserve the live transcript and its private revision until durable commit.
+            const cleared = { ...options.session, messages: [] };
+            try {
+                await new SessionStore(configDirectory()).save(cleared);
+            }
+            catch {
+                options.onLog?.('[Telegram Bot] Oturum temizleme kaydı saklanamadı; mevcut mesaj geçmişi korunuyor.');
+                await sendTelegramMessage(token, chatId, '[KAYIT HATASI] Oturum temizlenemedi; mevcut mesaj geçmişi korunuyor. Kalıcı kayıt tamamlanmadığı için temizleme uygulanmadı.');
+                return;
+            }
+            // Object.assign also transfers the committed symbol revision to the shared host object.
+            Object.assign(options.session, cleared);
+            globalGroundingLedger.clear();
+            let memory = '\nBellek temizliği doğrulanamadı.';
+            try {
+                const result = await reclaimMemory(options.session, true);
+                memory = `\n• Öncesi: \`${result.beforeMB} MB\`\n• Sonrası: \`${result.afterMB} MB\`\n• Geri Kazanılan: \`${result.freedMB} MB\``;
+            }
+            catch {
+                options.onLog?.('[Telegram Bot] Oturum kaydı temizlendi; bellek temizliği tamamlanamadı.');
+            }
+            await sendTelegramMessage(token, chatId, `*[TEMİZLENDİ] Oturum Temizlendi*\n\nMesaj geçmişi kalıcı olarak sıfırlandı.${memory}`);
+        }
+        finally {
+            isAgentBusy = false;
+        }
         return;
     }
     // 6. /ultracode <görev>
@@ -751,7 +782,7 @@ async function runPollingLoop(token, signal, options) {
             if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
                 continue;
             }
-            options.onLog?.(`[Telegram Bot] Polling uyarısı: ${err?.message || String(err)}`);
+            options.onLog?.('[Telegram Bot] Güncelleme isteği başarısız oldu; yeniden denenecek.');
             await new Promise((r) => setTimeout(r, 3000));
         }
     }
@@ -793,10 +824,10 @@ export async function startTelegramBotBridge(options) {
         currentBotUsername = data.result.username || data.result.first_name || 'tbot';
         options.onLog?.(`[Telegram Bot] @${currentBotUsername} başarıyla doğrulandı.`);
     }
-    catch (err) {
+    catch {
         return {
             ok: false,
-            error: `Telegram sunucularına erişilemedi: ${err instanceof Error ? err.message : String(err)}`,
+            error: 'Telegram sunucularına erişilemedi. Ağ bağlantısını ve bot yapılandırmasını kontrol edin.',
         };
     }
     // Mark as running and start background long-polling

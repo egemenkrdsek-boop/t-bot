@@ -5,11 +5,11 @@ import { randomUUID } from 'node:crypto';
 import { createSession, SessionStore } from './sessions.js';
 import { parseCli, printUsage } from './cli.js';
 import { configDirectory, loadConfig, saveConfig, resolveProviderConfig, getEffort, setEffort, getWorkspacePermission, setWorkspacePermission } from './config.js';
-import { setApiKey, getApiKey, getApiKeySource, prepareApiKey, SecretStorageError, setCustomSecret, getCustomSecret } from './secrets.js';
-import { createProvider, PROVIDER_CATALOG, validateOpenRouterKey } from './providers.js';
+import { getApiKey, getApiKeySource, prepareApiKey, SecretStorageError, setCustomSecret, getCustomSecret } from './secrets.js';
+import { createProvider, PROVIDER_CATALOG } from './providers.js';
 import { discoverModels } from './models.js';
 import { selectOption, inputSecret } from './menu.js';
-import { runAgent } from './agent.js';
+import { runTurnMode } from './turn-runner.js';
 import { runSubagents } from './subagents.js';
 import { runUltracode } from './ultracode.js';
 import { EFFORT_LEVELS, describeEffort } from './effort.js';
@@ -27,6 +27,7 @@ import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
 import { rememberFact, recallFacts, forgetFact } from './memory.js';
 import { reclaimMemory, getMemoryStats, startAutoMemoryGuard, stopAutoMemoryGuard } from './memory-guard.js';
+import { resolveImageProviderConfig, storeProviderApiKey } from './host-services.js';
 import { APP_VERSION, MINIMUM_NODE_VERSION, supportsNodeVersion } from './version.js';
 const safe = (text) => text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, '');
 async function listSessions() {
@@ -78,9 +79,7 @@ async function configure(config, onboarding = false, presetProvider = false, mod
             const key = await inputSecret(`${spec.label} API Anahtarı`);
             if (!key?.trim())
                 throw new Error('Anahtar girilmedi; yapılandırma iptal edildi.');
-            if (id === 'openrouter')
-                await validateOpenRouterKey(prepareApiKey(key));
-            const result = await setApiKey(id, key);
+            const result = await storeProviderApiKey(id, key);
             if (result.warning)
                 console.log(safe(result.warning));
             apiKey = (await resolveProviderConfig(selectedConfig)).apiKey;
@@ -315,21 +314,21 @@ export async function main(argv) {
         return `${service} MCP bağlı: ${connection.definitions.length} araç${service === 'vercel' ? ' (T Bot yerel Vercel adaptörü)' : ''}. Araç işlemleri onay politikasına uyar.`;
     };
     let pendingPlan;
-    const imageConfig = async () => {
-        if (config.provider !== 'openai' && config.provider !== 'gemini' && config.provider !== 'openrouter')
-            return undefined;
-        const apiKey = await getApiKey(config.provider);
-        return apiKey ? { provider: config.provider, apiKey } : undefined;
-    };
+    const imageConfig = async () => resolveImageProviderConfig(config);
     const runRouted = async (input) => {
         const skills = resolveSkills(input.message, input.workspace);
-        if (skillRequiresReadOnly(skills, input.message) || skills.some(s => s.id === 'imagegen'))
-            return runAgent(input);
-        if (ultracode)
-            return runUltracode({ ...input, workerProvider: workerProvider ?? provider });
-        if (workerProvider)
-            return runSubagents({ ...input, workerProvider });
-        return runAgent(input);
+        const mode = skillRequiresReadOnly(skills, input.message) || skills.some(s => s.id === 'imagegen')
+            ? 'agent'
+            : ultracode
+                ? 'ultracode'
+                : workerProvider
+                    ? 'subagents'
+                    : 'agent';
+        return await runTurnMode(input, {
+            mode,
+            workerProvider: workerProvider ?? provider,
+            workspace,
+        });
     };
     const modeStatus = () => {
         const mapping = describeEffort(config.provider, config.model, selectedEffort);
@@ -478,7 +477,8 @@ export async function main(argv) {
                 if (['/frontenddesign', '/backend'].includes(command) ||
                     (command === '/goal' && text.trim() && !['status', 'pause', 'cancel', 'done', 'complete'].includes(text.trim().toLowerCase())) ||
                     (command === '/plan' && text.trim().toLowerCase() === 'apply') ||
-                    (command === '/subagents' && text.trim())) {
+                    (command === '/subagents' && text.trim()) ||
+                    (command === '/ultracode' && text.trim())) {
                     await hydrateMcp(signal, emit);
                 }
                 const input = {
@@ -584,6 +584,19 @@ export async function main(argv) {
                     emit({ type: 'status', message: 'Plan hazır. Uygulamak için /plan apply yazın.' });
                     return;
                 }
+                if (command === '/ultracode') {
+                    if (!text.trim()) {
+                        emit({ type: 'status', message: 'Kullanım: /ultracode <görev> veya /ultracode on|off' });
+                        return;
+                    }
+                    session.messages = await runUltracode({
+                        ...input,
+                        message: text,
+                        workerProvider: workerProvider ?? provider,
+                    });
+                    await store.save(session);
+                    return;
+                }
                 if (command === '/subagents') {
                     if (!text.trim() && workerProvider) {
                         const action = await suspendUi(() => selectOption('Alt Ajanlar', [
@@ -649,6 +662,7 @@ export async function main(argv) {
                         `  Önbelleklenen Token  : ${report.totalCachedTokens.toLocaleString()}`,
                         `  Budanan Şema Token   : ${report.totalPrunedSchemaTokens.toLocaleString()}`,
                         `  Sıkıştırılmış Geçmiş : ${report.totalCompressedHistoryTokens.toLocaleString()}`,
+                        `  Bağlam Önbelleği     : ${report.totalContextCacheSavedTokens.toLocaleString()}`,
                         `  Kazanılan (Tasarruf) : ${report.totalSavedTokens.toLocaleString()} tok`,
                         `  Tasarruf Oranı       : %${report.savingsPercent}`,
                         `  Oturum Tur Sayısı    : ${report.turnsCount}`,
@@ -706,7 +720,24 @@ export async function main(argv) {
                     const removed = await forgetFact(workspace, key);
                     return removed ? `[OK] Hafızadan Silindi: ${key}` : `Hafızada "${key}" anahtarı bulunamadı.`;
                 }
-                if (name === '/gc') {
+                if (name === '/doctor') {
+                    let hasKey = false;
+                    try {
+                        hasKey = Boolean((await resolveProviderConfig(config, workspace)).apiKey);
+                    }
+                    catch { /* report the failure below */ }
+                    const mem = getMemoryStats();
+                    return [
+                        `T Bot ${APP_VERSION} · ${process.platform}/${process.arch}`,
+                        `Node ${process.version} (${supportsNodeVersion(process.versions.node) ? 'uygun' : `en az ${MINIMUM_NODE_VERSION} gerekli`})`,
+                        `Çalışma alanı: ${workspace}`,
+                        `Sağlayıcı: ${config.provider} · Model: ${config.model}`,
+                        `API anahtarı: ${hasKey ? 'mevcut' : 'ayarlı değil'}`,
+                        `Bellek: ${mem.heapUsedMB} MB heap · ${mem.rssMB} MB RSS · baskı ${mem.pressure}`,
+                        `Yapılandırma: ${configDirectory()}`,
+                    ].join('\n');
+                }
+                if (name === '/gc' || name === '/ram') {
                     const result = await reclaimMemory(session, true);
                     return [
                         '[OK] Bellek Koruyucusu Çalıştırıldı (Garbage Collection ve Message Compaction)',
@@ -864,9 +895,7 @@ export async function main(argv) {
                         return 'Anahtar değiştirilmedi.';
                     if (/^\*+$/.test(key.trim()))
                         return 'Maskelenmiş yıldızlar anahtar değildir; sağlayıcıdan anahtarın kendisini kopyalayın.';
-                    if (spec.id === 'openrouter')
-                        await validateOpenRouterKey(prepareApiKey(key));
-                    const status = await setApiKey(spec.id, key);
+                    const status = await storeProviderApiKey(spec.id, key);
                     provider = createProvider({ ...await resolveProviderConfig(config, workspace), effort: selectedEffort });
                     keySource = await getApiKeySource(config.provider);
                     workerProvider = undefined;

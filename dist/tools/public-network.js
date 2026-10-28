@@ -1,32 +1,8 @@
 import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
-import { isIP } from 'node:net';
-/** Public-web tools cannot reach local services, including through DNS or IPv4-mapped IPv6. */
-export function isPrivateOrLocalHost(hostname) {
-    const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
-    if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') ||
-        host === 'ip6-localhost' || host === 'ip6-loopback' || host === 'metadata.google.internal')
-        return true;
-    const family = isIP(host);
-    if (family === 4) {
-        const [a, b] = host.split('.').map(Number);
-        return a === 0 || a === 10 || a === 127 || a >= 224 ||
-            (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-            (a === 192 && (b === 168 || b === 0)) || (a === 100 && b >= 64 && b <= 127) ||
-            (a === 198 && (b === 18 || b === 19));
-    }
-    if (family === 6) {
-        // Only global unicast 2000::/3 is accepted. This also excludes mapped,
-        // compatible, unique-local, multicast, link-local and translation addresses.
-        const canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);
-        const first = parseInt(canonical.split(':')[0], 16);
-        // Block transition mechanisms which may encode otherwise prohibited IPv4.
-        return !(first >= 0x2000 && first <= 0x3fff) || canonical.startsWith('2002:') ||
-            canonical.startsWith('2001:0:') || canonical.startsWith('2001::') || canonical.startsWith('2001:db8:');
-    }
-    return /^\d+$|^0x[0-9a-f]+$/i.test(host);
-}
+import { assertPublicHttpUrl, isPrivateOrLocalHost } from '../security/url.js';
+export { isPrivateOrLocalHost } from '../security/url.js';
 export function validatePublicUrl(raw) {
     const url = new URL(raw);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
@@ -57,7 +33,7 @@ export const publicLookup = (hostname, options, callback) => {
 };
 /** Bounded public HTTP transport. Every redirect gets a new URL and socket check. */
 export async function fetchPublicText(raw, options = {}) {
-    let url = validatePublicUrl(raw);
+    let url = await assertPublicHttpUrl(raw);
     const timeout = AbortSignal.timeout(12_000);
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
     const maxBytes = options.maxBytes ?? 2_000_000;
@@ -102,7 +78,7 @@ export async function fetchPublicText(raw, options = {}) {
             return response;
         if (redirects >= 5)
             throw new Error('Too many public URL redirects');
-        url = validatePublicUrl(new URL(response.location, url).href);
+        url = await assertPublicHttpUrl(new URL(response.location, url).href);
     }
 }
 //# sourceMappingURL=public-network.js.map

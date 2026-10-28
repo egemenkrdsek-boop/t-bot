@@ -2,9 +2,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { Writable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ToolDefinition } from '../types.js';
 import { windowsSystemExecutable } from '../windows-system.js';
+import { childEnvironment } from '../security/env.js';
+
+/** Unique, parseable marker carrying the real exit code of a finished command. */
+export const SHELL_EXIT_MARKER = 'TBOT_EXIT';
 
 interface ProcessScope { workspace: string; conversation: string; deletedAlias?: string }
 export interface ManagedProcess {
@@ -64,12 +68,16 @@ const POWERSHELL_SYNTAX_REGEX =
 /** Avoid implicitly giving model-launched programs provider and bridge secrets.
  * This is defense in depth; commands still run with the user's OS permissions. */
 export function shellEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(source)) {
-    if (/(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|PRIVATE_KEY)(?:_|$)/i.test(name)) continue;
-    env[name] = value;
-  }
-  return { ...env, CI: 'true', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', NPM_CONFIG_YES: 'true' };
+  return childEnvironment({}, source);
+}
+
+/** Resolve an absolute cmd.exe. Never search the untrusted launch directory or PATH. */
+function resolveCommandInterpreter(env: NodeJS.ProcessEnv): string {
+  const comspec = env.ComSpec || env.COMSPEC;
+  if (typeof comspec === 'string' && /^(?:[a-z]:[\\/]|\\\\)/i.test(comspec)) return comspec;
+  const root = env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows';
+  if (!/^(?:[a-z]:[\\/]|\\\\)/i.test(root)) throw new Error('Windows SystemRoot must be an absolute path.');
+  return join(root, 'System32', 'cmd.exe');
 }
 
 function spawnCommand(
@@ -96,6 +104,20 @@ function spawnCommand(
     });
   }
 
+  if (isWin) {
+    // Run through an absolute cmd.exe with /d /s /c and
+    // NoDefaultCurrentDirectoryInExePath=1 so git.cmd/npm.cmd/*.exe planted in
+    // the workspace cwd are never resolved.
+    return spawn(resolveCommandInterpreter(env), ['/d', '/s', '/c', command], {
+      cwd: options.cwd,
+      shell: false,
+      windowsHide: options.windowsHide ?? true,
+      detached: options.detached,
+      stdio: options.stdio,
+      env,
+    });
+  }
+
   return spawn(command, {
     cwd: options.cwd,
     shell: true,
@@ -104,6 +126,25 @@ function spawnCommand(
     stdio: options.stdio,
     env,
   });
+}
+
+/** Terminate a background process tree. Returns true only when the kill succeeded. */
+async function killProcessTree(proc: ManagedProcess): Promise<boolean> {
+  if (!proc.pid) return false;
+  if (process.platform === 'win32') {
+    const killer = spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+    return await new Promise<boolean>(resolvePromise => {
+      const timeout = setTimeout(() => { try { killer.kill(); } catch { /* ignore */ } resolvePromise(false); }, 5000);
+      killer.on('error', () => { clearTimeout(timeout); resolvePromise(false); });
+      killer.on('close', code => { clearTimeout(timeout); resolvePromise(code === 0); });
+    });
+  }
+  try {
+    process.kill(-proc.pid, 'SIGKILL');
+    return true;
+  } catch {
+    try { return proc.child.kill('SIGKILL'); } catch { return false; }
+  }
 }
 
 export function stopAllBackgroundProcesses(): void {
@@ -305,22 +346,20 @@ export async function handleShellTool(
     const proc = ownedProcess(processId, owner!);
 
     if (proc.status === 'running' && proc.pid) {
-      proc.status = 'stopped';
       proc.child.stdout?.destroy();
       proc.child.stderr?.destroy();
-      if (process.platform === 'win32') {
-        const killer = spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        await new Promise<void>(resolve => {
-          const timeout = setTimeout(resolve, 2000);
-          killer.on('close', () => { clearTimeout(timeout); resolve(); });
-          killer.on('error', () => { clearTimeout(timeout); resolve(); });
-        });
-      } else {
-        try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.child.kill('SIGKILL'); }
+      // Only report "stopped" when the tree was actually terminated.
+      if (await killProcessTree(proc)) {
+        proc.status = 'stopped';
       }
     }
     enforceProcessLimit();
-    return JSON.stringify({ processId: proc.processId, status: proc.status, message: `Process ${processId} stopped.` }, null, 2);
+    const stopped = proc.status === 'stopped';
+    return JSON.stringify({
+      processId: proc.processId,
+      status: proc.status,
+      message: stopped ? `Process ${processId} stopped.` : `Process ${processId} could not be terminated and is still ${proc.status}.`,
+    }, null, 2);
   }
 
   if (name === 'process_write') {
@@ -431,12 +470,19 @@ export async function handleShellTool(
     const child = spawnCommand(args.command as string, { cwd: workspace, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     let output = ''; let truncated = false; let settled = false; let stopping = false;
     const add = (data: Buffer) => { const chunk = data.toString('utf8'); if (output.length < 100000) output += chunk.slice(0, 100000 - output.length); if (output.length >= 100000) truncated = true; };
-    const finish = (status: string) => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(`${output}${truncated ? '\n[output truncated]' : ''}\n${status}`); };
+    const finish = (status: string, code: number | null) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort);
+      const marker = code === null ? 'signal' : String(code);
+      // The marker precedes the status line so legacy `$`-anchored readers
+      // (desktop renderer) still see "Exit code: N" last.
+      resolve(`${output}${truncated ? '\n[output truncated]' : ''}\n[${SHELL_EXIT_MARKER}: ${marker}]\n${status}`);
+    };
     const stop = (why: string) => {
       if (stopping || settled) return;
       stopping = true;
       child.stdout?.destroy(); child.stderr?.destroy();
-      const done = () => finish(`${why}; process tree termination attempted (detached descendants may continue)`);
+      const done = () => finish(`${why}; process tree termination attempted (detached descendants may continue)`, null);
       if (process.platform === 'win32' && child.pid) {
         const killer = spawn(windowsSystemExecutable('taskkill'), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
         const limit = setTimeout(() => { killer.kill(); child.kill(); done(); }, 3000);
@@ -451,6 +497,6 @@ export async function handleShellTool(
     const abort = () => stop('Aborted'); signal?.addEventListener('abort', abort, { once: true });
     child.stdout?.on('data', add); child.stderr?.on('data', add);
     child.on('error', error => { if (!settled) { settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(error); } });
-    child.on('close', (code, killedBy) => { if (!stopping) finish(`Exit code: ${code ?? `signal ${killedBy}`}`); });
+    child.on('close', (code, killedBy) => { if (!stopping) finish(`Exit code: ${code ?? `signal ${killedBy}`}`, code); });
   });
 }

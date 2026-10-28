@@ -274,7 +274,7 @@ export function createProvider(config) {
     safeUrl(base);
     if (spec.id === 'openai' && /^gpt-6(?:\.1)?-(?:astra|sol|terra|luna)(?:-|$)/i.test(config.model))
         return createOpenAIResponsesProvider({ model: config.model, apiKey: config.apiKey, effort: config.effort, timeoutMs: config.timeoutMs });
-    return { id: spec.id, label: spec.label, async *stream(messages, tools, options = {}) {
+    return { id: spec.id, label: spec.label, model: config.model, async *stream(messages, tools, options = {}) {
             const signal = AbortSignal.any([options.signal ?? new AbortController().signal, AbortSignal.timeout(config.timeoutMs ?? 120_000)]);
             try {
                 let url;

@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline';
-import { formatDuration, renderCyberWave, renderProgressBar, symbols, theme, toTurkishTitleCase, truncateAnsi, unicode, } from './theme.js';
+import { formatDuration, formatToolTitle, renderCyberWave, renderProgressBar, symbols, theme, truncateAnsi, unicode, } from './theme.js';
+import { isWorkflowInvocation, COMMAND_GROUPS } from './commands.js';
 import { animateLogo, logo } from './logo.js';
 import { globalTokenTracker } from './token-optimizer.js';
 import { globalGroundingLedger } from './grounding.js';
@@ -43,60 +44,6 @@ export function renderHudBar(config) {
     const left = theme.muted(unicode ? '╭─[' : '[[');
     const right = theme.muted(unicode ? ']─╮' : ']]');
     return `${left} ${theme.cyan(`Model: ${model}`)}${sep}${theme.amber(`Efor: ${effort}`)}${sep}${savingsStr}${sep}${groundingStr}${sep}${ramStr}${sep}${botPart} ${right}`;
-}
-export const TOOL_TITLE_MAP = {
-    // T Bot Yerel Araçları (T Bot Native Tools)
-    file_read: 'Dosya Okuma',
-    file_write: 'Dosya Yazma',
-    file_patch: 'Dosya Yamalama',
-    file_list: 'Dosya Listeleme',
-    file_search: 'Dosya Arama',
-    file_glob: 'Dosya Bulma',
-    file_outline: 'Dosya Özeti',
-    shell: 'Komut Satırı',
-    process_list: 'İşlem Listesi',
-    process_output: 'İşlem Çıktısı',
-    process_stop: 'İşlem Durdurma',
-    process_write: 'Süreç Girdisi Gönderme',
-    git_status: 'Git Durumu',
-    git_diff: 'Git Farkı',
-    git_log: 'Git Günlüğü',
-    git_add: 'Git Ekleme',
-    git_commit: 'Git İşleme',
-    git_push: 'Git Gönderme',
-    git_branch: 'Git Dalı',
-    web_search: 'Web Araması',
-    url_fetch: 'Web Sayfası Okuma',
-    browser_navigate: 'Tarayıcı Gezinme',
-    browser_click: 'Tarayıcı Tıklama',
-    browser_type: 'Tarayıcı Yazma',
-    browser_fill: 'Form Doldurma',
-    browser_press: 'Tarayıcı Tuş Basımı',
-    browser_scroll: 'Tarayıcı Kaydırma',
-    browser_hover: 'Tarayıcı Üzerine Gelme',
-    browser_evaluate: 'Tarayıcı Betik Çalıştırma',
-    browser_inspect: 'Sayfa İnceleme',
-    browser_tabs: 'Tarayıcı Sekme Yönetimi',
-    browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
-    computer: 'Bilgisayar Kontrolü',
-    image_generate: 'Görsel Üretimi',
-    memory_save: 'Bellek Kaydetme',
-    memory_recall: 'Bellek Hatırlama',
-    memory_forget: 'Hafıza Silme',
-    todo_manage: 'Görev Pusulası',
-    goal_manage: 'Hedef Yönetimi',
-    skill_create: 'Yetenek Oluşturma',
-    skill_list: 'Yetenek Listesi',
-    delegate_task: 'Alt Ajan Görevlendirme',
-    mcp_catalog: 'MCP Kataloğu',
-    mcp_call: 'MCP Çağrısı',
-};
-export function formatToolTitle(toolName) {
-    if (TOOL_TITLE_MAP[toolName]) {
-        return `${TOOL_TITLE_MAP[toolName]} (${toolName})`;
-    }
-    const clean = toolName.replace(/[_-]+/g, ' ');
-    return `${toTurkishTitleCase(clean)} (${toolName})`;
 }
 function extractToolTarget(args) {
     if (!args)
@@ -498,58 +445,19 @@ export function createEventPrinter(options) {
     };
     return { emit, finishStream, startThinking, stopThinking, stopSpinner, isThinking };
 }
-/** Print comprehensive help menu with modern cyber-minimalist categories. */
+/** Print the shared CLI command catalog with terminal styling. */
 export function printHelp() {
-    const rule = symbols.rule.repeat(64);
-    const title = `${theme.brightMint('T Bot')} ${theme.muted('─ Cyber-Zen Terminal Komutları')}`;
-    const categories = [
-        {
-            name: 'Oturum ve Çekirdek',
-            cmds: [
-                ['/help', 'Yardım Menüsünü Görüntüler'],
-                ['/clear', 'Sohbet Geçmişini ve Terminal Ekranını Temizler'],
-                ['/status', 'Canlı Siber HUD Durum Çubuğunu Görüntüler'],
-                ['/exit, /quit', 'T Bot Uygulamasından Güvenle Ayrılır'],
-            ],
-        },
-        {
-            name: 'Model ve Düşünme',
-            cmds: [
-                ['/provider, /model', 'LLM Sağlayıcı ve Model Seçimi'],
-                ['/config, /auth', 'Yapılandırma Ayarları ve API Anahtarı Yönetimi'],
-                ['/effort [düzey]', 'Düşünme Eforu (Düşük, Orta, Yüksek, Maksimum)'],
-                ['/ultracode [on|off]', 'Yüksek Doğruluklu Özerk Kodlama Modu'],
-                ['/yolo [on|off]', 'Araç Çalıştırma Otomatik Onay Modu'],
-                ['/gui [live|headless|stop]', 'Canlı Tarayıcı/Masaüstü HUD ve Pencere Kontrolü'],
-            ],
-        },
-        {
-            name: 'Sistem, Bellek ve Optimizasyon',
-            cmds: [
-                ['/tokens', 'Token Tasarrufu, Önbellek ve Kullanım Raporu'],
-                ['/memory', 'RAM Kullanımı ve Bellek Koruma İstatistikleri'],
-                ['/remember <k> = <v>', 'Kalıcı Proje veya Küresel Belleğe Bilgi Kaydeder'],
-                ['/gc', 'Bellek Çöp Toplayıcısını (GC) Tetikler ve RAM Temizler'],
-                ['/bot', 'Telegram Botu Canlı Durum ve Bağlantı Kontrolü'],
-            ],
-        },
-        {
-            name: 'Ajan ve İş Akışları',
-            cmds: [
-                ['/goal [hedef]', 'Oturum Hedefini Belirler veya Hedefleri Görüntüler'],
-                ['/plan [apply]', 'Görevi Adım Adım Planlar veya Planı Yürütür'],
-                ['/subagents', 'Paralel Araştırma ve Alt Ajan Yönetim Menüsü'],
-                ['/mcp', 'Model Context Protocol (MCP) Sunucu Bağlantıları'],
-                ['/skills', 'Mevcut Yerleşik Yetenek ve Uzmanlıkları Listeler'],
-                ['/sessions, /resume', 'Geçmiş Oturumları Listeler ve Devam Ettirir'],
-            ],
-        },
-    ];
+    const rule = symbols.rule.repeat(72);
+    const title = `${theme.brightMint('T Bot')} ${theme.muted('─ Terminal Komutları')}`;
     let out = `\n${title}\n${theme.dim(rule)}\n`;
-    for (const cat of categories) {
-        out += `\n  ${theme.brightMint(cat.name)}\n`;
-        for (const [cmd, desc] of cat.cmds) {
-            out += `    ${theme.crystalCyan(cmd.padEnd(24))} ${theme.text(desc)}\n`;
+    for (const group of COMMAND_GROUPS) {
+        const commands = group.commands.filter(command => command.surfaces.includes('cli'));
+        if (!commands.length)
+            continue;
+        out += `\n  ${theme.brightMint(group.name)}\n`;
+        for (const command of commands) {
+            const aliases = command.aliases?.length ? `  (${command.aliases.join(', ')})` : '';
+            out += `    ${theme.crystalCyan(command.usage.padEnd(34))} ${theme.text(command.description)}${theme.dim(aliases)}\n`;
         }
     }
     out += `\n${theme.dim('  Not: Çok satırlı girdiler için satır sonuna \\ koyarak devam edebilirsiniz.')}\n${theme.dim(rule)}\n\n`;
@@ -706,20 +614,27 @@ export async function startTui(options) {
     };
     try {
         if (interactive) {
-            const width = Math.max(20, Math.min(process.stdout.columns || 76, 76));
+            const width = Math.max(24, Math.min(process.stdout.columns || 80, 84));
             await animateLogo(width, () => exiting, 55);
-            write(`${theme.muted(`  ${safe(options.provider.label)} / ${safe(options.model)}  ${symbols.bullet}  ${safe(options.workspace)}`)}\n`);
-            write(`  ${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}\n`);
+            const rule = symbols.rule.repeat(Math.max(20, width - 4));
+            write(`\n  ${theme.brand('T BOT')} ${theme.muted('3.0')}  ${theme.dim(symbols.bullet)}  ${theme.muted('Yerel Ajan')}\n`);
+            write(`  ${theme.dim(rule)}\n`);
+            write(`  ${theme.muted('Çalışma Alanı')}  ${theme.iceWhite(safe(options.workspace))}\n`);
+            write(`  ${theme.muted('Model')}  ${theme.brightMint(safe(options.provider.label))} / ${theme.iceWhite(safe(options.model))}  ${theme.dim(symbols.bullet)}  ${yolo ? theme.warning('YOLO') : theme.muted('Onaylı')}\n`);
             if (options.modeStatus)
-                write(`  ${theme.muted(safe(options.modeStatus()))}\n`);
-            write(`\n  ${renderHudBar(getHudContext())}\n`);
-            write(`${theme.dim(`  ${symbols.rule.repeat(Math.max(20, width - 4))}`)}\n`);
-            write(`${theme.muted('  /help Komutlar İçin · Ctrl+C İptal Etmek İçin')}\n\n`);
+                write(`  ${theme.muted('Mod')}  ${theme.muted(safe(options.modeStatus()))}\n`);
+            write(`  ${theme.dim(rule)}\n`);
+            write(`  ${theme.muted('/plan Plan')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/ultracode Ultra')}  ${theme.dim(symbols.bullet)}  ${theme.muted('/help Komutlar')}  ${theme.dim(symbols.bullet)}  ${theme.muted('Ctrl+C İptal')}\n\n`);
         }
         while (!exiting) {
+            if (interactive) {
+                const width = Math.max(24, Math.min(process.stdout.columns || 80, 84));
+                write(`\n  ${theme.dim(symbols.rule.repeat(Math.max(20, width - 4)))}\n`);
+                write(`  ${renderHudBar(getHudContext())}\n`);
+            }
             const status = options.modeStatus ? ` ${theme.muted(safe(options.modeStatus()))}` : '';
             const promptStr = interactive
-                ? `${yolo ? theme.warning('YOLO · Otomatik Onay') : theme.muted('Onaylı')}${status} ${theme.brightMint(symbols.prompt)} `
+                ? `${theme.dim('│')} ${theme.muted('Mesaj')} ${theme.brand(symbols.prompt)} `
                 : '';
             const first = await read(promptStr);
             if (first === undefined)
@@ -756,11 +671,12 @@ export async function startTui(options) {
                     write(`${theme.muted('Sohbet Geçmişi ve Ekran Temizlendi.')}\n`);
                     continue;
                 }
-                if (['/goal', '/plan', '/subagents', '/mcp', '/frontenddesign', '/backend', '/codereview', '/debuganalysis', '/imagegen'].includes(command ?? '') && options.onWorkflow) {
+                const workflowArgument = input.slice(command?.length ?? 0).trim();
+                if (options.onWorkflow && isWorkflowInvocation(command ?? '', workflowArgument)) {
                     controller = new AbortController();
                     eventPrinter.startThinking('İş Akışı Yürütülüyor…');
                     try {
-                        await options.onWorkflow(command, input.slice(command.length).trim(), eventPrinter.emit, approve, controller.signal, suspendUi);
+                        await options.onWorkflow(command, workflowArgument, eventPrinter.emit, approve, controller.signal, suspendUi);
                     }
                     catch (error) {
                         eventPrinter.finishStream();

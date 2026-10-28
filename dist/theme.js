@@ -1,41 +1,29 @@
 /**
- * Göz Yormayan Açık Tabit (tabit.webp) & Siber-Zen ANSI Paleti
- * Terminal Arka Planında Parlak Açık Tabit Yeşili, Açık Yaprak/Nane Yeşili ve Saf Beyaz Tonlar
+ * T Bot terminal palette: Tabit green on graphite, semantic status colors,
+ * and a calm low-contrast surface set. ANSI is disabled for NO_COLOR/dumb terminals.
  */
 const color = Boolean(process.stdout.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb');
 export const paint = (code) => (value) => (color ? `\x1b[${code}m${value}\x1b[0m` : value);
 export const theme = {
-    // Parlak Açık Tabit Yeşili (#94D82D - tabit.webp açık ana marka yeşili)
-    brand: paint('1;38;2;148;216;45'),
-    accent: paint('38;2;148;216;45'),
-    // Açık Parlak Tabit Tonları (Saf Beyaz, Parlak Filiz Yeşili, Açık Yaprak & Nane Yeşili)
-    iceWhite: paint('1;38;2;250;253;248'),
-    brightMint: paint('1;38;2;160;228;90'),
-    crystalCyan: paint('38;2;184;236;130'),
-    softLavender: paint('38;2;204;242;158'),
-    // Açık Sıcak Kehribar (#FCC419)
+    // Tabit green remains the brand: a calm leaf/bright-lime system on graphite.
+    brand: paint('1;38;2;155;227;61'),
+    accent: paint('38;2;155;227;61'),
+    iceWhite: paint('1;38;2;237;245;234'),
+    brightMint: paint('1;38;2;198;230;160'),
+    crystalCyan: paint('38;2;147;166;141'),
+    softLavender: paint('38;2;180;205;165'),
     amber: paint('38;2;252;196;25'),
     warning: paint('38;2;252;196;25'),
-    // Tabit Orijinal Yaprak Yeşili (#78B82A - tabit.webp temel yeşili)
-    forest: paint('38;2;120;184;42'),
-    // Açık Adaçayı Grisi (#A3B89E)
-    muted: paint('38;2;163;184;158'),
-    // Göz Yormayan Ferah Kırık Beyaz (#EEF5EB)
-    text: paint('38;2;238;245;235'),
-    // Yumuşak Mercan Kırmızı (#FF6B6B)
+    forest: paint('38;2;101;184;23'),
+    muted: paint('38;2;147;166;141'),
+    text: paint('38;2;237;245;234'),
     danger: paint('38;2;255;107;107'),
     error: paint('38;2;255;107;107'),
-    // Yumuşak Yaprak Çerçeve (#5F735A)
     panel: paint('38;2;95;115;90'),
-    // Parlak Açık Yeşil Rozet (#A9E34B)
     badge: paint('1;38;2;169;227;75'),
-    // Ferah Açık Nane / Filiz Yeşili (#8CE99A)
     cyan: paint('38;2;140;233;154'),
-    // Canlı Açık Tabit Yeşili (#82C91E)
-    success: paint('38;2;130;201;30'),
-    // Sakin Zeytin / Adaçayı Grisi (#74886E)
+    success: paint('38;2;111;212;74'),
     dim: paint('38;2;116;136;110'),
-    // Kalın Yazı
     bold: paint('1'),
 };
 export const unicode = Boolean(process.stdin && process.stdout.isTTY && process.env.TERM !== 'dumb' && process.env.TBOT_ASCII !== '1');
@@ -258,6 +246,8 @@ export const TOOL_TITLE_MAP = {
     delegate_task: 'Alt Ajan Görevlendirme',
     mcp_catalog: 'MCP Kataloğu',
     mcp_call: 'MCP Çağrısı',
+    artifact_read: 'Artefakt Okuma',
+    project_verify: 'Proje Doğrulama',
 };
 /**
  * Araç adını Türkçe başlık ve parantez içinde teknik ad formatında döndürür.

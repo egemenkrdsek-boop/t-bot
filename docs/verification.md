@@ -167,3 +167,48 @@ Yerel 2.2.0 kurulum metadata/native açılış ve kendi yerel manifestindeki set
 Package/lock kök metadata, README başlığı/setup örneği ve dependency inventory başlığı 2.2.1'e alındı; kilitli bağımlılık kayıtları, tek komut/pinned kaynak kurulum akışı, evaluation komutu ve upstream MIT provenance korundu. Hedeflenen düzeltmeler RAM guard'ın in-place araç çıktısı kısaltmasıyla ham geçmişi kaybetmesini önlemek ve Telegram save/clear hatalarını başarı gibi göstermemektir. Dar işçi testleri son entegrasyon yerine geçmez.
 
 Bu kayıt anında **2.2.1 için ana ajanın final tam suite/build/setup/yerel kurulum/main push/CI/yayın doğrulaması henüz yoktur**. 2.2.0'ın 164 testi ve başarılı yayın/kurulum kayıtları bu yeni yamaların kanıtı sayılmaz. Son kaynak ve teslim kanıtları ana ajan tarafından ayrıca kaydedilecektir; orijinal geniş kalite, talimat takibi, dünya sıralaması ve rakiplere göre token hedefleri doğrulanmış sayılmaz.
+
+## 3.0.0 kaynak, paket ve kurulum kaydı
+
+28 Ekim 2026'da T Bot 3.0.0 kaynak ağacında aşağıdaki kontroller tamamlandı. Bu sonuçlar E2E, canlı sağlayıcı, gerçek tarayıcı veya gerçek Telegram görevi değildir.
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm test` | **204/204 başarılı**, 0 hata, 0 atlama; yaklaşık 5,2 saniye |
+| `npm run typecheck` | Başarılı |
+| `npm run build` | Başarılı; TypeScript ve masaüstü asset kopyası tamamlandı |
+| `node --check` renderer/preload | Başarılı |
+| `npm run dist:win` | Başarılı; Windows x64 NSIS yükleyicisi ve manifest üretildi |
+| `release/T-Bot-Setup-3.0.0.exe` | Windows x64 NSIS yükleyicisi üretildi; kesin boyut ve SHA256 için `release/build-manifest.json` esas alınır |
+| Kurulu `app.asar` | Yerel kurulum sonrası SHA256 `release/build-manifest.json` ile karşılaştırıldı; eşleşti |
+| Yerel masaüstü kurulumu | `deploy-local.ps1` başarılı; ProductVersion `3.0.0.0`, FileVersion `3.0.0` |
+| ASAR içeriği | `dist/tools/artifacts.js`, `dist/tools/verify.js`, yeni renderer HTML/CSS/JS ve `CHANGELOG.md` mevcut |
+| CLI tarball | `t-bot-cli-3.0.0.tgz` üretildi; `tbot --version` → `T Bot 3.0.0`, `tbot --help` başarılı |
+| Yayın | Yapılmadı; kullanıcı talebiyle GitHub push/release bu oturumun kapsamı dışındadır |
+
+3.0.0'da eklenen artifact store, model bütçeleri, `project_verify`, merkezi redaksiyon ve yeni masaüstü/TUI yüzeyi bu kaynak sonuçlarıyla sınırlıdır. Token tasarrufu, dünya sıralaması, zayıf model doğruluğu ve gerçek GUI/tarayıcı güvenilirliği bağımsız benchmark olmadan kanıtlanmış sayılmaz. Testler birim/bileşen ve fixture düzeyindedir; E2E değildir.
+
+## 3.1.0 kaynak, test ve setup kaydı
+
+28 Ekim 2026'da T Bot 3.1.0 kaynak ağacında aşağıdaki kontroller tamamlandı. Bu sonuçlar E2E, canlı sağlayıcı, gerçek tarayıcı, gerçek masaüstü otomasyonu veya gerçek Telegram görevi değildir.
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm test` | **224/224 başarılı**, 0 hata, 0 atlama; yaklaşık 5,2 saniye |
+| `npm run typecheck` | Başarılı |
+| `npm run build` | Başarılı; TypeScript ve masaüstü asset kopyası tamamlandı |
+| `node --check` renderer/preload | Başarılı |
+| `npm run dist:win` | Başarılı; Windows x64 NSIS yükleyicisi ve manifest üretildi |
+| `release/T-Bot-Setup-3.1.0.exe` | 128.559.777 byte; SHA256 `d3a0e4a1da2b6ca9a46e8709de319e03df7fc4bc9d72b79327dd42993872675c` |
+| `app.asar` SHA256 | `e00d360aba1f470743d77912a8fef9178a7dc131dd32c3312ec8afd7126ada81` (manifest ile aynı) |
+| CLI sürümü | `node dist/index.js --version` → `T Bot 3.1.0`; `--help` çalıştı ve komut kataloğunu gösterdi |
+| Desktop masaüstü kopyası | `C:\Users\Egemen\Desktop\T-Bot-Setup-3.1.0.exe` kopyalandı |
+| Yerel masaüstü kurulumu | `deploy-local.ps1` başarılı; ProductVersion `3.1.0.0`, FileVersion `3.1.0`; kurulu `app.asar` SHA256 manifestle eşleşti |
+| Global CLI kurulumu | `t-bot-cli-3.1.0.tgz` üretildi ve `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 3.1.0`, `--help` başarılı |
+| Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca bu bilgisayardaki yerel kurulum güncellendi |
+
+Yeni testler komut kataloğu/alias tutarlılığını, CLI ve masaüstü yüzey listelerini, İngilizce/Türkçe kullanıcı sınırı çıkarımını, yalnızca-yol allowlist'ini, kabuk üzerinden korunan yola yazma denemesinin reddini, sınır ihlalinin onaydan önce engellenmesini, içerik adresli artifact tekrarını, masaüstü görsel sağlayıcı aktarımını, paylaşılan model kataloğunu, komut paletinde delege edilmiş tıklamayı ve modal açıkken Escape'in turu iptal etmemesini kapsar. Bu testler modelin canlı bir görevde doğru davrandığını veya rakip ürünlere göre token tasarrufunu kanıtlamaz.
+
+Bu 3.1.0 derlemesi önceki 3.1.0 kurulumunun üzerine aynı görünür sürüm numarasıyla kuruldu; sürüm etiketi değiştirilmedi. CLI ve Desktop artık `host-services.ts` ve `turn-runner.ts` ortak katmanlarını kullanır. Desktop'ta görsel sağlayıcı eksikliği, özel base URL model kataloğu, OpenRouter anahtar doğrulaması, komut paleti tıklamaları, modal Escape davranışı, `/effort`, `/skills`, `/sessions`, `/resume`, `/imagegen`, `/gui`, `/mcp` ve `/bot` komutları ile MCP/Telegram panelleri eklendi. Bunlar E2E, gerçek GUI açılışı, canlı model, gerçek MCP sunucusu veya Telegram akışıyla doğrulanmadı.
+
+Kurulum paketi imzasızdır. `release/build-manifest.json` hash otoritesidir; manifest imza yerine geçmez. Paket içine gömülü belge, kendi hash'i hesaplanmadan önce üretildiği için bir önceki derlemenin hash'ini gösterebilir; dış depodaki bu kayıt ve manifest esas alınır. Masaüstü yükleyicisi `deploy-local.ps1` ile sessiz kuruldu; kurulu uygulama açılmadı ve gerçek GUI/tarayıcı/Telegram akışı denenmedi.
