@@ -10,6 +10,7 @@ import { join, dirname, delimiter, isAbsolute, relative, sep } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveGitExecutable, handleGitTool } from '../src/tools/git.js';
+import { isSensitivePath } from '../src/security/paths.js';
 import { handleFileTool } from '../src/tools/files.js';
 import { pruneScreenshots } from '../src/tools/screenshot-store.js';
 import { handleSkillTool, loadCustomSkills, buildSkillPrompt, autoDistillSkillFromTurn } from '../src/skills.js';
@@ -367,4 +368,14 @@ test('screenshot pruning never follows a .tbot junction outside the workspace', 
     assert.equal(await pruneScreenshots(workspace), 0);
     assert.equal(await readFile(external, 'utf8'), 'outside sentinel');
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Windows CI temp workspaces are not user-profile paths but credentials inside them stay protected', () => {
+  // Short (8.3) and long runner profiles must behave identically on any host.
+  assert.equal(isSensitivePath('C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\tbot-x\\notes.txt'), false);
+  assert.equal(isSensitivePath('C:\\Users\\runneradmin\\AppData\\Local\\Temp\\tbot-x\\first.txt'), false);
+  assert.equal(isSensitivePath('C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\tbot-x\\.env'), true);
+  assert.equal(isSensitivePath('C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\tbot-x\\.ssh\\id_rsa'), true);
+  // The broader user-configuration rule is unchanged outside the temp tree.
+  assert.equal(isSensitivePath('C:\\Users\\runneradmin\\AppData\\Roaming\\something.txt'), true);
 });
