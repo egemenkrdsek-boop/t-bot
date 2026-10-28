@@ -20,6 +20,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   mcpTools?: McpConnection[];
   imageProvider?: ImageProviderConfig;
+  /** Host-supplied conversation identity; never accepted from tool arguments. */
+  processOwner?: string;
   [key: string]: unknown;
 }
 
@@ -505,9 +507,9 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     } else if (toolName === 'todo_manage' || toolName === 'goal_manage') {
       output = await executeWorkflowTool(toolName, actualArgs, context.workspace);
     } else if (toolName.startsWith('process_')) {
-      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
     } else if (toolName === 'shell') {
-      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
     } else if (toolName === 'image_generate') {
       output = await handleImageTool(toolName, actualArgs, context);
     } else if (browserToolDefinitions.some(tool => tool.name === toolName)) {

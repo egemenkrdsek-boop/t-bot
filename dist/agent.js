@@ -1,6 +1,7 @@
 import { open, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { executeTool, getToolDefinitions, READ_ONLY_TOOLS } from './tools/index.js';
 import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
 import { pruneToolDefinitions, compressConversationHistory, estimateMessagesTokens, smartTruncateToolOutput, globalTokenTracker, } from './token-optimizer.js';
@@ -56,29 +57,16 @@ export function isFastConversationalPrompt(input, hasImages) {
     const phrase = trimmed.toLocaleLowerCase('tr-TR').replace(/[.!?…,]+$/u, '').trim();
     return /^(?:merhaba|selam|selamlar|günaydın|iyi (?:akşamlar|geceler)|nasılsın|teşekkürler|teşekkür ederim|sağ ol|hello|hi|hey|good (?:morning|evening|night)|how are you|thanks|thank you)$/u.test(phrase);
 }
-const repoMapCache = new Map();
-async function getCachedRepoMap(workspace, query) {
-    const now = Date.now();
-    const cached = repoMapCache.get(workspace);
-    if (cached && now - cached.timestamp < 45_000 && (cached.query === query || !query)) {
-        return cached.repoMap;
-    }
+async function getWorkspaceRepoMap(workspace, query) {
     try {
-        const map = await buildWorkspaceRepoMap(workspace, query, 900);
-        if (map) {
-            if (repoMapCache.size >= 64 && !repoMapCache.has(workspace)) {
-                const oldest = repoMapCache.keys().next().value;
-                if (oldest !== undefined)
-                    repoMapCache.delete(oldest);
-            }
-            repoMapCache.set(workspace, { repoMap: map, query, timestamp: now });
-            return map;
-        }
+        // The builder validates bounded per-file revisions. A second TTL cache
+        // would hide new files and edits, and could reuse stale workspace paths.
+        return await buildWorkspaceRepoMap(workspace, query, 900);
     }
     catch {
         // Repo map üretimi başarısız olursa sessizce geç
     }
-    return cached?.repoMap || '';
+    return '';
 }
 function enrichToolErrorWithSelfHealing(toolName, errorMsg) {
     if (errorMsg.includes('[OTONOM KURTARMA KILAVUZU]'))
@@ -272,6 +260,9 @@ async function runAgentInContext(input, options) {
             messages: conversation,
         };
         session.messages = conversation;
+        // Read-only investigators get a fresh scope even if a caller spread parent input.
+        const processOwner = toolPolicy === 'read-only' ? `readonly:${randomUUID()}`
+            : input.processOwner ?? (options.session ? `session:${session.id}` : `ephemeral:${randomUUID()}`);
         if (input.message.length > MAX_CONTEXT_CHARS) {
             emit({ type: 'error', error: 'İstek metni ajan bağlam sınırını aşıyor.' });
             return conversation;
@@ -288,7 +279,7 @@ async function runAgentInContext(input, options) {
             // Stable prefix + Memory context + Active skill guidance + Live RepoMap
             const memoryContext = await buildMemoryContext(workspace, input.message);
             const skillPrompt = buildSkillPrompt(options.activeSkills ? options.activeSkills : skills, workspace);
-            const repoMap = await getCachedRepoMap(workspace, input.message);
+            const repoMap = await getWorkspaceRepoMap(workspace, input.message);
             const systemSections = [SYSTEM_PROMPT];
             if (repoMap)
                 systemSections.push(`[PROJE MİMARİ VE SEMBOL HARİTASI (RepoMap)]\n${repoMap}`);
@@ -537,6 +528,7 @@ async function runAgentInContext(input, options) {
                                 ? 'Araç çalıştırma iptal edildi.'
                                 : await executeTool(call, {
                                     workspace,
+                                    processOwner,
                                     approve: input.approve,
                                     toolPolicy: readOnly ? 'read-only' : toolPolicy,
                                     provider: input.provider,

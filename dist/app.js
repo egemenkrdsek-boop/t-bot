@@ -423,6 +423,7 @@ export async function main(argv) {
             await hydrateMcp(controller.signal, showEvent);
             console.error(describeEffort(config.provider, config.model, selectedEffort).message);
             session.messages = await runRouted({
+                processOwner: `cli:${session.id}`,
                 message: options.message,
                 history: session.messages,
                 provider,
@@ -458,6 +459,7 @@ export async function main(argv) {
             onSubmit: async (message, emit, tuiApprove, signal) => {
                 await hydrateMcp(signal, emit);
                 const input = {
+                    processOwner: `cli:${session.id}`,
                     message,
                     history: session.messages,
                     provider,
@@ -480,6 +482,7 @@ export async function main(argv) {
                     await hydrateMcp(signal, emit);
                 }
                 const input = {
+                    processOwner: `cli:${session.id}`,
                     message: text,
                     history: session.messages,
                     provider,

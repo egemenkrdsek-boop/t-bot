@@ -1,9 +1,14 @@
-import { randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { promises as fs, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { withFileLock } from './lock.js';
+// Enumerable symbols survive {...session} without becoming persisted/model-visible JSON fields.
+const REVISION = Symbol('sessionCheckpointRevision');
+const queues = new Map();
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const SEGMENT_BYTES = 1024 * 1024;
+const DEFAULT_LOAD_BYTES = 256 * 1024 * 1024;
 const MAX_LIST = 200;
 const SECRET_KEY = /(?:api[_-]?key|token|authorization|password|secret|credential|private[_-]?key)/i;
 /** Redact common credentials before persistence. This cannot recognize every possible secret. */
@@ -28,6 +33,21 @@ function workspaceKey(workspace) {
     const resolved = path.resolve(workspace);
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
+function canonicalDirectory(directory) {
+    let ancestor = path.resolve(directory);
+    const missing = [];
+    for (;;) {
+        try {
+            return path.join(realpathSync.native(ancestor), ...missing.reverse());
+        }
+        catch (error) {
+            if (error.code !== 'ENOENT' || path.dirname(ancestor) === ancestor)
+                throw error;
+            missing.push(path.basename(ancestor));
+            ancestor = path.dirname(ancestor);
+        }
+    }
+}
 function validSession(value) {
     if (!value || typeof value !== 'object')
         return false;
@@ -39,12 +59,32 @@ function validSession(value) {
 }
 export function createSession(workspace) {
     const now = new Date().toISOString();
-    return { id: randomUUID(), workspace: path.resolve(workspace), createdAt: now, updatedAt: now, messages: [] };
+    return { id: randomUUID(), workspace: path.resolve(workspace), createdAt: now, updatedAt: now, messages: [], [REVISION]: null };
+}
+function isCheckpoint(record) {
+    return 'format' in record && record.format === 'tbot-session-v2';
+}
+function revision(record) {
+    if (!record)
+        return null;
+    return isCheckpoint(record) ? record.generation : `legacy:${createHash('sha256').update(JSON.stringify(record)).digest('hex')}`;
+}
+function metadataFor(session) {
+    const first = session.messages.find(message => message.role === 'user');
+    return { id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt,
+        title: (first ? redactSecrets(first.content).slice(0, 320).replace(/\s+/g, ' ').trim().slice(0, 80) : '') || 'Yeni Oturum', messageCount: session.messages.length };
 }
 /** Local sessions are stored under the configured data directory, never transmitted by this store. */
 export class SessionStore {
     directory;
-    constructor(dataDir) { this.directory = path.join(dataDir, 'sessions'); }
+    maxLoadBytes;
+    constructor(dataDir, options = {}) {
+        // Resolve aliases synchronously before queueing, including when sessions/ does not yet exist.
+        this.directory = canonicalDirectory(path.join(dataDir, 'sessions'));
+        this.maxLoadBytes = options.maxLoadBytes ?? DEFAULT_LOAD_BYTES;
+        if (!Number.isSafeInteger(this.maxLoadBytes) || this.maxLoadBytes <= 0)
+            throw new Error('Invalid session load budget');
+    }
     file(id) {
         if (!ID.test(id))
             throw new Error('Invalid session ID');
@@ -52,17 +92,51 @@ export class SessionStore {
     }
     async locked(id, action) {
         this.file(id);
-        await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
-        const lock = path.join(this.directory, `.${id}.lock`);
-        return withFileLock(lock, action);
+        // Queue before the first await, across store instances, including filesystem lock acquisition.
+        const key = workspaceKey(path.join(this.directory, id));
+        const previous = queues.get(key) ?? Promise.resolve();
+        let release;
+        const pending = new Promise(resolve => { release = resolve; });
+        queues.set(key, pending);
+        await previous;
+        try {
+            await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+            return await withFileLock(path.join(this.directory, `.${id}.lock`), action);
+        }
+        finally {
+            release();
+            if (queues.get(key) === pending)
+                queues.delete(key);
+        }
     }
-    async read(id) {
+    ownedSegment(id, name) {
+        return new RegExp(`^\\.${id}\\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.[0-9]+\\.seg$`, 'i').test(name);
+    }
+    async readRecord(id) {
         const file = this.file(id);
         try {
-            const stat = await fs.stat(file);
-            if (stat.size > MAX_FILE_BYTES)
-                throw new Error('Session file is too large');
+            const stat = await fs.lstat(file);
+            if (!stat.isFile() || stat.isSymbolicLink())
+                throw new Error('Invalid session file');
+            if (stat.size > Math.max(MAX_FILE_BYTES, this.maxLoadBytes))
+                throw new Error(`Session exceeds metadata/read budget`);
             const value = JSON.parse(await fs.readFile(file, 'utf8'));
+            if (value && typeof value === 'object' && value.format === 'tbot-session-v2') {
+                const record = value;
+                if (stat.size > MAX_FILE_BYTES || !validSession({ ...record, messages: [] }) || record.id !== id ||
+                    typeof record.generation !== 'string' || !ID.test(record.generation) ||
+                    typeof record.title !== 'string' || !Number.isSafeInteger(record.messageCount) || record.messageCount < 0 ||
+                    !Number.isSafeInteger(record.totalBytes) || record.totalBytes < 0 || !Array.isArray(record.segments) ||
+                    record.segments.some(segment => !segment || typeof segment.name !== 'string' || !this.ownedSegment(id, segment.name) ||
+                        !Number.isSafeInteger(segment.bytes) || segment.bytes <= 0 || segment.bytes > SEGMENT_BYTES ||
+                        typeof segment.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(segment.sha256)) ||
+                    new Set(record.segments.map(segment => segment.name)).size !== record.segments.length ||
+                    record.segments.reduce((sum, segment) => sum + segment.bytes, 0) !== record.totalBytes)
+                    throw new Error('Invalid session checkpoint');
+                return record;
+            }
+            if (stat.size > this.maxLoadBytes)
+                throw new Error(`Session exceeds load budget (${this.maxLoadBytes} bytes)`);
             if (!validSession(value) || value.id !== id)
                 throw new Error('Invalid session file');
             return value;
@@ -74,10 +148,47 @@ export class SessionStore {
         }
     }
     async get(id, workspace) {
-        const session = await this.read(id);
-        if (session && workspaceKey(session.workspace) !== workspaceKey(workspace))
-            throw new Error('Session belongs to a different workspace');
-        return session;
+        // A reader holds the same lock as save/delete so cleanup cannot remove its checkpoint.
+        return this.locked(id, async () => {
+            const record = await this.readRecord(id);
+            if (!record)
+                return null;
+            if (workspaceKey(record.workspace) !== workspaceKey(workspace))
+                throw new Error('Session belongs to a different workspace');
+            if (!isCheckpoint(record))
+                return { ...record, [REVISION]: revision(record) };
+            if (record.totalBytes > this.maxLoadBytes)
+                throw new Error(`Session exceeds load budget (${this.maxLoadBytes} bytes); history was preserved on disk`);
+            const messages = [];
+            const decoder = new TextDecoder('utf-8', { fatal: true });
+            let fragments = [];
+            for (const segment of record.segments) {
+                const file = path.join(this.directory, segment.name);
+                const stat = await fs.lstat(file);
+                if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== segment.bytes)
+                    throw new Error('Invalid session segment');
+                const bytes = await fs.readFile(file);
+                if (bytes.length !== segment.bytes || createHash('sha256').update(bytes).digest('hex') !== segment.sha256)
+                    throw new Error('Damaged session segment');
+                const chunk = decoder.decode(bytes, { stream: true });
+                let newline;
+                let start = 0;
+                while ((newline = chunk.indexOf('\n', start)) >= 0) {
+                    fragments.push(chunk.slice(start, newline));
+                    const message = JSON.parse(fragments.join(''));
+                    if (!validSession({ ...record, messages: [message] }))
+                        throw new Error('Invalid session message');
+                    messages.push(message);
+                    fragments = [];
+                    start = newline + 1;
+                }
+                if (start < chunk.length)
+                    fragments.push(chunk.slice(start));
+            }
+            if (decoder.decode() || fragments.length || messages.length !== record.messageCount)
+                throw new Error('Incomplete session checkpoint');
+            return { id: record.id, workspace: record.workspace, createdAt: record.createdAt, updatedAt: record.updatedAt, messages, [REVISION]: revision(record) };
+        });
     }
     async list(workspace) {
         let entries;
@@ -94,12 +205,11 @@ export class SessionStore {
             if (!entry.endsWith('.json') || !ID.test(entry.slice(0, -5)))
                 continue;
             try {
-                const session = await this.read(entry.slice(0, -5));
+                const session = await this.readRecord(entry.slice(0, -5));
                 if (!session || (workspace && workspaceKey(session.workspace) !== workspaceKey(workspace)))
                     continue;
-                const first = session.messages.find(message => message.role === 'user' && typeof message.content === 'string');
-                metadata.push({ id: session.id, workspace: session.workspace, createdAt: session.createdAt, updatedAt: session.updatedAt,
-                    title: (first?.content.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Yeni Oturum'), messageCount: session.messages.length });
+                metadata.push(isCheckpoint(session) ? { id: session.id, workspace: session.workspace, createdAt: session.createdAt,
+                    updatedAt: session.updatedAt, title: session.title, messageCount: session.messageCount } : metadataFor(session));
             }
             catch { /* A damaged session must not prevent listing the rest. */ }
         }
@@ -108,39 +218,105 @@ export class SessionStore {
     async save(session) {
         if (!validSession(session))
             throw new Error('Invalid session');
+        const caller = session;
+        const revisionProperty = Object.getOwnPropertyDescriptor(caller, REVISION);
+        if (revisionProperty ? revisionProperty.writable !== true : !Object.isExtensible(caller)) {
+            throw new Error('Session must allow checkpoint revision updates');
+        }
+        // Capture message records before any await; a caller may append a new turn while this save runs.
+        session = { ...session, messages: session.messages.map(({ images: _images, ...message }) => message) };
         await this.locked(session.id, async () => {
             const file = this.file(session.id);
-            const existing = await this.read(session.id);
+            const existing = await this.readRecord(session.id);
             if (existing && workspaceKey(existing.workspace) !== workspaceKey(session.workspace))
                 throw new Error('Session belongs to a different workspace');
-            const messages = session.messages.map(({ images: _images, ...message }) => message);
-            const clean = redact({ ...session, messages, workspace: path.resolve(session.workspace), updatedAt: new Date().toISOString() });
-            let data = JSON.stringify(clean);
-            while (Buffer.byteLength(data, 'utf8') > MAX_FILE_BYTES && clean.messages.length) {
-                // Remove a complete oldest user turn, including its tool calls and results.
-                const next = clean.messages.findIndex((message, index) => index > 0 && message.role === 'user');
-                clean.messages.splice(0, next < 0 ? clean.messages.length : next);
-                data = JSON.stringify(clean);
-            }
-            if (Buffer.byteLength(data, 'utf8') > MAX_FILE_BYTES)
-                throw new Error('Session metadata is too large to save');
+            if ((caller[REVISION] ?? null) !== revision(existing))
+                throw new Error('Session checkpoint conflict; reload the session before saving');
+            const generation = randomUUID();
+            const record = { ...metadataFor(session), workspace: path.resolve(session.workspace),
+                updatedAt: new Date().toISOString(),
+                format: 'tbot-session-v2', generation, totalBytes: 0, segments: [] };
             const temporary = path.join(this.directory, `.${session.id}.${randomUUID()}.tmp`);
+            const written = [];
+            let committed = false;
             try {
-                await fs.writeFile(temporary, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+                const buffer = Buffer.allocUnsafe(SEGMENT_BYTES);
+                let used = 0;
+                const flush = async () => {
+                    if (!used)
+                        return;
+                    const name = `.${session.id}.${generation}.${record.segments.length}.seg`;
+                    const segment = path.join(this.directory, name);
+                    await this.writeSynced(segment, buffer.subarray(0, used));
+                    written.push(segment);
+                    record.segments.push({ name, bytes: used, sha256: createHash('sha256').update(buffer.subarray(0, used)).digest('hex') });
+                    record.totalBytes += used;
+                    used = 0;
+                };
+                for (const message of session.messages) {
+                    // Redact/serialize only one message at a time, never the complete history.
+                    const bytes = Buffer.from(JSON.stringify(redact(message)) + '\n', 'utf8');
+                    for (let offset = 0; offset < bytes.length;) {
+                        const size = Math.min(SEGMENT_BYTES - used, bytes.length - offset);
+                        bytes.copy(buffer, used, offset, offset + size);
+                        used += size;
+                        offset += size;
+                        if (used === SEGMENT_BYTES)
+                            await flush();
+                    }
+                }
+                await flush();
+                const data = JSON.stringify(record);
+                if (Buffer.byteLength(data) > MAX_FILE_BYTES)
+                    throw new Error('Session checkpoint metadata is too large to save');
+                await this.writeSynced(temporary, data);
                 await fs.rename(temporary, file);
+                committed = true;
+                caller[REVISION] = generation;
             }
             finally {
                 await fs.unlink(temporary).catch(() => undefined);
+                if (!committed)
+                    await Promise.all(written.map(segment => fs.unlink(segment).catch(() => undefined)));
             }
+            // Post-commit housekeeping is best effort; a cleanup failure must not report a failed save.
+            await this.cleanup(session.id, new Set(record.segments.map(segment => segment.name))).catch(() => undefined);
         });
+    }
+    async writeSynced(file, data) {
+        const handle = await fs.open(file, 'wx', 0o600);
+        try {
+            try {
+                await handle.writeFile(data);
+                await handle.sync();
+            }
+            finally {
+                await handle.close();
+            }
+        }
+        catch (error) {
+            // Only unlink after our exclusive open succeeded; never remove a colliding existing file.
+            await fs.unlink(file).catch(() => undefined);
+            throw error;
+        }
+    }
+    async cleanup(id, keep) {
+        for (const name of await fs.readdir(this.directory)) {
+            // Only exact generated basenames for this session are eligible; never recurse.
+            if (this.ownedSegment(id, name) && !keep.has(name))
+                await fs.unlink(path.join(this.directory, name)).catch(() => undefined);
+        }
     }
     async delete(id, workspace) {
         return this.locked(id, async () => {
-            const session = await this.get(id, workspace);
+            const session = await this.readRecord(id);
             if (!session)
                 return false;
+            if (workspaceKey(session.workspace) !== workspaceKey(workspace))
+                throw new Error('Session belongs to a different workspace');
             try {
                 await fs.unlink(this.file(id));
+                await this.cleanup(id, new Set()).catch(() => undefined);
                 return true;
             }
             catch (error) {

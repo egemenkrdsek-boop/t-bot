@@ -1,6 +1,6 @@
 # Production dependency license inventory
 
-Generated from package-lock.json for T Bot 2.1.0. License identifiers are package metadata, not replacement license grants. Consult license and notice files in each distributed package. Electron/Chromium runtime notices are supplied alongside the desktop executable.
+Generated from package-lock.json for T Bot 2.2.0. License identifiers are package metadata, not replacement license grants. Consult license and notice files in each distributed package. Electron/Chromium runtime notices are supplied alongside the desktop executable.
 
 | Package path | Version | License metadata |
 | --- | --- | --- |

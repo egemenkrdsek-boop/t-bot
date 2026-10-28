@@ -6,6 +6,9 @@ $previousSkip = $env:ELECTRON_SKIP_BINARY_DOWNLOAD
 $staging = $null
 $locationPushed = $false
 try {
+    $requestedRevision = [string]$env:TBOT_INSTALL_REVISION
+    if ($requestedRevision -and $requestedRevision -notmatch '\A[a-fA-F0-9]{40}\z') { throw 'TBOT_INSTALL_REVISION must be a full 40-character commit SHA.' }
+    $requestedRevision = $requestedRevision.ToLowerInvariant()
     foreach ($command in @('node', 'npm.cmd', 'git')) {
         if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "Required command missing: $command. Install Node.js >=22.12 and Git, then reopen the terminal." }
     }
@@ -17,10 +20,20 @@ try {
     Write-Host 'Building T Bot CLI from GitHub main in a temporary checkout...'
     & git clone --depth 1 --branch main -- 'https://github.com/egemenkrdsek-boop/t-bot.git' $staging
     if ($LASTEXITCODE -ne 0) { throw 'Unable to clone T Bot source.' }
+    if ($requestedRevision) {
+        & git -C $staging fetch --depth 1 origin $requestedRevision
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to fetch the pinned T Bot revision.' }
+        & git -C $staging checkout --detach $requestedRevision --
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to check out the pinned T Bot revision.' }
+    }
     $revision = (& git -C $staging rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[a-f0-9]{40}$') { throw 'Unable to identify the source revision.' }
-    $mainRevision = (& git -C $staging rev-parse refs/remotes/origin/main).Trim()
-    if ($LASTEXITCODE -ne 0 -or $revision -ne $mainRevision) { throw 'Checkout does not match the remote main branch.' }
+    if ($requestedRevision) {
+        if ($revision -ne $requestedRevision) { throw 'Checkout does not match TBOT_INSTALL_REVISION.' }
+    } else {
+        $mainRevision = (& git -C $staging rev-parse refs/remotes/origin/main).Trim()
+        if ($LASTEXITCODE -ne 0 -or $revision -ne $mainRevision) { throw 'Checkout does not match the remote main branch.' }
+    }
     Write-Host "Source revision: $revision"
     Push-Location -LiteralPath $staging
     $locationPushed = $true

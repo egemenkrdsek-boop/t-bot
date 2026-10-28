@@ -483,7 +483,7 @@
         <div class="code-block-wrapper">
           <div class="code-block-header">
             <span>${escapeHtml(cleanLang)}</span>
-            <button class="btn-copy-code" data-copy-code>Kopyala</button>
+            <button class="btn-copy-code" data-copy-code>Görünür kodu kopyala</button>
           </div>
           <pre><code>${escapedCode}</code></pre>
         </div>
@@ -564,9 +564,13 @@
     }
   }
 
+  function isTranscriptAtBottom() {
+    return !dom.chatFeed || dom.chatFeed.scrollHeight - dom.chatFeed.scrollTop <= dom.chatFeed.clientHeight + 100;
+  }
+
   function scrollToBottom(force = false) {
     if (!dom.chatFeed) return;
-    const isAtBottom = dom.chatFeed.scrollHeight - dom.chatFeed.scrollTop <= dom.chatFeed.clientHeight + 100;
+    const isAtBottom = isTranscriptAtBottom();
     if (force || isAtBottom) {
       dom.chatFeed.scrollTop = dom.chatFeed.scrollHeight;
       dom.btnScrollBottom?.classList.add('hidden');
@@ -575,76 +579,184 @@
     }
   }
 
-  function appendUserMessage(text, images = []) {
-    hideEmptyHero();
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const wrapper = document.createElement('div');
-    wrapper.className = 'message-wrapper';
+  const TRANSCRIPT_PAGE_SIZE = 40;
+  const TEXT_PAGE_CHARS = 16_000;
+  const transcriptEntries = [];
+  const renderedTranscriptEntries = new Set();
+  const pinnedTranscriptEntries = new Set();
+  let transcriptPageStart = 0;
+  let followTranscript = true;
+  let transcriptPager = null;
+  let currentAssistantEntry = null;
+  let assistantRenderTimer = null;
+  const activeToolCards = new Map();
 
-    let imagesHtml = '';
-    if (images && images.length > 0) {
-      imagesHtml = '<div class="message-images-grid" style="display:flex;gap:6px;margin-bottom:8px;">';
-      images.filter(img => img?.mimeType === 'image/png' && typeof img.data === 'string' && /^[A-Za-z0-9+/=]+$/.test(img.data)).slice(0, 3).forEach((img, idx) => {
-        const src = `data:${img.mimeType};base64,${img.data}`;
-        imagesHtml += `<div class="tool-screenshot-preview" data-preview-image role="button" tabindex="0"><img src="${src}" alt="Ek" style="max-height:100px;border-radius:4px;"></div>`;
-      });
-      imagesHtml += '</div>';
-    }
-
-    wrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-user">▸ Sen</span><span class="message-time">${time}</span></div><div class="user-message-bubble">${imagesHtml}<div class="user-message-text">${escapeHtml(String(text || '').trim())}</div></div>`;
-
-    dom.chatFeed?.appendChild(wrapper);
-    scrollToBottom(true);
+  function transcriptTime() {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  let currentAssistantWrapper = null;
-  let currentAssistantTextBuffer = '';
-  let assistantRenderTimer = null;
+  function transcriptPage(action) {
+    const latest = Math.max(0, transcriptEntries.length - TRANSCRIPT_PAGE_SIZE);
+    transcriptPageStart = action === 'first' ? 0 : action === 'latest' ? latest : Math.max(0, Math.min(latest, transcriptPageStart + (action === 'older' ? -TRANSCRIPT_PAGE_SIZE : TRANSCRIPT_PAGE_SIZE)));
+    followTranscript = transcriptPageStart === latest;
+    refreshTranscript();
+    if (dom.chatFeed) dom.chatFeed.scrollTop = action === 'latest' ? dom.chatFeed.scrollHeight : 0;
+  }
+
+  function refreshTranscript() {
+    if (!dom.chatFeed) return;
+    if (followTranscript) transcriptPageStart = Math.max(0, transcriptEntries.length - TRANSCRIPT_PAGE_SIZE);
+    const visible = new Set(transcriptEntries.slice(transcriptPageStart, transcriptPageStart + TRANSCRIPT_PAGE_SIZE));
+    for (const entry of pinnedTranscriptEntries) visible.add(entry);
+    for (const entry of renderedTranscriptEntries) {
+      if (visible.has(entry)) continue;
+      entry.element?.remove();
+      entry.element = null;
+      renderedTranscriptEntries.delete(entry);
+    }
+    // Keep already mounted nodes in place: streaming must not disturb selection/focus.
+    for (const entry of visible) {
+      if (entry.element) continue;
+      entry.element = createTranscriptElement(entry);
+      entry.element.transcriptEntry = entry;
+      dom.chatFeed.appendChild(entry.element);
+      renderedTranscriptEntries.add(entry);
+    }
+    // Inserting newly exposed older entries ahead of retained live entries preserves order.
+    let next = null;
+    for (const entry of Array.from(visible).reverse()) {
+      const element = entry.element;
+      if (element.nextSibling !== next && dom.chatFeed.insertBefore) dom.chatFeed.insertBefore(element, next);
+      next = element;
+    }
+    if (!transcriptPager) {
+      transcriptPager = document.createElement('div');
+      transcriptPager.className = 'transcript-pager';
+      transcriptPager.setAttribute('aria-label', 'Sohbet geçmişi sayfaları');
+      transcriptPager.innerHTML = '<button type="button" data-history-page="first">İlk kayıtlar</button><button type="button" data-history-page="older">← Önceki 40</button><span data-history-count></span><button type="button" data-history-page="newer">Sonraki 40 →</button><button type="button" data-history-page="latest">En yeni</button>';
+      dom.chatFeed.prepend?.(transcriptPager);
+    }
+    const count = transcriptPager.querySelector('[data-history-count]');
+    const end = Math.min(transcriptPageStart + TRANSCRIPT_PAGE_SIZE, transcriptEntries.length);
+    if (count) count.textContent = `${transcriptEntries.length ? transcriptPageStart + 1 : 0}–${end} / ${transcriptEntries.length}${visible.size > end - transcriptPageStart ? ' · Canlı işlemler ayrıca gösteriliyor' : ''}`;
+    for (const button of transcriptPager.querySelectorAll?.('[data-history-page]') || []) {
+      const action = button.dataset.historyPage;
+      button.disabled = action === 'first' || action === 'older' ? transcriptPageStart === 0 : action === 'newer' ? end >= transcriptEntries.length : followTranscript;
+    }
+    transcriptPager.classList.toggle('hidden', transcriptEntries.length <= TRANSCRIPT_PAGE_SIZE);
+  }
+
+  function appendTranscriptEntry(entry, pinned = false) {
+    transcriptEntries.push(entry);
+    if (pinned) pinnedTranscriptEntries.add(entry);
+    hideEmptyHero();
+    refreshTranscript();
+    return entry;
+  }
+
+  function textPager(section, start, total) {
+    if (total <= TEXT_PAGE_CHARS) return '';
+    return `<div class="text-pager"><button type="button" data-text-page="previous" data-text-section="${section}" ${start === 0 ? 'disabled' : ''}>← Önceki bölüm</button><span>${start + 1}–${Math.min(start + TEXT_PAGE_CHARS, total)} / ${total} karakter</span><button type="button" data-text-page="next" data-text-section="${section}" ${start + TEXT_PAGE_CHARS >= total ? 'disabled' : ''}>Sonraki bölüm →</button><button type="button" data-text-page="latest" data-text-section="${section}">Son bölüm</button><button type="button" data-copy-full-text="${section}">${section === 'args' ? 'Parametrelerin tamamını kopyala' : section === 'result' ? 'Sonucun tamamını kopyala' : section === 'approval' ? 'Açıklama ve parametrelerin tamamını kopyala' : 'Mesajın tamamını kopyala'}</button></div>`;
+  }
+
+  function textPageStart(offset, length) {
+    return offset == null ? Math.max(0, length - TEXT_PAGE_CHARS) : Math.min(offset, Math.max(0, length - 1));
+  }
+
+  function renderAssistantEntry(entry) {
+    const body = entry.element?.querySelector('.assistant-message-body');
+    if (!body) return;
+    // Reading an earlier part never repeatedly joins/reparses a growing stream.
+    if (entry.streaming && entry.textPage != null && entry.renderedTextPage === entry.textPage) return;
+    const length = entry.streaming ? entry.textLength : entry.text.length;
+    const start = textPageStart(entry.textPage, length);
+    const text = entry.streaming && entry.textPage == null ? entry.tail : (entry.streaming ? entry.chunks.join('') : entry.text).slice(start, start + TEXT_PAGE_CHARS);
+    body.innerHTML = textPager('assistant', start, length) + parseMarkdown(text);
+    entry.renderedTextPage = entry.textPage;
+  }
+
+  function createTranscriptElement(entry) {
+    const wrapper = document.createElement('div');
+    wrapper.className = entry.kind === 'tool' ? 'tool-card' : 'message-wrapper';
+    if (entry.kind === 'user') {
+      const imagesHtml = (entry.images || []).filter(img => img?.mimeType === 'image/png' && typeof img.data === 'string' && /^[A-Za-z0-9+/=]+$/.test(img.data)).slice(0, 3).map(img => `<div class="tool-screenshot-preview" data-preview-image role="button" tabindex="0"><img src="data:${img.mimeType};base64,${img.data}" alt="Ek" loading="lazy" decoding="async" style="max-height:100px;border-radius:4px;"></div>`).join('');
+      const start = textPageStart(entry.textPage === undefined ? 0 : entry.textPage, entry.text.length);
+      wrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-user">▸ Sen</span><span class="message-time">${entry.time || ''}</span></div><div class="user-message-bubble">${imagesHtml}${textPager('user', start, entry.text.length)}<div class="user-message-text">${escapeHtml(entry.text.slice(start, start + TEXT_PAGE_CHARS))}</div></div>`;
+    } else if (entry.kind === 'assistant') {
+      wrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-assistant">◆ T Bot</span><span class="message-time">${entry.time || ''}</span></div><div class="assistant-message-body"></div>`;
+      entry.element = wrapper;
+      entry.renderedTextPage = undefined;
+      renderAssistantEntry(entry);
+    } else if (entry.kind === 'tool') {
+      const target = extractToolTarget(entry.call.arguments);
+      const status = entry.status || 'running';
+      const label = { running: 'Çalışıyor…', success: '✓ Tamamlandı', error: '✗ Hata', stopped: 'Durduruldu' }[status];
+      wrapper.dataset.id = entry.call.id;
+      wrapper.innerHTML = `<div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle><div class="tool-header-left"><span class="tool-icon">◈</span><span class="tool-title">${escapeHtml(entry.title)}</span>${target ? `<span class="tool-target" title="${escapeHtml(target)}">› ${escapeHtml(target)}</span>` : ''}</div><div class="tool-header-right"><span class="tool-duration">${escapeHtml(entry.duration || '')}</span><span class="tool-badge ${status}">${label}</span><span class="tool-accordion-icon">▼</span></div></div><div class="tool-card-body hidden"></div>`;
+      wrapper.transcriptEntry = entry;
+      if (entry.expanded) setToolExpanded(wrapper, true);
+    } else {
+      const text = entry.text || '';
+      const start = textPageStart(entry.textPage === undefined ? 0 : entry.textPage, text.length);
+      wrapper.innerHTML = `<div class="${entry.error === false ? 'approval-status' : 'error-notice-card'}">${textPager('notice', start, text.length)}<div class="error-notice-text">${escapeHtml(text.slice(start, start + TEXT_PAGE_CHARS))}</div></div>`;
+    }
+    return wrapper;
+  }
+
+  function replaceTranscriptElement(entry) {
+    const previous = entry.element;
+    const next = createTranscriptElement(entry);
+    next.transcriptEntry = entry;
+    previous?.replaceWith(next);
+    entry.element = next;
+  }
+
+  function appendUserMessage(text, images = []) {
+    appendTranscriptEntry({ kind: 'user', text: String(text || '').trim(), images, time: transcriptTime() });
+    scrollToBottom(followTranscript);
+  }
+
   function renderAssistantBuffer() {
     if (assistantRenderTimer) clearTimeout(assistantRenderTimer);
     assistantRenderTimer = null;
-    const body = currentAssistantWrapper?.querySelector('.assistant-message-body');
-    if (body) body.innerHTML = parseMarkdown(currentAssistantTextBuffer);
-    scrollToBottom();
+    const wasAtBottom = isTranscriptAtBottom();
+    if (currentAssistantEntry) renderAssistantEntry(currentAssistantEntry);
+    scrollToBottom(wasAtBottom && followTranscript);
   }
 
   function appendAssistantTextChunk(chunk) {
     if (!chunk) return;
     state.turnAssistantTextProduced = true;
-    hideEmptyHero();
-    if (!currentAssistantWrapper) {
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      currentAssistantWrapper = document.createElement('div');
-      currentAssistantWrapper.className = 'message-wrapper';
-      currentAssistantWrapper.innerHTML = `<div class="message-header"><span class="sender-badge sender-assistant">◆ T Bot</span><span class="message-time">${time}</span></div><div class="assistant-message-body"></div>`;
-      dom.chatFeed?.appendChild(currentAssistantWrapper);
-      currentAssistantTextBuffer = '';
+    if (!currentAssistantEntry) {
+      currentAssistantEntry = appendTranscriptEntry({ kind: 'assistant', streaming: true, chunks: [], textLength: 0, tail: '', textPage: null, time: transcriptTime() }, true);
     }
-
-    currentAssistantTextBuffer += chunk;
+    const chunks = currentAssistantEntry.chunks;
+    if (chunks.length && chunks[chunks.length - 1].length + chunk.length <= 8192) chunks[chunks.length - 1] += chunk;
+    else chunks.push(chunk);
+    currentAssistantEntry.textLength += chunk.length;
+    currentAssistantEntry.tail = (currentAssistantEntry.tail + chunk).slice(-TEXT_PAGE_CHARS);
     if (!assistantRenderTimer) assistantRenderTimer = setTimeout(renderAssistantBuffer, 50);
   }
 
   function finalizeAssistantMessage() {
-    renderAssistantBuffer();
-    currentAssistantWrapper = null;
-    currentAssistantTextBuffer = '';
+    if (!currentAssistantEntry) return;
+    if (assistantRenderTimer) clearTimeout(assistantRenderTimer);
+    assistantRenderTimer = null;
+    const entry = currentAssistantEntry;
+    entry.text = entry.chunks.join('');
+    entry.chunks = null;
+    entry.tail = null;
+    entry.streaming = false;
+    renderAssistantEntry(entry);
+    pinnedTranscriptEntries.delete(entry);
+    currentAssistantEntry = null;
+    refreshTranscript();
   }
 
   function appendErrorNotice(errText) {
-    hideEmptyHero();
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const wrapper = document.createElement('div');
-    wrapper.className = 'message-wrapper';
-    wrapper.innerHTML = `<div class="message-header"><span class="sender-badge text-danger">⚠️ Hata</span><span class="message-time">${time}</span></div><div class="error-notice-card"><span class="error-icon">✕</span><div class="error-notice-text">${escapeHtml(String(errText || ''))}</div></div>`;
-    dom.chatFeed?.appendChild(wrapper);
-    scrollToBottom(true);
+    appendTranscriptEntry({ kind: 'notice', text: String(errText || '') });
+    scrollToBottom(followTranscript);
   }
-
-  // =========================================================================
-  // 9. Araç Çağrısı Kartları & Diff Görünümü
-  // =========================================================================
-  const activeToolCards = new Map();
 
   function extractToolTarget(args) {
     if (!args) return '';
@@ -695,110 +807,103 @@
     return exit ? exit[1].trim() !== '0' : /(?:^|\n)(?:Timed out|Aborted); process tree/.test(result);
   }
 
+  function renderToolBody(card) {
+    const entry = card.transcriptEntry;
+    const body = card.querySelector('.tool-card-body');
+    if (!entry || !body) return;
+    const args = JSON.stringify(entry.call.arguments ?? {}, null, 2);
+    const result = entry.result ?? '';
+    const argsStart = textPageStart(entry.argsPage === undefined ? 0 : entry.argsPage, args.length);
+    const resultStart = textPageStart(entry.resultPage === undefined ? 0 : entry.resultPage, result.length);
+    const resultSlice = result.slice(resultStart, resultStart + TEXT_PAGE_CHARS);
+    const diff = entry.call.name === 'file_patch' || entry.call.name === 'file_write' || entry.call.name === 'git_diff' || resultSlice.includes('@@');
+    body.innerHTML = `<div class="tool-section-title">Parametreler:</div>${textPager('args', argsStart, args.length)}<pre class="tool-args-pre">${escapeHtml(args.slice(argsStart, argsStart + TEXT_PAGE_CHARS))}</pre>${entry.result != null ? `<div class="tool-section-title">Sonuç:</div>${textPager('result', resultStart, result.length)}${diff ? formatDiff(resultSlice) : `<pre>${escapeHtml(resultSlice)}</pre>`}` : '<span>Sonuç bekleniyor…</span>'}`;
+    // Decode screenshots only while this tool is open; closing releases the image DOM.
+    const image = result.match(/data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/);
+    if (image) {
+      const preview = document.createElement('div');
+      preview.className = 'tool-screenshot-preview';
+      preview.setAttribute('data-preview-image', '');
+      preview.setAttribute('role', 'button');
+      preview.tabIndex = 0;
+      preview.innerHTML = `<img src="${image[0]}" alt="Ekran görüntüsü" loading="lazy" decoding="async">`;
+      body.appendChild(preview);
+    }
+  }
+
   function setToolExpanded(card, expanded) {
     card.classList.toggle('expanded', expanded);
     card.querySelector('[data-tool-toggle]')?.setAttribute('aria-expanded', String(expanded));
-    card.querySelector('.tool-card-body')?.classList.toggle('hidden', !expanded);
+    const body = card.querySelector('.tool-card-body');
+    body?.classList.toggle('hidden', !expanded);
+    if (card.transcriptEntry) {
+      card.transcriptEntry.expanded = expanded;
+      if (expanded) renderToolBody(card);
+      else body?.replaceChildren();
+    }
+  }
+
+  function transcriptSectionText(entry, section) {
+    if (section === 'args') return JSON.stringify(entry.call.arguments ?? {}, null, 2);
+    if (section === 'result') return entry.result || '';
+    return entry.streaming ? entry.chunks.join('') : entry.text || '';
+  }
+
+  async function copyTranscriptText(button) {
+    const entry = button.closest('.message-wrapper, .tool-card, .approval-card')?.transcriptEntry;
+    if (!entry) return;
+    try {
+      await navigator.clipboard.writeText(transcriptSectionText(entry, button.dataset.copyFullText));
+      button.textContent = '✓ Tam metin kopyalandı';
+    } catch (error) { appendErrorNotice(`Kopyalanamadı: ${String(error)}`); }
+  }
+
+  function changeTextPage(button) {
+    const card = button.closest('.message-wrapper, .tool-card, .approval-card');
+    const entry = card?.transcriptEntry;
+    if (!entry) return;
+    const section = button.dataset.textSection;
+    const key = section === 'args' ? 'argsPage' : section === 'result' ? 'resultPage' : 'textPage';
+    const text = transcriptSectionText(entry, section);
+    const length = text?.length || 0;
+    const current = textPageStart(entry[key] === undefined ? 0 : entry[key], length);
+    entry[key] = button.dataset.textPage === 'latest' ? null : Math.max(0, Math.min(Math.max(0, length - 1), current + (button.dataset.textPage === 'previous' ? -TEXT_PAGE_CHARS : TEXT_PAGE_CHARS)));
+    entry.renderedTextPage = undefined;
+    if (entry.kind === 'tool') renderToolBody(card);
+    else if (entry.kind === 'approval') {
+      const start = textPageStart(entry.textPage, entry.text.length);
+      const args = card.querySelector('.approval-args');
+      if (args) args.textContent = entry.text.slice(start, start + TEXT_PAGE_CHARS);
+      const pager = card.querySelector('.approval-argument-pages');
+      if (pager) pager.innerHTML = textPager('approval', start, entry.text.length);
+    } else replaceTranscriptElement(entry);
+    const focusTarget = entry.element?.querySelector(`[data-text-section="${section}"][data-text-page="${button.dataset.textPage}"]:not(:disabled)`) || entry.element?.querySelector(`[data-text-section="${section}"][data-text-page="latest"]`);
+    focusTarget?.focus({ preventScroll: true });
   }
 
   function handleToolStart(call, toolTitleOverride = null) {
     finalizeAssistantMessage();
-    hideEmptyHero();
     state.currentStepCount++;
-
-    const callId = call.id || `call_${Date.now()}`;
-    const toolTitle = toolTitleOverride || TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name);
-    const target = extractToolTarget(call.arguments);
-
-    const card = document.createElement('div');
-    card.className = 'tool-card';
-    card.dataset.id = callId;
-    card.dataset.startTime = String(Date.now());
-
-    card.innerHTML = `
-      <div class="tool-card-header" role="button" tabindex="0" aria-expanded="false" data-tool-toggle>
-        <div class="tool-header-left">
-          <span class="tool-icon">◈</span>
-          <span class="tool-title">${escapeHtml(toolTitle)}</span>
-          ${target ? `<span class="tool-target" title="${escapeHtml(target)}">› ${escapeHtml(target)}</span>` : ''}
-        </div>
-        <div class="tool-header-right">
-          <span class="tool-badge running">Çalışıyor…</span>
-          <span class="tool-accordion-icon">▼</span>
-        </div>
-      </div>
-      <div class="tool-card-body hidden">
-        <div class="tool-section-title">Parametreler:</div>
-        <pre class="tool-args-pre">${escapeHtml(JSON.stringify(call.arguments, null, 2))}</pre>
-        <div class="tool-result-area"></div>
-      </div>
-    `;
-
-    dom.chatFeed?.appendChild(card);
-    activeToolCards.set(callId, card);
-    startThinking(`${toolTitle} Yürütülüyor…`, state.currentStepCount);
-    scrollToBottom(true);
+    const entry = { kind: 'tool', call, title: toolTitleOverride || TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name), startTime: Date.now(), status: 'running' };
+    activeToolCards.set(call.id, entry);
+    appendTranscriptEntry(entry, true);
+    startThinking(`${entry.title} Yürütülüyor…`, state.currentStepCount);
+    scrollToBottom(followTranscript);
   }
 
-  function handleToolEnd(call, result, toolTitleOverride = null) {
-    const callId = call.id;
-    const card = activeToolCards.get(callId);
-    const toolTitle = toolTitleOverride || TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name);
-
-    let durationText = '';
-    if (card?.dataset.startTime) {
-      const ms = Date.now() - parseInt(card.dataset.startTime, 10);
-      durationText = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}sn`;
+  function handleToolEnd(call, result) {
+    const entry = activeToolCards.get(call.id);
+    if (entry) {
+      const ms = Date.now() - entry.startTime;
+      entry.duration = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}sn`;
+      entry.result = typeof result === 'string' ? result : JSON.stringify(result ?? '');
+      entry.status = isToolError(entry.result, call.name) ? 'error' : 'success';
+      entry.expanded = entry.expanded || entry.status === 'error';
+      if (entry.element) replaceTranscriptElement(entry);
+      pinnedTranscriptEntries.delete(entry);
+      activeToolCards.delete(call.id);
+      refreshTranscript();
     }
-
-    const strResult = typeof result === 'string' ? result : JSON.stringify(result ?? '');
-    const isError = isToolError(strResult, call.name);
-
-    if (card) {
-      const headerRight = card.querySelector('.tool-header-right');
-      if (headerRight) {
-        headerRight.innerHTML = `
-          <span class="tool-duration">${durationText}</span>
-          <span class="tool-badge ${isError ? 'error' : 'success'}">${isError ? '✗ Hata' : '✓ Tamamlandı'}</span>
-          <span class="tool-accordion-icon">▼</span>
-        `;
-      }
-      if (isError) card.classList.add('error');
-
-      const bodyEl = card.querySelector('.tool-card-body');
-      if (bodyEl) {
-        // Keep successful output folded; failures are immediately inspectable.
-        if (isError) setToolExpanded(card, true);
-        const resultArea = bodyEl.querySelector('.tool-result-area');
-        if (resultArea) {
-
-          // Eğer file_patch diff içeriyorsa renkli diff bas
-          if (call.name === 'file_patch' || call.name === 'file_write' || strResult.includes('@@')) {
-            resultArea.innerHTML = `<div class="tool-section-title">Değişiklik Özeti:</div>${formatDiff(strResult)}`;
-          } else {
-            resultArea.innerHTML = `<div class="tool-section-title">Sonuç:</div><pre>${escapeHtml(strResult)}</pre>`;
-          }
-
-          // Eğer sonuçta base64 ekran görüntüsü varsa
-          const base64Match = strResult.match(/data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/);
-          if (base64Match || call.name === 'computer' || call.name === 'browser_screenshot') {
-            const imgSrc = base64Match ? base64Match[0] : (strResult.startsWith('data:image') ? strResult : null);
-            if (imgSrc) {
-              const previewDiv = document.createElement('div');
-              previewDiv.className = 'tool-screenshot-preview';
-              previewDiv.title = 'Büyütmek için tıklayın';
-              previewDiv.setAttribute('data-preview-image', '');
-              previewDiv.setAttribute('role', 'button');
-              previewDiv.tabIndex = 0;
-              previewDiv.innerHTML = `<img src="${imgSrc}" alt="Screenshot">`;
-              resultArea.appendChild(previewDiv);
-            }
-          }
-        }
-      }
-    }
-
-    activeToolCards.delete(callId);
     startThinking('Yanıt Hazırlanıyor…');
     scrollToBottom();
   }
@@ -818,14 +923,15 @@
     card.id = 'live-approval-card';
 
     const toolTitle = req.toolTitle || TOOL_TITLE_MAP[req.tool] || toTurkishTitleCase(req.tool);
+    const details = `${req.description || 'Bu aracın çalıştırılması sisteminizde değişiklik yapabilir.'}\n\nParametreler:\n${JSON.stringify(req.arguments ?? {}, null, 2)}`;
 
     card.innerHTML = `
       <div class="approval-header">
         <span>🛡️ Onay Bekleniyor:</span>
         <strong>${escapeHtml(toolTitle)} (${escapeHtml(req.tool)})</strong>
       </div>
-      <div class="approval-desc">${escapeHtml(req.description || 'Bu aracın çalıştırılması sisteminizde değişiklik yapabilir.')}</div>
-      <pre class="approval-args">${escapeHtml(JSON.stringify(req.arguments, null, 2))}</pre>
+      <div class="approval-argument-pages">${textPager('approval', 0, details.length)}</div>
+      <pre class="approval-args">${escapeHtml(details.slice(0, TEXT_PAGE_CHARS))}</pre>
       <div class="approval-actions">
         <button id="btn-approval-allow" class="btn-approve">✓ İzin Ver (Enter)</button>
         <button id="btn-approval-deny" class="btn-reject">✗ Reddet (Esc)</button>
@@ -834,6 +940,10 @@
     `;
 
     dom.chatFeed?.appendChild(card);
+    const approvalEntry = { kind: 'approval', text: details, textPage: 0, error: false, element: card };
+    card.transcriptEntry = approvalEntry;
+    renderedTranscriptEntries.add(approvalEntry);
+    appendTranscriptEntry(approvalEntry, true);
     scrollToBottom(true);
     document.getElementById('btn-approval-allow')?.focus();
 
@@ -859,6 +969,13 @@
       card.style.animation = 'none';
     }
 
+    const approvalEntry = card?.transcriptEntry;
+    if (approvalEntry) {
+      approvalEntry.kind = 'notice';
+      approvalEntry.text = approved ? '✓ İzin verildi.' : '✗ İşlem reddedildi.';
+      pinnedTranscriptEntries.delete(approvalEntry);
+      card.className = 'message-wrapper';
+    }
     const reqId = state.currentApproval?.requestId;
     if (!reqId) return;
     state.currentApproval = null;
@@ -870,6 +987,7 @@
     }
     if (state.approvalQueue.length) { renderApprovalRequest(state.approvalQueue.shift()); return; }
 
+    refreshTranscript();
     if (state.turnPending) {
       startThinking('Araç Çalıştırılıyor…');
     }
@@ -898,6 +1016,7 @@
   function closeLightbox() {
     dom.lightboxModal?.classList.add('hidden');
     if (dom.lightboxImg) dom.lightboxImg.src = '';
+    if (dom.lightboxBtnDownload) dom.lightboxBtnDownload.onclick = null;
   }
 
   // =========================================================================
@@ -1048,6 +1167,7 @@
 
     state.turnPending = true;
     setTurnControls();
+    transcriptPage('latest');
     appendUserMessage(text, images);
     startThinking('T Bot Çözümlüyor…');
 
@@ -1090,7 +1210,7 @@
       state.turnPending = false;
       state.currentApproval = null;
       state.approvalQueue = [];
-      document.getElementById('live-approval-card')?.remove();
+      finishApprovalCard();
       finishInterruptedTools();
       setTurnControls();
       finalizeAssistantMessage();
@@ -1243,12 +1363,44 @@
   function clearChatTerminal() {
     if (state.turnPending) return;
     finalizeAssistantMessage();
+    closeLightbox();
     activeToolCards.clear();
-    if (dom.chatFeed) {
-      const messages = Array.from(dom.chatFeed.querySelectorAll('.message-wrapper, .tool-card, .approval-card'));
-      messages.forEach(m => m.remove());
-    }
+    for (const entry of renderedTranscriptEntries) entry.element?.remove();
+    transcriptEntries.length = 0;
+    renderedTranscriptEntries.clear();
+    pinnedTranscriptEntries.clear();
+    transcriptPager?.remove();
+    transcriptPager = null;
+    transcriptPageStart = 0;
+    followTranscript = true;
     showEmptyHeroIfEmpty();
+  }
+
+  function loadTranscriptMessages(messages) {
+    const calls = new Map();
+    for (const message of messages) {
+      if (message.role === 'user') transcriptEntries.push({ kind: 'user', text: message.content || '', images: message.images });
+      if (message.role === 'assistant') {
+        if (message.content) transcriptEntries.push({ kind: 'assistant', text: message.content, textPage: 0 });
+        for (const call of message.toolCalls || []) {
+          const entry = { kind: 'tool', call, title: TOOL_TITLE_MAP[call.name] || toTurkishTitleCase(call.name), status: 'stopped' };
+          calls.set(call.id, entry);
+          transcriptEntries.push(entry);
+        }
+      }
+      if (message.role === 'tool') {
+        let entry = calls.get(message.toolCallId);
+        if (!entry) {
+          entry = { kind: 'tool', call: { id: message.toolCallId, name: 'tool_result', arguments: {} }, title: 'Araç Sonucu' };
+          transcriptEntries.push(entry);
+        }
+        entry.result = message.content || '';
+        entry.status = isToolError(entry.result, entry.call.name) ? 'error' : 'success';
+      }
+    }
+    if (transcriptEntries.length) hideEmptyHero();
+    refreshTranscript();
+    scrollToBottom(true);
   }
 
   // =========================================================================
@@ -1318,15 +1470,7 @@
     loadSessionsList();
     try {
       const data = await tbot.loadSession?.(id, state.workspace);
-      if (data?.messages) {
-        data.messages.forEach((m) => {
-          if (m.role === 'user') appendUserMessage(m.content, m.images);
-          else if (m.role === 'assistant') {
-            appendAssistantTextChunk(m.content);
-            finalizeAssistantMessage();
-          }
-        });
-      }
+      if (Array.isArray(data?.messages)) loadTranscriptMessages(data.messages);
     } catch (error) {
       appendErrorNotice(`Oturum yüklenemedi: ${String(error)}`);
     } finally {
@@ -1602,6 +1746,9 @@
     document.addEventListener('click', event => {
       const target = event.target.closest('button, [data-preview-image], [data-tool-toggle]');
       if (!target) return;
+      if (target.hasAttribute('data-history-page')) transcriptPage(target.dataset.historyPage);
+      if (target.hasAttribute('data-text-page')) changeTextPage(target);
+      if (target.hasAttribute('data-copy-full-text')) copyTranscriptText(target);
       if (target.hasAttribute('data-copy-code')) window.tbotCopyCode(target);
       if (target.hasAttribute('data-remove-attachment')) window.tbotRemoveAttachment(Number(target.dataset.removeAttachment));
       if (target.hasAttribute('data-preview-image')) window.tbotOpenLightbox(target.querySelector('img')?.src);
@@ -1796,9 +1943,10 @@
     dom.btnAbortTurn?.addEventListener('click', abortCurrentTurn);
 
     // 11. Aşağı Kaydır Butonu
-    dom.btnScrollBottom?.addEventListener('click', () => scrollToBottom(true));
+    dom.btnScrollBottom?.addEventListener('click', () => transcriptPage('latest'));
     dom.chatFeed?.addEventListener('scroll', () => {
-      const atBottom = dom.chatFeed.scrollHeight - dom.chatFeed.scrollTop <= dom.chatFeed.clientHeight + 100;
+      const atBottom = isTranscriptAtBottom();
+      if (!atBottom) followTranscript = false;
       dom.btnScrollBottom?.classList.toggle('hidden', atBottom);
     }, { passive: true });
 
@@ -1886,11 +2034,25 @@
   // 20. IPC Gelen Olayları (Event Handlers from preload.cjs)
   // =========================================================================
   function finishInterruptedTools() {
-    for (const card of activeToolCards.values()) {
-      const badge = card.querySelector('.tool-badge');
+    for (const entry of activeToolCards.values()) {
+      entry.status = 'stopped';
+      pinnedTranscriptEntries.delete(entry);
+      const badge = entry.element?.querySelector('.tool-badge');
       if (badge) { badge.classList.remove('running'); badge.textContent = 'Durduruldu'; }
     }
     activeToolCards.clear();
+    refreshTranscript();
+  }
+
+  function finishApprovalCard(text = 'Onay isteği sona erdi.') {
+    const card = document.getElementById('live-approval-card');
+    const entry = card?.transcriptEntry;
+    if (!entry) { card?.remove(); return; }
+    entry.kind = 'notice';
+    entry.text = text;
+    pinnedTranscriptEntries.delete(entry);
+    replaceTranscriptElement(entry);
+    refreshTranscript();
   }
 
   function handleAgentEvent(event) {
@@ -1940,7 +2102,7 @@
       case 'done':
         state.currentApproval = null;
         state.approvalQueue = [];
-        document.getElementById('live-approval-card')?.remove();
+        finishApprovalCard();
         finishInterruptedTools();
         finalizeAssistantMessage();
         stopThinking();
@@ -1967,8 +2129,7 @@
       state.approvalQueue = state.approvalQueue.filter(request => request.requestId !== requestId);
       if (state.currentApproval?.requestId !== requestId) return;
       state.currentApproval = null;
-      const card = document.getElementById('live-approval-card');
-      if (card) { card.textContent = 'Onay süresi doldu; işlem reddedildi.'; card.id = ''; }
+      finishApprovalCard('Onay süresi doldu; işlem reddedildi.');
       if (state.approvalQueue.length) { renderApprovalRequest(state.approvalQueue.shift()); return; }
       if (state.turnPending) startThinking('Yanıt Hazırlanıyor…');
     });

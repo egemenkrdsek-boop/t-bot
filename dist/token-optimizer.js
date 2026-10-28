@@ -178,6 +178,9 @@ export const CORE_TOOLS = new Set([
     'browser_click',
     'browser_type',
     'browser_screenshot',
+    // Configured services must remain discoverable even without a service-name keyword.
+    'mcp_catalog',
+    'mcp_call',
 ]);
 /**
  * Sticky intent groups activated during the current session.
@@ -196,6 +199,7 @@ const INTENT_GROUP_KEYWORDS = {
     process: [
         'process', 'process_write', 'arka plan', 'arkaplan', 'background', 'daemon',
         'sunucu', 'server', 'pid', 'kill', 'stop', 'port', 'watch',
+        'job', 'stdin', 'stdout', 'interactive', 'etkileşimli', 'input stream',
     ],
     memory: [
         'hatırla', 'hatirla', 'unut', 'hafıza', 'hafiza', 'bellek',
@@ -211,6 +215,8 @@ const INTENT_GROUP_KEYWORDS = {
         'araştır', 'arastir', 'search', 'fetch', 'google', 'dokümantasyon',
         'documentation', 'internette ara', 'link', 'web_search', 'url_fetch',
         'aç', 'uygulama', 'program', 'gui', 'arayüz', 'buton', 'düğme',
+        'dropdown', 'drop-down', 'scroll', 'focused', 'press', 'enter', 'select option',
+        'kaydır', 'kaydir', 'tuş', 'tus', 'açılır', 'acilir',
         'tıkla', 'tikla', 'ekbanda', 'ekrandaki', 'form', 'giriş yap', 'login', 'sekme', 'tab', 'izle', 'gör',
     ],
     computer: [

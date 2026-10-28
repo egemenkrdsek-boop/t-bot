@@ -4,13 +4,25 @@ for tool in node npm git; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'Required command missing: %s. Install Node.js >=22.12 and Git.\n' "$tool" >&2; exit 1; }
 done
 node -e "const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<12))process.exit(1)" || { printf 'Node.js >=22.12.0 is required.\n' >&2; exit 1; }
+PINNED_REVISION=${TBOT_INSTALL_REVISION:-}
+case "$PINNED_REVISION" in *[!0-9a-fA-F]*) printf 'TBOT_INSTALL_REVISION must be a full 40-character commit SHA.\n' >&2; exit 1 ;; esac
+if [ -n "$PINNED_REVISION" ] && [ "${#PINNED_REVISION}" -ne 40 ]; then
+  printf 'TBOT_INSTALL_REVISION must be a full 40-character commit SHA.\n' >&2; exit 1
+fi
+PINNED_REVISION=$(printf '%s' "$PINNED_REVISION" | tr 'A-F' 'a-f')
 STAGING=$(mktemp -d "${TMPDIR:-/tmp}/tbot-install.XXXXXXXX")
 trap 'rm -rf -- "$STAGING"' EXIT
 trap 'exit 1' HUP INT TERM
 printf 'Building T Bot CLI from GitHub main in a temporary checkout...\n'
 git clone --depth 1 --branch main -- 'https://github.com/egemenkrdsek-boop/t-bot.git' "$STAGING"
+if [ -n "$PINNED_REVISION" ]; then
+  git -C "$STAGING" fetch --depth 1 origin "$PINNED_REVISION"
+  git -C "$STAGING" checkout --detach "$PINNED_REVISION" --
+fi
 REVISION=$(git -C "$STAGING" rev-parse HEAD)
-[ "$REVISION" = "$(git -C "$STAGING" rev-parse refs/remotes/origin/main)" ] || { printf 'Checkout does not match the remote main branch.\n' >&2; exit 1; }
+EXPECTED_REVISION="$PINNED_REVISION"
+if [ -z "$EXPECTED_REVISION" ]; then EXPECTED_REVISION=$(git -C "$STAGING" rev-parse refs/remotes/origin/main); fi
+[ "$REVISION" = "$EXPECTED_REVISION" ] || { printf 'Checkout does not match the requested revision.\n' >&2; exit 1; }
 printf 'Source revision: %s\n' "$REVISION"
 (
   cd "$STAGING"

@@ -7,6 +7,8 @@ export interface ToolContext {
     signal?: AbortSignal;
     mcpTools?: McpConnection[];
     imageProvider?: ImageProviderConfig;
+    /** Host-supplied conversation identity; never accepted from tool arguments. */
+    processOwner?: string;
     [key: string]: unknown;
 }
 export declare function isToolResultOk(name: string, output: string): boolean;

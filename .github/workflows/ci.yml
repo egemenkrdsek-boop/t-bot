@@ -17,6 +17,8 @@ jobs:
       ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -28,3 +30,27 @@ jobs:
       - run: node --check dist/desktop/renderer/app.js
       - run: node --check dist/desktop/preload.cjs
       - run: npm pack --dry-run
+  source-install:
+    # Fork PR merge commits need not exist in the fixed public upstream.
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install exact source revision into an isolated npm prefix
+        shell: bash
+        env:
+          TBOT_INSTALL_REVISION: ${{ github.sha }}
+          NPM_CONFIG_PREFIX: ${{ runner.temp }}/tbot-source-global
+        run: |
+          sh scripts/install.sh
+          "$NPM_CONFIG_PREFIX/bin/tbot" --help
+          expected="T Bot $(node -p 'require("./package.json").version')"
+          test "$("$NPM_CONFIG_PREFIX/bin/tbot" --version)" = "$expected"

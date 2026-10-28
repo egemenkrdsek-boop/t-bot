@@ -485,6 +485,7 @@ async function executeAgentTurn(
       requestRemoteToolApproval(request, chatId, token, options.getYolo);
 
     const agentInput: AgentInput = {
+      processOwner: `telegram:${chatId}:${options.session.id}`,
       message,
       history: options.session.messages,
       provider,

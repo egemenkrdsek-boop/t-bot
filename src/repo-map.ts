@@ -1,6 +1,6 @@
 import ts from 'typescript';
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { extname, join, relative, resolve } from 'node:path';
+import { opendir, open, lstat, realpath } from 'node:fs/promises';
+import { extname, join, relative, resolve, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { estimateTokens } from './token-optimizer.js';
 
@@ -22,9 +22,17 @@ export interface FileAstOutline {
 }
 
 const TS_JS_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']);
-const SOURCE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
-  '.py', '.go', '.rs', '.md',
+const PARSED_SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
+  '.py', '.go', '.rs', '.md', '.markdown',
+]);
+// These files participate in filename retrieval, without claiming a TS AST for
+// other languages or reading configuration contents into the map.
+const SOURCE_EXTENSIONS = new Set([...PARSED_SOURCE_EXTENSIONS,
+  '.java', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.cs', '.swift', '.kt', '.kts',
+  '.rb', '.php', '.sh', '.bash', '.ps1', '.vue', '.svelte', '.astro', '.sql',
+  '.json', '.jsonc', '.yaml', '.yml', '.toml', '.ini', '.xml', '.html', '.css', '.scss',
+  '.dart', '.lua', '.ex', '.exs', '.r',
 ]);
 const IGNORED_DIRS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', '.tbot',
@@ -32,10 +40,9 @@ const IGNORED_DIRS = new Set([
 ]);
 
 interface RepoMapCacheEntry {
-  mtimeMs: number;
-  summary: string;
-  score: number;
-  symbolNames: string[];
+  revision: string;
+  totalLines: number;
+  symbols: Array<Pick<AstSymbolItem, 'name' | 'kind' | 'startLine' | 'endLine' | 'exported'>>;
 }
 
 const repoMapCache = new Map<string, RepoMapCacheEntry>();
@@ -158,13 +165,17 @@ function extractTsJsAst(
           ts.isMethodDeclaration(member) ||
           ts.isConstructorDeclaration(member) ||
           ts.isGetAccessorDeclaration(member) ||
-          ts.isSetAccessorDeclaration(member)
+          ts.isSetAccessorDeclaration(member) ||
+          (ts.isPropertyDeclaration(member) && member.initializer && (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer)))
         ) {
           const memberName = ts.isConstructorDeclaration(member)
             ? 'constructor'
             : member.name?.getText(sourceFile) || 'anonymous';
           const mRange = getRange(member);
-          const mSigEnd = member.body ? member.body.getStart(sourceFile) : member.getEnd();
+          const body = ts.isPropertyDeclaration(member)
+            ? (member.initializer as ts.ArrowFunction | ts.FunctionExpression).body
+            : member.body;
+          const mSigEnd = body ? body.getStart(sourceFile) : member.getEnd();
           const mRawSig = content.slice(member.getStart(sourceFile), mSigEnd).replace(/\{\s*$/, '');
           symbols.push({
             kind: 'method',
@@ -654,142 +665,258 @@ export function isBroadOrSystemWorkspace(ws?: string): boolean {
   return false;
 }
 
-async function collectWorkspaceSourceFiles(
-  rootDir: string,
-  maxFiles = 80,
-  startMs = Date.now()
-): Promise<string[]> {
-  const collected: string[] = [];
-  const queue: string[] = [rootDir];
+const MAX_SOURCE_BYTES = 512 * 1024;
+const MAX_SCAN_ENTRIES = 10_000;
+const MAX_SCAN_DIRECTORIES = 512;
+const MAX_INSPECTED_FILES = 80;
+const MAX_CACHE_SYMBOLS = 8192;
+const MAX_FILE_SYMBOLS = 512;
+const comparePath = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
-  while (queue.length > 0 && collected.length < maxFiles) {
-    if (Date.now() - startMs > 250) break;
-    const currentDir = queue.shift()!;
-    let entries;
-    try {
-      entries = await readdir(currentDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-
-    for (const entry of entries) {
-      if (collected.length >= maxFiles || Date.now() - startMs > 250) break;
-      if (entry.name.startsWith('.') && entry.name !== '.env.example') {
-        if (IGNORED_DIRS.has(entry.name)) continue;
-      }
-      const fullPath = join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) {
-          queue.push(fullPath);
-        }
-      } else if (entry.isFile()) {
-        const ext = extname(entry.name).toLowerCase();
-        if (SOURCE_EXTENSIONS.has(ext) && !entry.name.endsWith('.d.ts')) {
-          collected.push(fullPath);
-        }
-      }
-    }
-  }
-
-  return collected;
+function queryTerms(query: string): string[] {
+  const raw = query.slice(0, 4000);
+  const words = `${raw} ${raw.replace(/([\p{Ll}\p{N}])([\p{Lu}])/gu, '$1 $2').replace(/_/g, ' ')}`
+    .normalize('NFKC').toLowerCase().split(/[^\p{L}\p{N}_]+/u);
+  return [...new Set(words.filter(word => word.length >= 2))].slice(0, 24);
 }
 
-/**
- * Builds a compact, query-ranked AST repository map within maxTokens budget.
- * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
- * Uses a cooperative 250ms traversal budget and skips oversized generated files.
- */
-export async function buildWorkspaceRepoMap(
-  workspace: string,
-  query?: string,
-  maxTokens = 900
-): Promise<string> {
-  if (!workspace || isBroadOrSystemWorkspace(workspace)) return '';
-  const startMs = Date.now();
-  const files = await collectWorkspaceSourceFiles(workspace, 80, startMs);
-  if (files.length === 0) return '';
+function nameScore(name: string, terms: string[]): number {
+  const lower = name.normalize('NFKC').toLowerCase();
+  const parts = lower.split(/[^\p{L}\p{N}_]+/u);
+  return terms.reduce((score, term) => score + (lower === term ? 40 : parts.includes(term) ? 16 : lower.includes(term) ? 5 : 0), 0);
+}
 
-  const keywords = (query ?? '')
-    .toLowerCase()
-    .split(/[^a-z0-9_çğıöşü]+/i)
-    .filter(w => w.length >= 2);
+function pathScore(file: string, terms: string[]): number {
+  const normalized = file.replace(/\\/g, '/');
+  const base = normalized.slice(normalized.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '');
+  return nameScore(base, terms) * 3 + nameScore(normalized, terms) + (/(?:^|\/)src\//.test(normalized) ? 4 : 0)
+    - (/(?:^|\/)(?:test|tests|docs)\//.test(normalized) ? 1 : 0);
+}
 
-  const rankedEntries: { relPath: string; summary: string; score: number }[] = [];
+/** Deterministic filename selection; no disk access, embeddings or model calls. */
+export function rankRepoPaths(paths: string[], query: string, limit = MAX_INSPECTED_FILES): string[] {
+  const terms = queryTerms(query);
+  const count = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : MAX_INSPECTED_FILES;
+  if (!count) return [];
+  return [...new Set(paths)].map(file => ({ file, score: pathScore(file, terms) }))
+    .sort((a, b) => b.score - a.score || comparePath(a.file, b.file)).slice(0, count).map(item => item.file);
+}
 
-  for (const absPath of files) {
-    if (Date.now() - startMs > 250) break;
-    let fileStat;
+type IgnoreToken = { kind: 'literal'; value: string } | { kind: 'star' | 'all' | 'directories' | 'any' } | { kind: 'class'; test: RegExp };
+interface IgnoreRule { base: string; tokens: IgnoreToken[]; directory: boolean; negate: boolean }
+
+function ignorePattern(pattern: string, anchored: boolean): IgnoreToken[] {
+  if (pattern.length > 256) throw new Error('Ignore pattern exceeds budget');
+  const tokens: IgnoreToken[] = !anchored && !pattern.includes('/') ? [{ kind: 'directories' }] : [];
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === '*') {
+      if (pattern[i + 1] === '*') {
+        const globstar = (i === 0 || pattern[i - 1] === '/') && (pattern[i + 2] === '/' || pattern[i + 2] === undefined);
+        i++;
+        if (globstar && pattern[i + 1] === '/') { tokens.push({ kind: 'directories' }); i++; }
+        else tokens.push({ kind: globstar ? 'all' : 'star' });
+      } else tokens.push({ kind: 'star' });
+    } else if (char === '?') tokens.push({ kind: 'any' });
+    else if (char === '[' && pattern.indexOf(']', i + 1) > i + 1) {
+      const end = pattern.indexOf(']', i + 1);
+      const value = pattern.slice(i + 1, end).replace(/^!/, '^');
+      tokens.push({ kind: 'class', test: new RegExp(`^[${value}]$`) });
+      i = end;
+    } else tokens.push({ kind: 'literal', value: char === '\\' && i + 1 < pattern.length ? pattern[++i] : char });
+  }
+  return tokens;
+}
+
+/** Bounded wildcard DP avoids catastrophic regex backtracking on repository input. */
+function ignoreMatches(tokens: IgnoreToken[], input: string, budget: { remaining: number }): boolean {
+  const work = tokens.length * (input.length + 1);
+  if (work > budget.remaining) throw new Error('Ignore matching budget exceeded');
+  budget.remaining -= work;
+  let previous = new Uint8Array(input.length + 1);
+  previous[0] = 1;
+  for (const token of tokens) {
+    const row = new Uint8Array(input.length + 1);
+    if (token.kind === 'star' || token.kind === 'all' || token.kind === 'directories') row[0] = previous[0];
+    let prefix = Boolean(previous[0]);
+    for (let i = 1; i <= input.length; i++) {
+      const char = input[i - 1];
+      if (token.kind === 'star' || token.kind === 'all') row[i] = Number(Boolean(previous[i] || (row[i - 1] && (token.kind === 'all' || char !== '/'))));
+      else if (token.kind === 'directories') row[i] = Number(Boolean(previous[i] || (prefix && char === '/')));
+      else row[i] = Number(Boolean(previous[i - 1] && (token.kind === 'literal' ? char === token.value : char !== '/' && (token.kind === 'any' || (token.kind === 'class' && token.test.test(char))))));
+      prefix ||= Boolean(previous[i]);
+    }
+    previous = row;
+  }
+  return Boolean(previous[input.length]);
+}
+
+async function readIgnoreRules(directory: string, base: string): Promise<IgnoreRule[]> {
+  const file = join(directory, '.gitignore');
+  let info;
+  try { info = await lstat(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 32 * 1024) throw new Error('Ignore file cannot be safely read');
+  const handle = await open(file, 'r');
+  try {
+    const buffer = Buffer.alloc(32 * 1024 + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 32 * 1024) throw new Error('Ignore file exceeds size limit');
+    const rules: IgnoreRule[] = [];
+    for (let line of buffer.toString('utf8', 0, bytesRead).replace(/^\uFEFF/, '').split(/\r?\n/)) {
+      line = line.replace(/(?<!\\) +$/, '');
+      if (!line || line.startsWith('#')) continue;
+      const negate = line.startsWith('!');
+      if (negate) line = line.slice(1);
+      const directoryOnly = line.endsWith('/');
+      if (directoryOnly) line = line.slice(0, -1);
+      const anchored = line.startsWith('/');
+      if (anchored) line = line.slice(1);
+      if (!line) continue;
+      rules.push({ base, tokens: ignorePattern(line, anchored), directory: directoryOnly, negate });
+      if (rules.length >= 512) throw new Error('Ignore rule budget exceeded');
+    }
+    return rules;
+  } finally { await handle.close(); }
+}
+
+function isIgnored(file: string, directory: boolean, rules: IgnoreRule[], budget: { remaining: number }): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    if (rule.directory && !directory) continue;
+    const rel = rule.base ? file.slice(rule.base.length + 1) : file;
+    if (ignoreMatches(rule.tokens, rel, budget)) ignored = !rule.negate;
+  }
+  return ignored;
+}
+
+async function collectWorkspaceSourceFiles(root: string, query: string, deadline: number): Promise<{ files: string[]; limited: boolean }> {
+  const files: string[] = [];
+  const terms = queryTerms(query);
+  const requestedNames = new Set((query.slice(0, 4000).match(/[\p{L}\p{N}_.-]+\.[\p{L}\p{N}]{1,12}(?=$|[^\p{L}\p{N}])/gu) ?? []).map(name => name.toLowerCase()));
+  const queue: Array<{ directory: string; rules: IgnoreRule[]; score: number }> = [{ directory: root, rules: [], score: 0 }];
+  let entriesSeen = 0, directoriesSeen = 0, limited = false;
+  const ignoreBudget = { remaining: 2_000_000 };
+  while (queue.length) {
+    if (Date.now() >= deadline || entriesSeen >= MAX_SCAN_ENTRIES || directoriesSeen >= MAX_SCAN_DIRECTORIES) { limited = true; break; }
+    queue.sort((a, b) => b.score - a.score || comparePath(a.directory, b.directory));
+    const current = queue.shift()!;
+    directoriesSeen++;
     try {
-      fileStat = await stat(absPath);
-    } catch {
-      continue;
-    }
-
-    const relPath = relative(workspace, absPath).replace(/\\/g, '/');
-    // A single generated source file must not defeat the map's time/memory budget.
-    if (fileStat.size > 512 * 1024) continue;
-    const cached = repoMapCache.get(absPath);
-    let summary: string;
-    let symbolNames: string[];
-
-    if (cached && cached.mtimeMs === fileStat.mtimeMs) {
-      summary = cached.summary;
-      symbolNames = cached.symbolNames;
-    } else {
-      let content = '';
-      try {
-        content = await readFile(absPath, 'utf8');
-      } catch {
-        continue;
+      if ((await lstat(current.directory)).isSymbolicLink() || await realpath(current.directory) !== current.directory) { limited = true; continue; }
+      const base = relative(root, current.directory).replace(/\\/g, '/');
+      const rules = [...current.rules, ...await readIgnoreRules(current.directory, base)];
+      if (rules.length > 1024) { limited = true; continue; }
+      const directory = await opendir(current.directory);
+      const entries = [];
+      for await (const entry of directory) {
+        if (entriesSeen++ >= MAX_SCAN_ENTRIES || Date.now() >= deadline) { limited = true; break; }
+        entries.push(entry);
       }
-      const outline = extractFileAstOutline(relPath, content);
-      const topSymbols = outline.symbols
-        .filter(s => s.exported || s.kind !== 'method')
-        .slice(0, 10)
-        .map(s => `${s.name}[L${s.startLine}-${s.endLine}]`);
-
-      summary = topSymbols.length > 0
-        ? `${relPath} (${outline.totalLines}L): ${topSymbols.join(', ')}`
-        : `${relPath} (${outline.totalLines}L)`;
-      symbolNames = outline.symbols.map(s => s.name.toLowerCase());
-
-      if (repoMapCache.size >= 256 && !repoMapCache.has(absPath)) {
-        const oldest = repoMapCache.keys().next().value;
-        if (oldest !== undefined) repoMapCache.delete(oldest);
+      entries.sort((a, b) => comparePath(a.name, b.name));
+      for (const entry of entries) {
+        if (Date.now() >= deadline) { limited = true; break; }
+        if (entry.isSymbolicLink()) continue;
+        if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) continue;
+        const rel = base ? `${base}/${entry.name}` : entry.name;
+        if (isIgnored(rel, entry.isDirectory(), rules, ignoreBudget)) continue;
+        const full = join(current.directory, entry.name);
+        if (entry.isDirectory()) {
+          queue.push({ directory: full, rules, score: pathScore(rel, terms) });
+        } else if (entry.isFile() && (SOURCE_EXTENSIONS.has(extname(entry.name).toLowerCase()) || requestedNames.has(entry.name.toLowerCase())) && (!/\.d\.(?:ts|mts|cts)$/i.test(entry.name) || requestedNames.has(entry.name.toLowerCase()))) files.push(full);
       }
-      repoMapCache.set(absPath, {
-        mtimeMs: fileStat.mtimeMs,
-        summary,
-        score: 0,
-        symbolNames,
-      });
-    }
-
-    let score = 0;
-    const lowerPath = relPath.toLowerCase();
-    for (const kw of keywords) {
-      if (lowerPath.includes(kw)) score += 5;
-      if (symbolNames.some(sym => sym.includes(kw))) score += 3;
-    }
-    if (lowerPath.startsWith('src/')) score += 1;
-
-    rankedEntries.push({ relPath, summary, score });
+    } catch { limited = true; /* Unreadable or unsafe directories remain visibly outside coverage. */ }
   }
+  return { files, limited };
+}
 
-  rankedEntries.sort((a, b) => b.score - a.score || a.relPath.localeCompare(b.relPath));
-
-  const header = '[Workspace AST Repo Map]';
-  const lines: string[] = [header];
-  let usedTokens = estimateTokens(header);
-
-  for (const item of rankedEntries) {
-    const lineTokens = estimateTokens(item.summary) + 1;
-    if (usedTokens + lineTokens > maxTokens) break;
-    lines.push(`- ${item.summary}`);
-    usedTokens += lineTokens;
+function cacheFile(file: string, entry: RepoMapCacheEntry): void {
+  const chars = (item: RepoMapCacheEntry) => item.symbols.reduce((count, symbol) => count + symbol.name.length, 0);
+  const entryChars = chars(entry);
+  if (entry.symbols.length > MAX_FILE_SYMBOLS || entryChars > 256 * 1024) return;
+  repoMapCache.delete(file);
+  while (repoMapCache.size >= 128 || [...repoMapCache.values()].reduce((count, item) => count + item.symbols.length, 0) + entry.symbols.length > MAX_CACHE_SYMBOLS || [...repoMapCache.values()].reduce((count, item) => count + chars(item), 0) + entryChars > 256 * 1024) {
+    const first = repoMapCache.keys().next().value;
+    if (first === undefined) break;
+    repoMapCache.delete(first);
   }
+  repoMapCache.set(file, entry);
+}
 
-  return lines.length > 1 ? lines.join('\n') : '';
+async function inspectSource(root: string, file: string): Promise<RepoMapCacheEntry | undefined> {
+  if (!PARSED_SOURCE_EXTENSIONS.has(extname(file).toLowerCase())) return;
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink()) return;
+  const canonical = await realpath(file);
+  const rel = relative(root, canonical);
+  if (rel === '..' || rel.startsWith('../') || rel.startsWith('..\\') || isAbsolute(rel) || canonical !== file) return;
+  if (info.size > MAX_SOURCE_BYTES) return;
+  const handle = await open(file, 'r');
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (before.size > BigInt(MAX_SOURCE_BYTES)) return;
+    const revision = [before.dev, before.ino, before.size, before.mtimeNs, before.ctimeNs].join(':');
+    const cached = repoMapCache.get(file);
+    if (cached?.revision === revision) return cached;
+    const buffer = Buffer.alloc(Math.min(MAX_SOURCE_BYTES + 1, Number(before.size) + 1));
+    let read = 0;
+    while (read < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, read, buffer.length - read, null);
+      if (!bytesRead) break;
+      read += bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (read !== Number(before.size) || buffer.subarray(0, read).includes(0) || [after.dev, after.ino, after.size, after.mtimeNs, after.ctimeNs].join(':') !== revision) return;
+    const outline = extractFileAstOutline(relative(root, file), buffer.toString('utf8', 0, read));
+    const entry = { revision, totalLines: outline.totalLines,
+      symbols: outline.symbols.map(({ name, kind, startLine, endLine, exported }) => ({ name: Buffer.from(name).toString('utf8'), kind, startLine, endLine, exported })) };
+    cacheFile(file, entry);
+    return entry;
+  } finally { await handle.close(); }
+}
+
+/** Bounded inventory, filename selection and query-ranked source symbols. */
+export async function buildWorkspaceRepoMap(workspace: string, query = '', maxTokens = 900): Promise<string> {
+  if (!workspace || isBroadOrSystemWorkspace(workspace) || !Number.isFinite(maxTokens) || maxTokens <= 0) return '';
+  let root: string;
+  try { root = await realpath(workspace); } catch { return ''; }
+  if (isBroadOrSystemWorkspace(root)) return '';
+  const start = Date.now();
+  const inventory = await collectWorkspaceSourceFiles(root, query, start + 100);
+  if (!inventory.files.length) {
+    const notice = '[Workspace AST Repo Map; partial]\n[Coverage: inventory/time/ignore limit reached; use file_glob or file_search.]';
+    return inventory.limited && estimateTokens(notice) <= maxTokens ? notice : '';
+  }
+  const paths = new Map(inventory.files.map(file => [relative(root, file).replace(/\\/g, '/'), file]));
+  const terms = queryTerms(query);
+  const rankedPaths = rankRepoPaths([...paths.keys()], query, MAX_INSPECTED_FILES);
+  const entries: Array<{ file: string; score: number; totalLines?: number; symbols: string[] }> = [];
+  let inspected = 0;
+  for (const file of rankedPaths) {
+    let outline: RepoMapCacheEntry | undefined;
+    if (Date.now() - start < 250) {
+      try { outline = await inspectSource(root, paths.get(file)!); } catch { /* A vanished file grants no source evidence. */ }
+    }
+    if (outline) inspected++;
+    const symbols = outline?.symbols.filter(symbol => symbol.exported || symbol.kind !== 'method' || nameScore(symbol.name, terms) > 0)
+      .map(symbol => ({ symbol, score: nameScore(symbol.name, terms) }))
+      .sort((a, b) => b.score - a.score || Number(b.symbol.exported) - Number(a.symbol.exported) || a.symbol.startLine - b.symbol.startLine) ?? [];
+    entries.push({ file, score: pathScore(file, terms) + (symbols[0]?.score ?? 0), totalLines: outline?.totalLines,
+      symbols: symbols.slice(0, 10).map(({ symbol }) => `${symbol.name}[L${symbol.startLine}-${symbol.endLine}]`) });
+  }
+  entries.sort((a, b) => b.score - a.score || comparePath(a.file, b.file));
+  const footer = `[Coverage: ${inventory.files.length} candidate files, ${inspected} inspected; ${inventory.limited ? 'inventory/time limit; ' : ''}partial map, search omitted files.]`;
+  const lines = ['[Workspace AST Repo Map; partial]'];
+  for (const entry of entries) {
+    const symbols = [...entry.symbols];
+    let line: string;
+    do {
+      line = `- ${entry.file} (${entry.totalLines === undefined ? 'not inspected' : `${entry.totalLines}L`})${symbols.length ? `: ${symbols.join(', ')}` : ''}`;
+      if (estimateTokens([...lines, line, footer].join('\n')) <= maxTokens) break;
+      symbols.pop();
+    } while (symbols.length);
+    if (estimateTokens([...lines, line, footer].join('\n')) <= maxTokens) lines.push(line);
+  }
+  if (lines.length === 1) return '';
+  return [...lines, footer].join('\n');
 }

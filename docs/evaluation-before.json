@@ -1,0 +1,1013 @@
+{
+  "formatVersion": 1,
+  "fixtureVersion": 1,
+  "seed": 1413631828,
+  "seedHex": "0x54424f54",
+  "offline": true,
+  "fixtureSha256": "aeece04f9fc6e3b2e1ce5b40b3a5353cd09b9e4f28a870ffef337c34917c7cf9",
+  "implementationSha256": {
+    "src/token-optimizer.ts": "7375f57f0ec1cf86f555b50def37fc3b893026a6327b5d456bbea44fb3ad6417",
+    "src/agent.ts": "aeb2e5b8366f67473a5ae41e7d57583a376b57b378cb715baaac5f064dc25fee",
+    "src/context-window.ts": "822f880a095e721714cc662c9c20986ec532a569564ec9b03ced8c69fb5129a5",
+    "src/context-cache.ts": "4334331975c2c301176807a1cc16d66a54139f262f08bc7b32bdac80a14fcd4e",
+    "src/tools/edit-match.ts": "5013d2c9eba09f8637bb531bacc4bc8d8af228646546f41afedd40d20e45e3f6",
+    "src/repo-map.ts": "6be708344c987583dbec21c7f35a8ce5d1847f94c1b2db1fe28b879915105480"
+  },
+  "deterministicResultsSha256": "e19cc784d2110a088dc3663b7a5814b506c12bff325a95d687c2bf59888bc646",
+  "runtime": {
+    "packageVersion": "2.1.0",
+    "node": "v24.15.0",
+    "v8": "13.6.233.17-node.48",
+    "platform": "win32",
+    "architecture": "x64",
+    "logicalCPUs": 20
+  },
+  "measurement": {
+    "tokenValues": "local estimates, not billed tokens",
+    "byteValues": "raw UTF-8 or JSON serialized bytes",
+    "wallTimeMs": 425.22839999999997,
+    "importsIncluded": false,
+    "memory": "process RSS/heap before and after each section; deltas are not peak or isolated allocation measurements"
+  },
+  "checks": {
+    "total": 62,
+    "passed": 56,
+    "failed": 6,
+    "criticalFailed": 4,
+    "informationalFailed": 2,
+    "qualityGatePassed": false
+  },
+  "sections": [
+    {
+      "name": "schema_selection",
+      "cases": [
+        {
+          "id": "schema-0",
+          "category": "coding",
+          "prompt": "Patch a TypeScript function and inspect its callers.",
+          "required": [
+            "file_patch",
+            "file_read",
+            "file_search"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-1",
+          "category": "coding",
+          "prompt": "List the files in this directory.",
+          "required": [
+            "file_glob"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-2",
+          "category": "browser",
+          "prompt": "Open the browser, fill the login form and scroll the page.",
+          "required": [
+            "browser_open",
+            "browser_fill",
+            "browser_scroll"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 36,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 8922,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 17438,
+          "selectedSchemaTokenRatio": 0.662557552354077
+        },
+        {
+          "id": "schema-3",
+          "category": "browser",
+          "prompt": "Choose the country dropdown value then move farther down.",
+          "required": [
+            "browser_fill",
+            "browser_scroll"
+          ],
+          "missing": [
+            "browser_fill",
+            "browser_scroll"
+          ],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-4",
+          "category": "browser",
+          "prompt": "Press Enter on the focused control.",
+          "required": [
+            "browser_press"
+          ],
+          "missing": [
+            "browser_press"
+          ],
+          "baselineTools": 49,
+          "selectedTools": 24,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 6081,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 11826,
+          "selectedSchemaTokenRatio": 0.4515817614733403
+        },
+        {
+          "id": "schema-5",
+          "category": "computer",
+          "prompt": "Take a desktop screenshot and click the window.",
+          "required": [
+            "computer"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-6",
+          "category": "computer",
+          "prompt": "Close the foreground app.",
+          "required": [
+            "computer"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-7",
+          "category": "shell",
+          "prompt": "Run the unit tests in a shell.",
+          "required": [
+            "shell"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-8",
+          "category": "shell",
+          "prompt": "Send y to the running interactive job.",
+          "required": [
+            "process_write"
+          ],
+          "missing": [
+            "process_write"
+          ],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-9",
+          "category": "shell",
+          "prompt": "Stop the background process by PID.",
+          "required": [
+            "process_stop",
+            "process_list"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 28,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 6774,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 13266,
+          "selectedSchemaTokenRatio": 0.5030447051834249
+        },
+        {
+          "id": "schema-10",
+          "category": "workflow",
+          "prompt": "Track the goal and add a todo.",
+          "required": [
+            "goal_manage",
+            "todo_manage"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-11",
+          "category": "MCP",
+          "prompt": "Use MCP to look up a fixture record.",
+          "required": [
+            "mcp_call",
+            "mcp_catalog",
+            "mcp_fixture_lookup"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 20,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5509,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 10598,
+          "selectedSchemaTokenRatio": 0.4091044111094609
+        },
+        {
+          "id": "schema-12",
+          "category": "MCP",
+          "prompt": "Look up record 12 from the connected tracker.",
+          "required": [
+            "mcp_call",
+            "mcp_catalog"
+          ],
+          "missing": [
+            "mcp_call",
+            "mcp_catalog"
+          ],
+          "baselineTools": 49,
+          "selectedTools": 17,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 5126,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 9835,
+          "selectedSchemaTokenRatio": 0.38066240903015003
+        },
+        {
+          "id": "schema-13",
+          "category": "history",
+          "prompt": "Continue.",
+          "required": [
+            "browser_fill"
+          ],
+          "missing": [],
+          "baselineTools": 49,
+          "selectedTools": 29,
+          "baselineEstimatedTokens": 13466,
+          "selectedEstimatedTokens": 7967,
+          "baselineSerializedBytes": 26401,
+          "selectedSerializedBytes": 15447,
+          "selectedSchemaTokenRatio": 0.5916381999108867
+        }
+      ],
+      "requiredToolObservations": 24,
+      "falseNegatives": 6,
+      "recall": 0.75,
+      "checks": [
+        {
+          "id": "schema-0",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-1",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-2",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-3",
+          "pass": false,
+          "severity": "critical",
+          "missing": [
+            "browser_fill",
+            "browser_scroll"
+          ]
+        },
+        {
+          "id": "schema-4",
+          "pass": false,
+          "severity": "critical",
+          "missing": [
+            "browser_press"
+          ]
+        },
+        {
+          "id": "schema-5",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-6",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-7",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-8",
+          "pass": false,
+          "severity": "critical",
+          "missing": [
+            "process_write"
+          ]
+        },
+        {
+          "id": "schema-9",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-10",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-11",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        },
+        {
+          "id": "schema-12",
+          "pass": false,
+          "severity": "critical",
+          "missing": [
+            "mcp_call",
+            "mcp_catalog"
+          ]
+        },
+        {
+          "id": "schema-13",
+          "pass": true,
+          "severity": "critical",
+          "missing": []
+        }
+      ],
+      "limitation": "Recall is annotated fixture visibility, not correct tool use. Full-schema baseline contains every required fixture tool. MCP catalog is synthetic.",
+      "wallTimeMs": 17.946500000000015,
+      "memoryBytes": {
+        "before": {
+          "rss": 155721728,
+          "heapUsed": 49143560,
+          "heapTotal": 61206528,
+          "external": 89456153
+        },
+        "after": {
+          "rss": 157298688,
+          "heapUsed": 43708856,
+          "heapTotal": 57954304,
+          "external": 89456193
+        },
+        "rssDelta": 1576960,
+        "heapUsedDelta": -5434704,
+        "peakMeasured": false
+      }
+    },
+    {
+      "name": "greeting_routing",
+      "cases": [
+        {
+          "prompt": "fix tests",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-0",
+          "actualFast": false
+        },
+        {
+          "prompt": "hi, fix tests",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-1",
+          "actualFast": false
+        },
+        {
+          "prompt": "thanks, now inspect the failure",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-2",
+          "actualFast": false
+        },
+        {
+          "prompt": "continue",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-3",
+          "actualFast": false
+        },
+        {
+          "prompt": "yes",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-4",
+          "actualFast": false
+        },
+        {
+          "prompt": "merhaba dosyayı düzelt",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-5",
+          "actualFast": false
+        },
+        {
+          "prompt": "hola revisa el código",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-6",
+          "actualFast": false
+        },
+        {
+          "prompt": "مرحبا أصلح الخطأ",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-7",
+          "actualFast": false
+        },
+        {
+          "prompt": "こんにちは、コードを直して",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-8",
+          "actualFast": false
+        },
+        {
+          "prompt": "🙂 debug this",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-9",
+          "actualFast": false
+        },
+        {
+          "prompt": "/plan improve parser",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-10",
+          "actualFast": false
+        },
+        {
+          "prompt": "good morning; run npm test",
+          "expectedFast": false,
+          "category": "work",
+          "id": "routing-11",
+          "actualFast": false
+        },
+        {
+          "prompt": "hi",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-12",
+          "actualFast": true
+        },
+        {
+          "prompt": "hello!",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-13",
+          "actualFast": true
+        },
+        {
+          "prompt": "merhaba",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-14",
+          "actualFast": true
+        },
+        {
+          "prompt": "teşekkürler",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-15",
+          "actualFast": true
+        },
+        {
+          "prompt": "good morning",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-16",
+          "actualFast": true
+        },
+        {
+          "prompt": "how are you?",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-17",
+          "actualFast": true
+        },
+        {
+          "prompt": "hola",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-18",
+          "actualFast": false
+        },
+        {
+          "prompt": "bonjour",
+          "expectedFast": true,
+          "category": "social",
+          "id": "routing-19",
+          "actualFast": false
+        },
+        {
+          "prompt": "hello",
+          "images": true,
+          "expectedFast": false,
+          "category": "image",
+          "id": "routing-20",
+          "actualFast": false
+        }
+      ],
+      "workMisroutedToNoTools": 0,
+      "socialFastPathMisses": 2,
+      "checks": [
+        {
+          "id": "routing-0",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-1",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-2",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-3",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-4",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-5",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-6",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-7",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-8",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-9",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-10",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-11",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "routing-12",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-13",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-14",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-15",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-16",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-17",
+          "pass": true,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-18",
+          "pass": false,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-19",
+          "pass": false,
+          "severity": "informational"
+        },
+        {
+          "id": "routing-20",
+          "pass": true,
+          "severity": "critical"
+        }
+      ],
+      "limitation": "Unknown greetings conservatively retain work tooling; those are visible social coverage misses, not unsafe work-routing errors.",
+      "wallTimeMs": 0.6011999999999489,
+      "memoryBytes": {
+        "before": {
+          "rss": 157364224,
+          "heapUsed": 43713968,
+          "heapTotal": 57954304,
+          "external": 89456193
+        },
+        "after": {
+          "rss": 157458432,
+          "heapUsed": 43767272,
+          "heapTotal": 57954304,
+          "external": 89456193
+        },
+        "rssDelta": 94208,
+        "heapUsedDelta": 53304,
+        "peakMeasured": false
+      }
+    },
+    {
+      "name": "context_window",
+      "baseline": {
+        "estimatedTokens": 997404,
+        "serializedBytes": 2160021,
+        "messages": 2009
+      },
+      "optimized": {
+        "estimatedTokens": 4942,
+        "serializedBytes": 11427,
+        "messages": 14,
+        "omittedMessages": 1996,
+        "softOverflow": false,
+        "splitActiveTurn": true
+      },
+      "checks": [
+        {
+          "id": "context-budget",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "all-user-system-constraints",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "no-orphan-result",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "no-missing-result",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "native-group-linkage",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "session-unchanged",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "latest-evidence-verbatim",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "opaque-reference-conservative-overflow",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "indivisible-user-verbatim-overflow",
+          "pass": true,
+          "severity": "critical"
+        }
+      ],
+      "limitation": "Baseline is the same local full native history, not another product. Estimates include native items conservatively; 5000 is a soft fixture target, not model capacity.",
+      "wallTimeMs": 154.44670000000008,
+      "memoryBytes": {
+        "before": {
+          "rss": 157458432,
+          "heapUsed": 43770056,
+          "heapTotal": 57954304,
+          "external": 89456193
+        },
+        "after": {
+          "rss": 190181376,
+          "heapUsed": 51700256,
+          "heapTotal": 85086208,
+          "external": 89453697
+        },
+        "rssDelta": 32722944,
+        "heapUsedDelta": 7930200,
+        "peakMeasured": false
+      }
+    },
+    {
+      "name": "repeated_source",
+      "reads": 3,
+      "baseline": {
+        "estimatedTokens": 4317,
+        "bytes": 7590
+      },
+      "optimized": {
+        "estimatedTokens": 1607,
+        "bytes": 2864,
+        "cacheHits": 2
+      },
+      "checks": [
+        {
+          "id": "first-source-full",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "repeat-references-smaller",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "eviction-restores-full-source",
+          "pass": true,
+          "severity": "critical"
+        }
+      ],
+      "limitation": "Savings assume identical source and requested range; eviction forces a full reread. Provider cached billing is not measured.",
+      "wallTimeMs": 0.7660000000000764,
+      "memoryBytes": {
+        "before": {
+          "rss": 190181376,
+          "heapUsed": 51702840,
+          "heapTotal": 85086208,
+          "external": 89453697
+        },
+        "after": {
+          "rss": 190197760,
+          "heapUsed": 51917936,
+          "heapTotal": 85086208,
+          "external": 89453697
+        },
+        "rssDelta": 16384,
+        "heapUsedDelta": 215096,
+        "peakMeasured": false
+      }
+    },
+    {
+      "name": "unicode_editing",
+      "checks": [
+        {
+          "id": "exact",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 20,
+          "outputBytes": 20,
+          "expectedBytes": 20
+        },
+        {
+          "id": "typography",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 23,
+          "outputBytes": 21,
+          "expectedBytes": 21
+        },
+        {
+          "id": "mixed-endings-bom",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 26,
+          "outputBytes": 26,
+          "expectedBytes": 26
+        },
+        {
+          "id": "nbsp-thin-space",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 9,
+          "outputBytes": 9,
+          "expectedBytes": 9
+        },
+        {
+          "id": "exact-priority",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 12,
+          "outputBytes": 12,
+          "expectedBytes": 12
+        },
+        {
+          "id": "unicode-untouched",
+          "pass": true,
+          "severity": "critical",
+          "inputBytes": 30,
+          "outputBytes": 31,
+          "expectedBytes": 31
+        },
+        {
+          "id": "ambiguous-unicode",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 15
+        },
+        {
+          "id": "overlap",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 4
+        },
+        {
+          "id": "missing",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 6
+        },
+        {
+          "id": "empty-search",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 6
+        },
+        {
+          "id": "no-op",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 6
+        },
+        {
+          "id": "alignment-limit",
+          "pass": true,
+          "severity": "critical",
+          "expected": "reject",
+          "sourceBytes": 1206
+        }
+      ],
+      "positiveCases": 6,
+      "negativeCases": 6,
+      "limitation": "Pure production edit matcher; exact output UTF-8 bytes include untouched context. This is not filesystem mutation, permissions or end-to-end edit validation.",
+      "wallTimeMs": 1.0996999999999844,
+      "memoryBytes": {
+        "before": {
+          "rss": 190197760,
+          "heapUsed": 51920960,
+          "heapTotal": 85086208,
+          "external": 89453697
+        },
+        "after": {
+          "rss": 190205952,
+          "heapUsed": 52051424,
+          "heapTotal": 85086208,
+          "external": 89454997
+        },
+        "rssDelta": 8192,
+        "heapUsedDelta": 130464,
+        "peakMeasured": false
+      }
+    },
+    {
+      "name": "repo_query_retrieval",
+      "fixtureFiles": 92,
+      "cases": [
+        {
+          "query": "resetPassword",
+          "expectedPath": "packages/deep/auth/src/reset-password.mts",
+          "expectedSymbol": "resetPassword",
+          "retrievedPath": true,
+          "retrievedSymbol": true,
+          "rawBytes": 292,
+          "estimatedTokens": 174,
+          "wallTimeMs": 84.88990000000001,
+          "map": "[Workspace AST Repo Map; partial]\n- packages/deep/auth/src/reset-password.mts (24L): resetPassword[L23-23], helper0[L1-1], helper1[L2-2], helper2[L3-3], helper3[L4-4], helper4[L5-5], helper5[L6-6], helper6[L7-7]\n[Coverage: 92 candidate files, 80 inspected; partial map, search omitted files.]"
+        },
+        {
+          "query": "settleInvoice",
+          "expectedPath": "packages/deep/pay/src/invoice.ts",
+          "expectedSymbol": "settleInvoice",
+          "retrievedPath": true,
+          "retrievedSymbol": true,
+          "rawBytes": 300,
+          "estimatedTokens": 174,
+          "wallTimeMs": 52.863699999999994,
+          "map": "[Workspace AST Repo Map; partial]\n- packages/deep/pay/src/invoice.ts (2L): settleInvoice[L1-1]\n- packages/deep/auth/src/reset-password.mts (24L): helper0[L1-1], helper1[L2-2], helper2[L3-3], helper3[L4-4], helper4[L5-5]\n[Coverage: 92 candidate files, 80 inspected; partial map, search omitted files.]"
+        }
+      ],
+      "baseline": {
+        "allSourceBytes": 5064,
+        "allSourceEstimatedTokens": 2729
+      },
+      "checks": [
+        {
+          "id": "retrieval-0",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "retrieval-1",
+          "pass": true,
+          "severity": "critical"
+        },
+        {
+          "id": "no-invented-symbol",
+          "pass": true,
+          "severity": "critical"
+        }
+      ],
+      "limitation": "Bounded synthetic 92-file repo, first query cold and later queries potentially warm; symbol visibility is not semantic dependency or bug-finding recall.",
+      "wallTimeMs": 247.19219999999996,
+      "memoryBytes": {
+        "before": {
+          "rss": 190205952,
+          "heapUsed": 52053848,
+          "heapTotal": 85086208,
+          "external": 89454997
+        },
+        "after": {
+          "rss": 186613760,
+          "heapUsed": 51766016,
+          "heapTotal": 81809408,
+          "external": 89530289
+        },
+        "rssDelta": -3592192,
+        "heapUsedDelta": -287832,
+        "peakMeasured": false
+      }
+    }
+  ],
+  "missingEvidence": [
+    "live cross-product task-quality evaluation",
+    "paired model/tool budgets and repeated independent trials",
+    "end-to-end correctness and human-rated outcomes",
+    "provider-billed token/cost/latency distributions",
+    "representative real-repository and multilingual task coverage"
+  ],
+  "claimScope": "Offline local component fixtures against unoptimized local baselines. Does not establish world rank, competitor superiority, or general 50–75% savings."
+}

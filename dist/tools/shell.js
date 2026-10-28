@@ -1,7 +1,42 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { windowsSystemExecutable } from '../windows-system.js';
 const backgroundProcesses = new Map();
+const workspaceAlias = (workspace) => {
+    const path = resolve(workspace);
+    return process.platform === 'win32' ? path.toLowerCase() : path;
+};
+async function processScope(workspace, owner, allowMissing = false) {
+    if (typeof owner !== 'string' || !owner.trim() || owner.length > 512) {
+        throw new Error('Background process ownership context is required');
+    }
+    try {
+        const root = await realpath(resolve(workspace));
+        return { workspace: workspaceAlias(root), conversation: owner };
+    }
+    catch (error) {
+        if (!allowMissing || error.code !== 'ENOENT')
+            throw error;
+        // Keep known handles manageable after their launch directory is removed.
+        // Existing/repointed aliases always take the fresh realpath branch above.
+        for (const proc of backgroundProcesses.values()) {
+            if (proc.owner.conversation === owner && workspaceAlias(proc.cwd) === workspaceAlias(workspace)) {
+                return { ...proc.owner, deletedAlias: workspaceAlias(workspace) };
+            }
+        }
+        throw error;
+    }
+}
+const ownsProcess = (proc, scope) => proc.owner.conversation === scope.conversation && (scope.deletedAlias !== undefined
+    ? workspaceAlias(proc.cwd) === scope.deletedAlias : proc.owner.workspace === scope.workspace);
+function ownedProcess(id, owner) {
+    const proc = backgroundProcesses.get(id);
+    if (!proc || !ownsProcess(proc, owner))
+        throw new Error(`Background process '${id}' not found`);
+    return proc;
+}
 const POWERSHELL_SYNTAX_REGEX = /(?:\b(?:Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|Stop-|Restart-|Start-|Copy-|Move-|Rename-|Clear-|Write-|Read-|Measure-|Compare-|ConvertTo-|ConvertFrom-|Resolve-|Split-|Join-)\w*|\$env:|\$PSVersionTable|\$ErrorActionPreference|\[System\.|\[Math\]::|\[Console\]::)/i;
 /** Avoid implicitly giving model-launched programs provider and bridge secrets.
  * This is defense in depth; commands still run with the user's OS permissions. */
@@ -73,39 +108,7 @@ export function pruneCompletedProcesses() {
 }
 const MAX_TOTAL_PROCESSES = 20;
 const MAX_RUNNING_PROCESSES = 12;
-function killProcessTree(proc) {
-    if (proc.status === 'running' && proc.pid) {
-        proc.status = 'stopped';
-        proc.child.stdout?.destroy();
-        proc.child.stderr?.destroy();
-        try {
-            if (process.platform === 'win32') {
-                spawn(windowsSystemExecutable('taskkill'), ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-            }
-            else {
-                try {
-                    process.kill(-proc.pid, 'SIGKILL');
-                }
-                catch {
-                    proc.child.kill('SIGKILL');
-                }
-            }
-        }
-        catch {
-            /* ignore */
-        }
-    }
-}
 function enforceProcessLimit() {
-    const running = Array.from(backgroundProcesses.entries())
-        .filter(([_, p]) => p.status === 'running')
-        .sort((a, b) => a[1].startTime - b[1].startTime);
-    if (running.length > MAX_RUNNING_PROCESSES) {
-        const excess = running.slice(0, running.length - MAX_RUNNING_PROCESSES);
-        for (const [_, proc] of excess) {
-            killProcessTree(proc);
-        }
-    }
     if (backgroundProcesses.size > MAX_TOTAL_PROCESSES) {
         const completed = Array.from(backgroundProcesses.entries())
             .filter(([_, p]) => p.status !== 'running')
@@ -155,7 +158,7 @@ export const shellToolDefinitions = [
     },
     {
         name: 'process_list',
-        description: 'List all running and recent background processes managed by T Bot.',
+        description: 'List background processes belonging to this chat and workspace.',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -201,7 +204,7 @@ export const shellToolDefinitions = [
 ];
 export const SHELL_TOOLS = shellToolDefinitions;
 export const executeShellTool = handleShellTool;
-export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspaceOrSignal, maybeSignal) {
+export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspaceOrSignal, maybeSignal, processOwner) {
     let name = 'shell';
     let args = {};
     let workspace = '.';
@@ -224,8 +227,11 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         signal = workspaceOrSignal instanceof AbortSignal ? workspaceOrSignal : undefined;
     }
     signal?.throwIfAborted();
+    const owner = name.startsWith('process_') || args.background === true
+        ? await processScope(workspace, processOwner, name.startsWith('process_')) : undefined;
+    signal?.throwIfAborted();
     if (name === 'process_list') {
-        const list = Array.from(backgroundProcesses.values()).map(p => ({
+        const list = Array.from(backgroundProcesses.values()).filter(p => ownsProcess(p, owner)).map(p => ({
             processId: p.processId,
             pid: p.pid,
             command: p.command.length > 80 ? p.command.slice(0, 77) + '...' : p.command,
@@ -240,9 +246,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         const processId = typeof args.process_id === 'string' ? args.process_id.trim() : '';
         if (!processId)
             throw new Error('process_id must be a non-empty string');
-        const proc = backgroundProcesses.get(processId);
-        if (!proc)
-            throw new Error(`Background process '${processId}' not found`);
+        const proc = ownedProcess(processId, owner);
         let output = proc.output;
         if (typeof args.tail_lines === 'number' && args.tail_lines > 0) {
             output = tailLinesFromBuffer(output, args.tail_lines);
@@ -259,9 +263,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         const processId = typeof args.process_id === 'string' ? args.process_id.trim() : '';
         if (!processId)
             throw new Error('process_id must be a non-empty string');
-        const proc = backgroundProcesses.get(processId);
-        if (!proc)
-            throw new Error(`Background process '${processId}' not found`);
+        const proc = ownedProcess(processId, owner);
         if (proc.status === 'running' && proc.pid) {
             proc.status = 'stopped';
             proc.child.stdout?.destroy();
@@ -292,18 +294,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
             throw new Error('process_id (veya id) parametresi belirtilmelidir.');
         }
         const procKey = String(rawId).trim();
-        let proc = backgroundProcesses.get(procKey);
-        if (!proc) {
-            for (const p of backgroundProcesses.values()) {
-                if (String(p.pid) === procKey || p.processId.endsWith(procKey)) {
-                    proc = p;
-                    break;
-                }
-            }
-        }
-        if (!proc) {
-            throw new Error(`Arka plan süreci bulunamadı: '${procKey}'`);
-        }
+        const proc = ownedProcess(procKey, owner);
         if (proc.status !== 'running' || !proc.child.stdin || proc.child.stdin.destroyed) {
             throw new Error(`Süreç '${procKey}' çalışır durumda değil veya stdin kapalı (Durum: ${proc.status}).`);
         }
@@ -331,9 +322,13 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         throw new Error('command must be a non-empty string');
     // Background execution mode
     if (args.background === true) {
-        const processId = 'proc_' + randomUUID().slice(0, 8);
+        // A new owner must never evict another owner's running child to obtain a slot.
+        if (Array.from(backgroundProcesses.values()).filter(p => p.status === 'running').length >= MAX_RUNNING_PROCESSES) {
+            throw new Error('Background process capacity reached; stop an owned process before starting another');
+        }
+        const processId = 'proc_' + randomUUID();
         const child = spawnCommand(args.command, {
-            cwd: workspace,
+            cwd: resolve(workspace),
             windowsHide: true,
             detached: process.platform !== 'win32',
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -342,7 +337,8 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
             processId,
             pid: child.pid,
             command: args.command,
-            cwd: workspace,
+            cwd: resolve(workspace),
+            owner: owner,
             startTime: Date.now(),
             status: 'running',
             exitCode: null,

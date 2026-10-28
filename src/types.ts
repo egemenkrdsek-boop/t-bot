@@ -54,6 +54,8 @@ export type AgentEvent =
   | { type: 'error'; error: string; code?: 'authentication' }
   | { type: 'status'; message: string };
 export interface AgentInput {
+  /** Internal host identity for background process handles, never a model parameter. */
+  processOwner?: string;
   message: string;
   images?: ImageAttachment[];
   history: Message[];

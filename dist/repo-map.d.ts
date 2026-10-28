@@ -22,9 +22,7 @@ export declare function extractFileAstOutline(filePath: string, content: string)
  * where generating an AST repository map would scan thousands of unrelated files.
  */
 export declare function isBroadOrSystemWorkspace(ws?: string): boolean;
-/**
- * Builds a compact, query-ranked AST repository map within maxTokens budget.
- * Uses mtimeMs caching to avoid re-parsing unchanged files across turns.
- * Uses a cooperative 250ms traversal budget and skips oversized generated files.
- */
+/** Deterministic filename selection; no disk access, embeddings or model calls. */
+export declare function rankRepoPaths(paths: string[], query: string, limit?: number): string[];
+/** Bounded inventory, filename selection and query-ranked source symbols. */
 export declare function buildWorkspaceRepoMap(workspace: string, query?: string, maxTokens?: number): Promise<string>;

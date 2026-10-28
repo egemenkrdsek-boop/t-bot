@@ -104,3 +104,63 @@ T Bot'a özgü tazelik kontrolleri: tam kaynak okunmuşsa SHA-256 hash, bütün 
 Mevcut dosya mutasyonları geçersiz UTF-8/NUL içeriği round-trip byte kontrolüyle reddeder; BOM korunur. Yeni içerikte lone surrogate/NUL de yazmadan reddedilir. Korunan kaynak baytları sözleşmesi valid UTF-8 text içindir; binary veya UTF-16 düzenleme desteği yoktur. Snapshot, kilit ve içerik kontrolü sıradan eşzamanlı kullanıcı düzenlemelerinde veri kaybını önler; dış süreçle son compare→rename arasında atomik OS CAS garantisi, reparse-point sandbox'ı veya kötü niyetli eşzamanlı filesystem aktörüne karşı mutlak güvenlik iddiası yoktur. Bağlamdan evicted inspection izinlerini otomatik silme bu portun kapsamında değildir; kesin kaynak gerektiğinde yeniden okuma ve exact hedef eşleştirme hâlâ gereklidir.
 
 Yeni doğrulama: `node --import tsx --test tests/edit-match.test.ts` **13/13 geçti**. Unicode exact önceliği/ambiguity, aynı satır Unicode literal context'i, trailing whitespace, mixed endings, outside-span/BOM byte korunması, explicit newline edit, LCS/line/input/batch limitleri, 400 bin CRLF'li exact kaynak, stale same-size/mtime, doğrudan hash fixture, concurrent cooperating patch, no-clobber creation, retry sırasında dış edit ve failure sonrası lock release kapsanır. `tests/runtime-tools.test.ts` değiştirilmedi. E2E/live provider/build/kurulum/commit/push yapılmadı; konsolide typecheck ve tam test suite ana orkestratörün işidir.
+
+## Sonraki retrieval incelemesi — derin depolarda dosya ve sembol kapsamı
+
+Önceki uygulama kökten alfabetik ilk 80 kaynak dosyada yürümeyi durduruyordu. 85 küçük kök dosyası ve `packages/deep/.../reset-password.ts` fixture'ında hedef hiç görünmedi; tek dosyanın 16. sembolü de sabit ilk-10 summary sınırının dışında kaldı. Cache yalnız mtime'a bakıyor, workspace-relative hazır metni absolute dosya anahtarıyla paylaşıyordu. Bu nedenle kaynak değişikliği ve aynı dosyayı alt-workspace üzerinden gösterme hatalı sonuç verebiliyordu. `agent.ts` üstündeki ikinci 45 saniyelik cache de builder'ın dosya güncellemelerini görmesini engelliyordu.
+
+Yeni akış: sınırlı dizin envanteri → deterministik dosya adı sıralaması → seçilmiş dosyalarda bütçeli kaynak/AST incelemesi → sorguyla eşleşen sembolleri önce gösteren token sınırlı harita. `rankRepoPaths(paths, query, limit)` salt bellek üzerinde çalışır. Unicode, camelCase ve underscore terimleri kullanılır; açık dosya adı eşleşmesi genel path parçalarından güçlüdür. Bir dosyanın geç sembolü cache hazır summary'si yerine sorguya göre yeniden sıralanır. Class arrow-function alanları da method sembolü olarak kaydedilir. `.mts`, `.cts`, `.markdown` parser destekleri envanterde artık düşmez.
+
+Java/C/C++/C#/Swift/Kotlin/Ruby/PHP/Shell/Vue/SQL ve yaygın config/metin uzantıları, ayrıca sorguda açıkça geçen diğer dosya adları, **yalnız dosya adı kanıtı** olarak listelenebilir. Desteklenmeyen dile TypeScript AST'si uygulanmaz; `not inspected` işareti kullanılır. Açık `types.d.ts` sorgusu ilgili declaration dosyasını da getirebilir. Bu, bütün dillerde grammar/AST veya global sembol arama desteği iddiası değildir.
+
+Kök ve iç `.gitignore` dosyalarının yaygın glob kuralları (anchor, negation, `*`, `?`, `**`, karakter sınıfı, escape) uygulanır; statik generated/vendor dizin engelleri korunur. Global Git ayarları veya workspace dışı exclude dosyaları okunmaz. Tam Git ignore parser eşdeğerliği iddia edilmez; güvenle okunamayan/limit aşan ignore dosyasında ilgili dizin taranmaz. Adversarial glob'lar regex backtracking yerine ortak bütçeli DP ile eşleştirilir. Mevcut symlink/junction girişleri atlanır; parser açmadan önce canonical path/lstat doğrulanır. Bunlar kötü niyetli eşzamanlı filesystem değişimine karşı atomik sandbox değildir.
+
+Sınırlar:
+
+- En çok 10.000 directory entry ve 512 dizin; envantere yaklaşık 100 ms, kaynak incelemeleri dahil yaklaşık 250 ms kooperatif süre hedefi. Tek TypeScript parse işlemi veya OS çağrısı bu hedefi aşabilir; sert gerçek zaman garantisi yoktur.
+- En çok 80 seçilmiş dosya incelenir; parser dosyası 512 KiB ile ve file-descriptor üzerinden sınırlı okumayla korunur. Dosya adı görülmüş fakat içerik incelenmemişse bu açıkça belirtilir.
+- Her ignore dosyası 32 KiB/512 kural, inherited toplam 1024 kural, pattern 256 karakter ve bütün envanter için 2 milyon DP hücresi. Limitte harita kapsama uyarısı verir; “eşleşme yok” veya “tüm depo incelendi” iddia etmez.
+- Cache en çok 128 dosya, toplam 8192 sembol ve 256 Ki karakter sembol adı tutar; AST/source nesnesi tutulmaz. dev/inode/size/mtimeNs/ctimeNs revision her builder çağrısında doğrulanır. Gösterim workspace-relative ve query-specific olarak yeniden kurulur. 2.0 bölümünde anlatılan üst 64-workspace/45s cache kaldırılmıştır.
+
+Harita **partial** bir excerpt'tır. Dosya adıyla ilişkisi olmayan bir sembol, dosyası 80 parse adayı arasına giremezse hâlâ görünmeyebilir; çok büyük/derin depoların tamamı için recall garantisi yoktur. `file_glob`/`file_search` ve cerrahi `file_read` ile tamamlanmalıdır. Harita okunmuş dosya yetkisi oluşturmaz; mevcut grounding/snapshot/onay kontrolleri değişmedi. Ajan turu başladıktan sonraki dosya düzenlemelerinde harita snapshot'ı yerine güncel kaynak okunmalıdır.
+
+Doğrulama: `node --import tsx --test tests/repo-map.test.ts` **10/10**, `tests/repo-map.test.ts tests/core.test.ts` birlikte **37/37 geçti** (son koşu yaklaşık 2,81 s). Derin monorepo hedefi, geç sembol, query değişimi, restored mtime/same-size cache tazeliği, alt-workspace relative path, silinen dosya, ignore/negation/glob, symlink/junction, oversized source, Unicode/uzantı/class-field kapsamı ve parser desteklenmeyen dosyaların dürüst filename-only gösterimi kapsanır. E2E, canlı model/ağ, build, kurulum, commit/push veya sürüm yükseltmesi yapılmadı.
+
+Offline fixture ölçümü (yerel Windows/Node, tek süreç; gerçek sağlayıcı tokenları değil): 10.000 sentetik path üzerinde hedef **top-1**; bir ısınma ve 10 ölçümde medyan **10,874 ms**, min **9,981 ms**, max **12,467 ms**. GC sonrası süreç RSS **162,49 MiB**, heap **34,77 MiB**; ölçüm öncesine göre retained heap farkı **−6,09 KiB** (ölçüm gürültüsü, RAM tasarrufu veya leak yokluğu kanıtı değildir; peak RAM ölçülmedi). 85 kök kaynak + bir derin 21 satırlık hedef fixture'ında dosya ve `resetPassword[L21-21]` görünür; harita **174 tahmini token / 292 karakter**, tüm fixture kaynakları **1382 tahmini token**, harita üretimi **87,902 ms**. Bu bir hedef bulma/excerpt boyutu ölçümüdür; sonraki kaynak okuma dahil bütün görev maliyeti, model kalitesi veya rakip üstünlüğü sonucu çıkarılmaz.
+
+Ölçümü yeniden üretmek için proje kökünde PowerShell:
+
+```powershell
+@'
+import { performance } from 'node:perf_hooks';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { rankRepoPaths, buildWorkspaceRepoMap } from './src/repo-map.ts';
+import { estimateTokens } from './src/token-optimizer.ts';
+const paths=Array.from({length:9999},(_,i)=>`packages/pkg${i}/src/unrelated${i}.ts`);
+paths.push('apps/account/src/reset-password.ts');
+rankRepoPaths(paths,'resetPassword reset-password',8); global.gc?.();
+const before=process.memoryUsage(), times=[]; let first='';
+for(let i=0;i<10;i++) {
+  const start=performance.now(); first=rankRepoPaths(paths,'resetPassword reset-password',8)[0];
+  times.push(performance.now()-start);
+}
+global.gc?.(); const after=process.memoryUsage(); times.sort((a,b)=>a-b);
+const root=await mkdtemp(join(tmpdir(),'tbot-map-measure-'));
+try {
+  const sources=Array.from({length:85},(_,i)=>`export const unrelated${i}=1;`);
+  await Promise.all(sources.map((source,i)=>writeFile(join(root,`a${String(i).padStart(3,'0')}.ts`),source)));
+  const deep=join(root,'packages/deep/auth/src'); await mkdir(deep,{recursive:true});
+  const source=Array.from({length:20},(_,i)=>`export const helper${i}=1;`).join('\n')+'\nexport function resetPassword() {}';
+  await writeFile(join(deep,'reset-password.mts'),source); sources.push(source);
+  const start=performance.now(), map=await buildWorkspaceRepoMap(root,'resetPassword reset-password',180);
+  console.log({ top1:first, medianMs:(times[4]+times[5])/2, minMs:times[0], maxMs:times.at(-1),
+    rssMiB:after.rss/1048576, heapUsedMiB:after.heapUsed/1048576,
+    retainedHeapDeltaKiB:(after.heapUsed-before.heapUsed)/1024,
+    targetFile:map.includes('reset-password.mts'), targetSymbol:map.includes('resetPassword[L21-21]'),
+    mapEstimatedTokens:estimateTokens(map), allSourceEstimatedTokens:sources.reduce((n,s)=>n+estimateTokens(s),0),
+    mapMs:performance.now()-start, mapChars:map.length });
+} finally { await rm(root,{recursive:true,force:true}); }
+'@ | node --expose-gc --import tsx --input-type=module -
+```

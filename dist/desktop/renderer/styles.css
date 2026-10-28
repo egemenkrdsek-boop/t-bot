@@ -2092,3 +2092,34 @@ pre, code, .tool-target, .thinking-timer { font-family: var(--font-mono); }
 .tool-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tool-header-left { min-width: 0; }
 .tool-header-right { flex-shrink: 0; }
+
+/* History is paged in the existing scroll surface; no idle animation or blur. */
+.transcript-pager, .text-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  color: var(--text-dim);
+  font: 12px/1.5 var(--font-sans);
+}
+.transcript-pager {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-main);
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 12px;
+}
+.transcript-pager button, .text-pager button {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 7px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.transcript-pager button:hover, .text-pager button:hover { opacity: .8; }
+.approval-status { padding: 8px 12px; color: var(--text-dim); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }

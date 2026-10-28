@@ -510,6 +510,20 @@ function registerIpcHandlers() {
 
         const targetWorkspace = resolve(payload.workspace || getDefaultWorkspace());
         if (!statSync(targetWorkspace).isDirectory()) return { ok: false, error: 'Çalışma alanı bir klasör olmalıdır.' };
+        const store = new SessionStore(configDirectory());
+        let session: Session;
+        if (payload.sessionId) {
+          try {
+            const existing = await store.get(payload.sessionId, targetWorkspace);
+            if (!existing) return { ok: false, sessionId: payload.sessionId, error: 'Seçili oturum bulunamadı. Oturum listesini yenileyin veya yeni bir sohbet oluşturun.' };
+            session = existing;
+          } catch (error) {
+            return { ok: false, sessionId: payload.sessionId, error: `Oturum yüklenemedi: ${error instanceof Error ? error.message : String(error)}` };
+          }
+        } else {
+          session = createSession(targetWorkspace);
+        }
+        if (abortController.signal.aborted) return { ok: false, aborted: true, sessionId: session.id };
         const config = await loadConfig();
         if (payload.provider && payload.provider !== config.provider) {
           config.provider = payload.provider;
@@ -531,14 +545,6 @@ function registerIpcHandlers() {
           return { ok: false, error: `Sağlayıcı başlatma hatası: ${err.message}` };
         }
 
-        const store = new SessionStore(configDirectory());
-        let session: Session;
-        if (payload.sessionId) {
-          const existing = await store.get(payload.sessionId, targetWorkspace).catch(() => null);
-          session = existing || createSession(targetWorkspace);
-        } else {
-          session = createSession(targetWorkspace);
-        }
 
         if (abortController.signal.aborted) return { ok: false, aborted: true, sessionId: session.id };
         const pendingApprovals = new Map<string, (approved: boolean) => void>();
@@ -632,6 +638,7 @@ function registerIpcHandlers() {
           }
           const history = [...session.messages];
           const input: AgentInput = {
+              processOwner: `desktop:${session.id}`,
               message: payload.message,
               images: payload.images,
               history,

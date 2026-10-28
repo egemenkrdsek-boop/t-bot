@@ -461,10 +461,10 @@ export async function executeTool(call, context) {
             output = await executeWorkflowTool(toolName, actualArgs, context.workspace);
         }
         else if (toolName.startsWith('process_')) {
-            output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+            output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
         }
         else if (toolName === 'shell') {
-            output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+            output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal, context.processOwner);
         }
         else if (toolName === 'image_generate') {
             output = await handleImageTool(toolName, actualArgs, context);
