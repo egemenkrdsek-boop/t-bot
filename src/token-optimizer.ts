@@ -661,12 +661,35 @@ export function compressConversationHistory(
     }
   });
 
-  const imageCutoffIndex = Math.max(0, messages.length - 2);
+  // messages dizisini sondan başa doğru tara ve gerçekten images?.length barındıran son 3 mesajın indekslerini kaydet.
+  // Ayrıca son kullanıcı mesajında görsel varsa onu da her zaman koru.
+  const keptImageIndices = new Set<number>();
+  let imageCount = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.images && m.images.length > 0) {
+      if (imageCount < 3) {
+        keptImageIndices.add(i);
+        imageCount++;
+      }
+    }
+  }
+
+  // Son kullanıcı mesajında görsel varsa onu da her zaman koru:
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user') {
+      if (m.images && m.images.length > 0) {
+        keptImageIndices.add(i);
+      }
+      break;
+    }
+  }
 
   let compressed: Message[] = messages.map((m, idx) => {
     const msg = { ...m };
 
-    if (idx < imageCutoffIndex && msg.images?.length) {
+    if (!keptImageIndices.has(idx) && msg.images?.length) {
       msg.images = undefined;
     }
 

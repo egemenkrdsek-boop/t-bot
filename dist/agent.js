@@ -162,7 +162,7 @@ export async function screenshotImage(call, result, workspace) {
 }
 // Retain only the most recent screenshots in provider requests to bound payload size.
 function limitImages(messages) {
-    let remaining = 2;
+    let remaining = 3;
     return messages.map(m => ({ ...m })).reverse().map(m => {
         if (!m.images?.length)
             return m;
@@ -202,8 +202,8 @@ export async function runAgent(input, options = {}) {
     const skills = resolveSkills(input.message, workspace);
     const activeSkills = options.activeSkills ?? skills.map(s => s.id);
     const readOnly = toolPolicy === 'read-only' || skillRequiresReadOnly(skills, input.message);
-    // Reset turn-scoped grounding evidence at the beginning of a top-level turn
-    if (activeAgentDepth === 0) {
+    // Reset turn-scoped grounding evidence at the beginning of a top-level turn (alt ajanlar ve read-only denetçiler hariç)
+    if (activeAgentDepth === 0 && options.toolPolicy !== 'read-only') {
         globalGroundingLedger.beginTurn();
     }
     activeAgentDepth++;

@@ -19,7 +19,7 @@ export interface ManagedProcess {
 const backgroundProcesses = new Map<string, ManagedProcess>();
 
 const POWERSHELL_SYNTAX_REGEX =
-  /\b(Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|\$env:|\$PSVersionTable)\b/i;
+  /(?:\b(?:Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|Stop-|Restart-|Start-|Copy-|Move-|Rename-|Clear-|Write-|Read-|Measure-|Compare-|ConvertTo-|ConvertFrom-|Resolve-|Split-|Join-)\w*|\$env:|\$PSVersionTable|\$ErrorActionPreference|\[System\.|\[Math\]::|\[Console\]::)/i;
 
 const DEFAULT_SPAWN_ENV = {
   ...process.env,
@@ -43,7 +43,7 @@ function spawnCommand(
   const env = { ...DEFAULT_SPAWN_ENV };
 
   if (isPowerShell) {
-    return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+    return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
       cwd: options.cwd,
       shell: false,
       windowsHide: options.windowsHide ?? true,

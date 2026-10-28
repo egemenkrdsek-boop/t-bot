@@ -84,6 +84,7 @@ export interface EventPrinter {
   startThinking: (label?: string) => void;
   stopThinking: () => void;
   stopSpinner: () => void;
+  isThinking: () => boolean;
 }
 
 export const TOOL_TITLE_MAP: Record<string, string> = {
@@ -194,9 +195,21 @@ function extractResultSummary(
   const str = typeof result === 'string' ? result : JSON.stringify(result);
   const trimmed = str.trim();
 
-  const isError =
-    /^(tool error:|araç hatası:|hata:|error:)/i.test(trimmed) ||
-    /"ok"\s*:\s*false/i.test(trimmed);
+  const isReadTool =
+    toolName === 'file_read' ||
+    toolName === 'file_outline' ||
+    toolName === 'file_search' ||
+    toolName === 'file_glob' ||
+    toolName === 'file_list';
+
+  let isError = false;
+  if (isReadTool) {
+    isError = /^(tool error:|araç hatası:|\[halüsinasyon engeli|\[ikili dosya engeli|\[acil durdurma)/i.test(trimmed);
+  } else {
+    const isExplicitToolError = /^(tool error:|araç hatası:|\[halüsinasyon engeli|\[ikili dosya engeli|\[acil durdurma)/i.test(trimmed);
+    const isJsonError = trimmed.startsWith('{') && /"ok"\s*:\s*false/i.test(trimmed) && !/"warning"\s*:/i.test(trimmed);
+    isError = isExplicitToolError || isJsonError;
+  }
 
   if (isError) {
     const firstLine = trimmed.split('\n')[0] || trimmed;
@@ -337,13 +350,14 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
       clearInterval(spinnerTimer);
       spinnerTimer = undefined;
     }
-    if (options.interactive && cursorHidden) {
+    if (options.interactive) {
       cursorHidden = false;
       process.stdout.write('\x1b[?2026h\r\x1b[2K\x1b[?2026l\x1b[?25h');
     }
   };
 
   const stopSpinner = stopThinking;
+  const isThinking = (): boolean => spinnerTimer !== undefined;
 
   const updateSpinnerLabel = (label: string): void => {
     currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
@@ -540,7 +554,7 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
     }
   };
 
-  return { emit, finishStream, startThinking, stopThinking, stopSpinner };
+  return { emit, finishStream, startThinking, stopThinking, stopSpinner, isThinking };
 }
 
 /** Print comprehensive help menu with modern cyber-minimalist categories. */
@@ -622,6 +636,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   let closed = false;
   let controller: AbortController | undefined;
   let exiting = false;
+  let isSuspended = false;
   let yolo = options.yolo ?? false;
   const setYolo = (enabled: boolean): void => { yolo = enabled; };
 
@@ -653,6 +668,7 @@ export async function startTui(options: TuiOptions): Promise<void> {
   });
 
   const onKeyData = (data: Buffer | string): void => {
+    if (isSuspended || !eventPrinter.isThinking()) return;
     if (!controller || controller.signal.aborted) return;
     const str = typeof data === 'string' ? data : data.toString();
     // Tek başına ESC (\x1b) veya F12 (\x1b[24~)
@@ -675,10 +691,27 @@ export async function startTui(options: TuiOptions): Promise<void> {
 
   const attach = (): void => {
     rl.on('line', line => {
-      if (waiting) { const resolve = waiting; waiting = undefined; resolve(line); }
-      else lines.push(line);
+      if (waiting) {
+        const resolve = waiting;
+        waiting = undefined;
+        resolve(line);
+      } else {
+        // Spinner dönerken kullanıcı yanlışlıkla Enter'a basarsa boş satırların lines kuyruğunda birikip sonraki turda kendi kendine mesaj göndermesini önle
+        if (eventPrinter.isThinking() && !line.trim()) {
+          return;
+        }
+        lines.push(line);
+      }
     });
-    rl.on('close', () => { closed = true; if (waiting) { const resolve = waiting; waiting = undefined; resolve(undefined); } });
+    rl.on('close', () => {
+      closed = true;
+      if (interactive) process.stdout.write('\x1b[?25h');
+      if (waiting) {
+        const resolve = waiting;
+        waiting = undefined;
+        resolve(undefined);
+      }
+    });
     rl.on('SIGINT', () => {
       if (controller) {
         controller.abort();
@@ -714,12 +747,20 @@ export async function startTui(options: TuiOptions): Promise<void> {
   };
 
   const suspendUi = async <T>(action: () => Promise<T>): Promise<T> => {
+    isSuspended = true;
     eventPrinter.stopThinking();
-    if (!interactive) return action();
+    if (!interactive) {
+      try {
+        return await action();
+      } finally {
+        isSuspended = false;
+      }
+    }
     rl.close();
     try {
       return await action();
     } finally {
+      isSuspended = false;
       closed = false;
       rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
       attach();
@@ -837,6 +878,9 @@ export async function startTui(options: TuiOptions): Promise<void> {
     }
     registerGuiKillSwitch(null);
     eventPrinter.stopThinking();
+    if (interactive) {
+      process.stdout.write('\x1b[?25h');
+    }
     rl.close();
   }
 }

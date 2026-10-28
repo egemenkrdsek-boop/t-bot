@@ -27,6 +27,10 @@ export const computerToolDefinitions = [{
                     type: 'boolean',
                     description: 'Return marked screenshot and UI element list after action (default: true).'
                 },
+                press_enter: {
+                    type: 'boolean',
+                    description: 'Metni yazdıktan sonra otomatik olarak Enter tuşuna bas (mesaj gönderme ve arama için).'
+                },
                 x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
                 y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
                 to_x: { type: 'integer', description: 'Destination desktop x coordinate for drag actions.' },
@@ -105,7 +109,7 @@ async function getDesktopDaemon() {
         return daemonLaunching;
     daemonLaunching = (async () => {
         const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
-        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-File', script, '-Action', 'daemon'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
         child.stdout.on('data', (chunk) => {
@@ -223,7 +227,7 @@ async function runStandalonePs(request, signal) {
     const TIMEOUT_MS = 15_000;
     return new Promise((resolve, reject) => {
         let settled = false;
-        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-File', script], {
+        const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
             windowsHide: true,
             signal,
             stdio: ['pipe', 'pipe', 'pipe']
@@ -578,6 +582,7 @@ function normalizeComputerArgs(rawArgs) {
             delta = Math.round(numDelta);
     }
     const autoScreenshot = rawArgs.auto_screenshot !== false;
+    const press_enter = Boolean(rawArgs.press_enter ?? rawArgs.enter ?? rawArgs.submit);
     const waitDurationMs = action === 'wait'
         ? Math.min(Math.max(100, Number(rawArgs.duration ?? rawArgs.ms ?? 1000) || 1000), 10000)
         : undefined;
@@ -594,6 +599,7 @@ function normalizeComputerArgs(rawArgs) {
         text,
         key,
         delta,
+        press_enter,
         waitDurationMs,
     };
 }
@@ -629,6 +635,7 @@ export async function handleComputerTool(name, args, context) {
         text: normalized.text,
         key: normalized.key,
         delta: normalized.delta,
+        press_enter: normalized.press_enter,
     };
     if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {
         request.action = 'screenshot';

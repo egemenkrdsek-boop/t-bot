@@ -144,8 +144,20 @@ function extractResultSummary(result, toolName) {
     }
     const str = typeof result === 'string' ? result : JSON.stringify(result);
     const trimmed = str.trim();
-    const isError = /^(tool error:|araç hatası:|hata:|error:)/i.test(trimmed) ||
-        /"ok"\s*:\s*false/i.test(trimmed);
+    const isReadTool = toolName === 'file_read' ||
+        toolName === 'file_outline' ||
+        toolName === 'file_search' ||
+        toolName === 'file_glob' ||
+        toolName === 'file_list';
+    let isError = false;
+    if (isReadTool) {
+        isError = /^(tool error:|araç hatası:|\[halüsinasyon engeli|\[ikili dosya engeli|\[acil durdurma)/i.test(trimmed);
+    }
+    else {
+        const isExplicitToolError = /^(tool error:|araç hatası:|\[halüsinasyon engeli|\[ikili dosya engeli|\[acil durdurma)/i.test(trimmed);
+        const isJsonError = trimmed.startsWith('{') && /"ok"\s*:\s*false/i.test(trimmed) && !/"warning"\s*:/i.test(trimmed);
+        isError = isExplicitToolError || isJsonError;
+    }
     if (isError) {
         const firstLine = trimmed.split('\n')[0] || trimmed;
         const shortErr = firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
@@ -273,12 +285,13 @@ export function createEventPrinter(options) {
             clearInterval(spinnerTimer);
             spinnerTimer = undefined;
         }
-        if (options.interactive && cursorHidden) {
+        if (options.interactive) {
             cursorHidden = false;
             process.stdout.write('\x1b[?2026h\r\x1b[2K\x1b[?2026l\x1b[?25h');
         }
     };
     const stopSpinner = stopThinking;
+    const isThinking = () => spinnerTimer !== undefined;
     const updateSpinnerLabel = (label) => {
         currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
         if (options.interactive && spinnerTimer) {
@@ -471,7 +484,7 @@ export function createEventPrinter(options) {
                 break;
         }
     };
-    return { emit, finishStream, startThinking, stopThinking, stopSpinner };
+    return { emit, finishStream, startThinking, stopThinking, stopSpinner, isThinking };
 }
 /** Print comprehensive help menu with modern cyber-minimalist categories. */
 export function printHelp() {
@@ -538,6 +551,7 @@ export async function startTui(options) {
     let closed = false;
     let controller;
     let exiting = false;
+    let isSuspended = false;
     let yolo = options.yolo ?? false;
     const setYolo = (enabled) => { yolo = enabled; };
     const getHudContext = () => {
@@ -567,6 +581,8 @@ export async function startTui(options) {
         }
     });
     const onKeyData = (data) => {
+        if (isSuspended || !eventPrinter.isThinking())
+            return;
         if (!controller || controller.signal.aborted)
             return;
         const str = typeof data === 'string' ? data : data.toString();
@@ -593,14 +609,24 @@ export async function startTui(options) {
                 waiting = undefined;
                 resolve(line);
             }
-            else
+            else {
+                // Spinner dönerken kullanıcı yanlışlıkla Enter'a basarsa boş satırların lines kuyruğunda birikip sonraki turda kendi kendine mesaj göndermesini önle
+                if (eventPrinter.isThinking() && !line.trim()) {
+                    return;
+                }
                 lines.push(line);
+            }
         });
-        rl.on('close', () => { closed = true; if (waiting) {
-            const resolve = waiting;
-            waiting = undefined;
-            resolve(undefined);
-        } });
+        rl.on('close', () => {
+            closed = true;
+            if (interactive)
+                process.stdout.write('\x1b[?25h');
+            if (waiting) {
+                const resolve = waiting;
+                waiting = undefined;
+                resolve(undefined);
+            }
+        });
         rl.on('SIGINT', () => {
             if (controller) {
                 controller.abort();
@@ -641,14 +667,22 @@ export async function startTui(options) {
         return !controller?.signal.aborted && /^(e|evet|y|yes)$/i.test((answer ?? '').trim());
     };
     const suspendUi = async (action) => {
+        isSuspended = true;
         eventPrinter.stopThinking();
-        if (!interactive)
-            return action();
+        if (!interactive) {
+            try {
+                return await action();
+            }
+            finally {
+                isSuspended = false;
+            }
+        }
         rl.close();
         try {
             return await action();
         }
         finally {
+            isSuspended = false;
             closed = false;
             rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
             attach();
@@ -766,6 +800,9 @@ export async function startTui(options) {
         }
         registerGuiKillSwitch(null);
         eventPrinter.stopThinking();
+        if (interactive) {
+            process.stdout.write('\x1b[?25h');
+        }
         rl.close();
     }
 }

@@ -73,7 +73,24 @@ function isToolResultOk(name: string, output: string): boolean {
   ) {
     return false;
   }
-  if (/"ok"\s*:\s*false/.test(output)) {
+  if (
+    name === 'file_read' ||
+    name === 'file_outline' ||
+    name === 'file_glob' ||
+    name === 'file_search' ||
+    name === 'file_list'
+  ) {
+    if (
+      trimmed.startsWith('Tool error:') ||
+      trimmed.startsWith('Araç Hatası:') ||
+      trimmed.startsWith('Araç hatası:') ||
+      /^\[ikili dosya engeli/i.test(trimmed)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (trimmed.startsWith('{') && /"ok"\s*:\s*false/.test(trimmed) && !/"warning"\s*:/.test(trimmed)) {
     return false;
   }
   if (name === 'shell' || name === 'run_command' || name === 'execute_command') {
@@ -106,6 +123,7 @@ export class GroundingLedger {
   private turnModifiedFiles = new Set<string>();
   private turnCommandsRun: string[] = [];
   private turnGitCommits = 0;
+  private turnGuiAndBrowserActions: string[] = [];
 
   constructor(workspace?: string) {
     this.workspace = workspace;
@@ -118,6 +136,7 @@ export class GroundingLedger {
     this.turnModifiedFiles.clear();
     this.turnCommandsRun = [];
     this.turnGitCommits = 0;
+    this.turnGuiAndBrowserActions = [];
     this.warnings = [];
     clearPendingCrossFileExports();
   }
@@ -155,6 +174,13 @@ export class GroundingLedger {
    */
   public getTurnGitCommits(): number {
     return this.turnGitCommits;
+  }
+
+  /**
+   * Returns interactive GUI and browser actions executed during the current turn.
+   */
+  public getTurnGuiAndBrowserActions(): readonly string[] {
+    return this.turnGuiAndBrowserActions;
   }
 
   /**
@@ -220,6 +246,7 @@ export class GroundingLedger {
     this.turnCommandsRun = [];
     this.gitCommits = 0;
     this.turnGitCommits = 0;
+    this.turnGuiAndBrowserActions = [];
     this.warnings = [];
     clearPendingCrossFileExports();
   }
@@ -246,6 +273,16 @@ export class GroundingLedger {
   }
 
   /**
+   * Alias for verifyCanModifyFile assuming file exists on disk.
+   */
+  public canModifyFile(
+    filePath: string,
+    workspace?: string
+  ): { allowed: boolean; error?: string } {
+    return this.verifyCanModifyFile(filePath, true, workspace);
+  }
+
+  /**
    * Record tool execution results to maintain the grounding ledger.
    * Accepts both 4-argument calls (toolName, args, resultString, isError/ok) and legacy
    * 3-argument calls (toolName, args, { ok, output }, workspace).
@@ -266,7 +303,12 @@ export class GroundingLedger {
     } else if (typeof result === 'string') {
       rawOutput = result;
       if (typeof isErrorOrOkOrWorkspace === 'boolean') {
-        rawOk = isErrorOrOkOrWorkspace;
+        const outputLooksOk = isToolResultOk(toolName, rawOutput);
+        if (isErrorOrOkOrWorkspace === false && outputLooksOk) {
+          rawOk = true;
+        } else {
+          rawOk = isErrorOrOkOrWorkspace;
+        }
       } else {
         rawOk = true;
       }
@@ -324,6 +366,23 @@ export class GroundingLedger {
         this.gitCommits++;
         this.turnGitCommits++;
       }
+    } else if (
+      toolName === 'computer' ||
+      toolName.startsWith('browser_') ||
+      toolName === 'web_search' ||
+      toolName === 'url_fetch'
+    ) {
+      if (ok) {
+        const actionDesc =
+          typeof args.action === 'string'
+            ? `${toolName}:${args.action}`
+            : typeof args.query === 'string'
+              ? `${toolName}(${args.query})`
+              : typeof args.url === 'string'
+                ? `${toolName}(${args.url})`
+                : toolName;
+        this.turnGuiAndBrowserActions.push(actionDesc);
+      }
     }
   }
 
@@ -355,6 +414,7 @@ export class GroundingLedger {
       `İncelenen Dosyalar (${this.inspectedFiles.size}): ${inspectedList.length ? inspectedList.join(', ') : 'Yok'}`,
       `Bu Turda Değiştirilen Dosyalar (${this.turnModifiedFiles.size}): ${turnModList.length ? turnModList.join(', ') : 'Yok'}`,
       `Bu Turda Başarılı Komutlar (${this.turnCommandsRun.length}): ${this.turnCommandsRun.length ? this.turnCommandsRun.slice(-8).join(' | ') : 'Yok'}`,
+      `Etkileşimli GUI/Tarayıcı İşlemleri (${this.turnGuiAndBrowserActions.length}): ${this.turnGuiAndBrowserActions.length ? this.turnGuiAndBrowserActions.slice(-8).join(' | ') : 'Yok'}`,
       `Son Komut Geçmişi: ${recentCmds.length ? recentCmds.join(' ; ') : 'Yok'}`,
       `Bu Turda Git Commit: ${this.turnGitCommits}`,
     ];
@@ -485,6 +545,8 @@ export function auditAssistantClaims(
   const turnCommands = ledger.getTurnCommandsRun();
   const turnModified = ledger.getTurnModifiedFiles();
   const turnCommits = ledger.getTurnGitCommits();
+  const turnGuiActions = ledger.getTurnGuiAndBrowserActions();
+  const hasGuiOrBrowser = turnGuiActions.length > 0;
 
   // 1. Audit Test Passing Claims against turn-scoped commands
   const testClaimPattern =
@@ -493,7 +555,7 @@ export function auditAssistantClaims(
     const testCmdRegex =
       /(?:npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+test|vitest|jest|mocha|pytest|cargo\s+test|go\s+test|playwright|node\s+--test)/i;
     const hasSuccessfulTest = turnCommands.some(cmd => testCmdRegex.test(cmd));
-    if (!hasSuccessfulTest) {
+    if (!hasSuccessfulTest && !hasGuiOrBrowser) {
       warnings.push(
         'Anti-Halüsinasyon / Temelsiz Doğrulama Uyarısı: Asistan testlerin başarıyla geçtiğini iddia etti, ancak bu turda başarıyla tamamlanan herhangi bir test komutu (npm test, vitest, jest vb.) bulunamadı.'
       );
@@ -524,11 +586,15 @@ export function auditAssistantClaims(
   const citedMatch = responseText.match(citedFileModPattern);
   if ((fileModClaimPattern.test(text) || citedMatch) && turnModified.size === 0) {
     const citedFile = citedMatch ? citedMatch[1] || citedMatch[2] : undefined;
-    warnings.push(
-      citedFile
-        ? `Anti-Halüsinasyon / Dosya Atıf Uyarısı (Citation Grounding): Asistan '${citedFile}' dosyasını güncellediğini/oluşturduğunu iddia etti, ancak bu turda hiçbir dosya yazma (file_write) veya yamalama (file_patch) işlemi gerçekleşmedi.`
-        : 'Anti-Halüsinasyon / Temelsiz Eylem Uyarısı: Asistan dosya oluşturulduğunu veya güncellendiğini iddia etti, ancak bu turda hiçbir dosya yazma (file_write) veya yamalama (file_patch) işlemi gerçekleşmedi.'
-    );
+    if (citedFile) {
+      warnings.push(
+        `Anti-Halüsinasyon / Dosya Atıf Uyarısı (Citation Grounding): Asistan '${citedFile}' dosyasını güncellediğini/oluşturduğunu iddia etti, ancak bu turda hiçbir dosya yazma (file_write) veya yamalama (file_patch) işlemi gerçekleşmedi.`
+      );
+    } else if (!hasGuiOrBrowser) {
+      warnings.push(
+        'Anti-Halüsinasyon / Temelsiz Eylem Uyarısı: Asistan dosya oluşturulduğunu veya güncellendiğini iddia etti, ancak bu turda hiçbir dosya yazma (file_write) veya yamalama (file_patch) işlemi gerçekleşmedi.'
+      );
+    }
   }
 
   // 4. Audit Git Commit Claims against turnGitCommits and turnCommands

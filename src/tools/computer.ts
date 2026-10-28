@@ -29,6 +29,10 @@ export const computerToolDefinitions: ToolDefinition[] = [{
         type: 'boolean',
         description: 'Return marked screenshot and UI element list after action (default: true).'
       },
+      press_enter: {
+        type: 'boolean',
+        description: 'Metni yazdıktan sonra otomatik olarak Enter tuşuna bas (mesaj gönderme ve arama için).'
+      },
       x: { type: 'integer', description: 'Absolute desktop x coordinate.' },
       y: { type: 'integer', description: 'Absolute desktop y coordinate.' },
       to_x: { type: 'integer', description: 'Destination desktop x coordinate for drag actions.' },
@@ -115,7 +119,7 @@ async function getDesktopDaemon(): Promise<ChildProcess> {
     const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
     const child = spawn(
       'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-File', script, '-Action', 'daemon'],
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
     );
 
@@ -239,7 +243,7 @@ async function runStandalonePs(request: Record<string, unknown>, signal?: AbortS
   const TIMEOUT_MS = 15_000;
   return new Promise<string>((resolve, reject) => {
     let settled = false;
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-File', script], {
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script], {
       windowsHide: true,
       signal,
       stdio: ['pipe', 'pipe', 'pipe']
@@ -461,6 +465,7 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   text?: string;
   key?: string;
   delta?: number;
+  press_enter?: boolean;
   waitDurationMs?: number;
 } {
   const rawAction = String(rawArgs.action || 'screenshot').toLowerCase().trim();
@@ -594,6 +599,7 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
   }
 
   const autoScreenshot = rawArgs.auto_screenshot !== false;
+  const press_enter = Boolean(rawArgs.press_enter ?? rawArgs.enter ?? rawArgs.submit);
 
   const waitDurationMs = action === 'wait'
     ? Math.min(Math.max(100, Number(rawArgs.duration ?? rawArgs.ms ?? 1000) || 1000), 10000)
@@ -612,6 +618,7 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     text,
     key,
     delta,
+    press_enter,
     waitDurationMs,
   };
 }
@@ -661,6 +668,7 @@ export async function handleComputerTool(
     text: normalized.text,
     key: normalized.key,
     delta: normalized.delta,
+    press_enter: normalized.press_enter,
   };
 
   if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {

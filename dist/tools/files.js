@@ -46,6 +46,7 @@ export const fileToolDefinitions = [
             start_line: { type: 'integer', minimum: 1, description: 'Optional 1-based start line' },
             end_line: { type: 'integer', minimum: 1, description: 'Optional 1-based end line' },
             skeleton: { type: 'boolean', description: 'Yalnızca AST sembol/fonksiyon imzalarını ve satır aralıklarını döndür (%75 token tasarrufu).' },
+            full: { type: 'boolean', description: 'Otomatik iskeletlemeyi atlayarak tüm dosya metnini eksiksiz döndür.' },
         }, ['path']),
     },
     {
@@ -115,19 +116,32 @@ export const fileToolDefinitions = [
 ];
 const LIMIT = 100_000;
 function inside(root, target) {
-    const relative = path.relative(root, target);
+    const normRoot = process.platform === 'win32' ? root.toLowerCase() : root;
+    const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
+    const relative = path.relative(normRoot, normTarget);
     return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 /** Reject symlinks, including existing ancestors. These checks are not atomic against a concurrent filesystem actor. */
 async function resolveSafe(workspace, input) {
-    if (path.isAbsolute(input) || /^[a-zA-Z]:/.test(input) || input.includes('\0'))
-        throw new Error('Path must be relative to workspace');
+    if (input.includes('\0'))
+        throw new Error('Path must not contain null bytes');
     const root = await fs.realpath(workspace);
-    const target = path.resolve(root, input);
-    if (!inside(root, target))
-        throw new Error('Path escapes workspace');
+    let target;
+    if (path.isAbsolute(input) || /^[a-zA-Z]:/.test(input)) {
+        const candidate = path.resolve(input);
+        if (!inside(root, candidate)) {
+            throw new Error('Path escapes workspace');
+        }
+        target = candidate;
+    }
+    else {
+        target = path.resolve(root, input);
+        if (!inside(root, target))
+            throw new Error('Path escapes workspace');
+    }
     let current = root;
-    for (const part of path.relative(root, target).split(path.sep).filter(Boolean)) {
+    const relPath = path.relative(root, target);
+    for (const part of relPath.split(path.sep).filter(Boolean)) {
         current = path.join(current, part);
         try {
             if ((await fs.lstat(current)).isSymbolicLink())
@@ -160,7 +174,29 @@ async function atomicWrite(target, content, workspace, input, signal, expected) 
             throw new Error('File changed since patch was read; patch not applied');
         }
         signal?.throwIfAborted();
-        await fs.rename(temp, target);
+        let renamed = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                await fs.rename(temp, target);
+                renamed = true;
+                break;
+            }
+            catch (err) {
+                if (['EPERM', 'EBUSY', 'EACCES'].includes(err?.code) && attempt < 2) {
+                    await new Promise((r) => setTimeout(r, 40));
+                }
+                else if (['EPERM', 'EBUSY', 'EACCES'].includes(err?.code)) {
+                    break;
+                }
+                else {
+                    throw err;
+                }
+            }
+        }
+        if (!renamed) {
+            await fs.copyFile(temp, target);
+            await fs.unlink(temp).catch(() => { });
+        }
     }
     finally {
         await fs.unlink(temp).catch(() => { });
@@ -379,10 +415,17 @@ export async function handleFileTool(name, args, workspace, signal) {
             const diff = globalContextCache.checkAndRecordRead(workspace, relPath, content, start, end, formatted);
             return diff.output;
         }
-        // 5. Automatic Large File Skeletonization (>320 lines of code)
+        // 5. Explicit Full Content / Bypass Skeletonization Mode
+        const bypassSkeleton = args.skeleton === false || args.full === true;
+        if (bypassSkeleton && args.offset === undefined && args.start_line === undefined && args.end_line === undefined) {
+            const content = await fs.readFile(target, 'utf8');
+            globalGroundingLedger.markFileInspected(target, workspace);
+            return content;
+        }
+        // 6. Automatic Large File Skeletonization (>320 lines of code)
         const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs']);
         const ext = path.extname(target).toLowerCase();
-        if (CODE_EXTENSIONS.has(ext) && (args.offset === undefined || args.offset === 0)) {
+        if (!bypassSkeleton && CODE_EXTENSIONS.has(ext) && (args.offset === undefined || args.offset === 0)) {
             const content = await fs.readFile(target, 'utf8');
             const allLines = content.split(/\r?\n/);
             if (allLines.length > 320) {

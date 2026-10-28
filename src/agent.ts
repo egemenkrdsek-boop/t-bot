@@ -175,7 +175,7 @@ export async function screenshotImage(call: ToolCall, result: string, workspace:
 
 // Retain only the most recent screenshots in provider requests to bound payload size.
 function limitImages(messages: Message[]): Message[] {
-  let remaining = 2;
+  let remaining = 3;
   return messages.map(m => ({ ...m })).reverse().map(m => {
     if (!m.images?.length) return m;
     const images = remaining ? m.images.slice(-remaining) : []; remaining -= images.length;
@@ -224,8 +224,8 @@ export async function runAgent(input: AgentInput, options: AgentRunOptions = {})
   const activeSkills = options.activeSkills ?? skills.map(s => s.id);
   const readOnly = toolPolicy === 'read-only' || skillRequiresReadOnly(skills, input.message);
 
-  // Reset turn-scoped grounding evidence at the beginning of a top-level turn
-  if (activeAgentDepth === 0) {
+  // Reset turn-scoped grounding evidence at the beginning of a top-level turn (alt ajanlar ve read-only denetçiler hariç)
+  if (activeAgentDepth === 0 && options.toolPolicy !== 'read-only') {
     globalGroundingLedger.beginTurn();
   }
   activeAgentDepth++;

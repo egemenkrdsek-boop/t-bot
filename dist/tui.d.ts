@@ -25,6 +25,7 @@ export interface EventPrinter {
     startThinking: (label?: string) => void;
     stopThinking: () => void;
     stopSpinner: () => void;
+    isThinking: () => boolean;
 }
 export declare const TOOL_TITLE_MAP: Record<string, string>;
 export declare function formatToolTitle(toolName: string): string;

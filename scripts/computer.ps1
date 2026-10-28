@@ -3,8 +3,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+try {
+  [Console]::SetIn([System.IO.StreamReader]::new([System.Console]::OpenStandardInput(), $utf8NoBom))
+  $outWriter = [System.IO.StreamWriter]::new([System.Console]::OpenStandardOutput(), $utf8NoBom)
+  $outWriter.AutoFlush = $true
+  [Console]::SetOut($outWriter)
+} catch {}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -12,7 +19,7 @@ $binDir = Join-Path $env:APPDATA "TBot\bin"
 if (-not (Test-Path -LiteralPath $binDir)) {
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
-$dllPath = Join-Path $binDir "tbot-desktop-native-v15.dll"
+$dllPath = Join-Path $binDir "tbot-desktop-native-v16.dll"
 if (Test-Path -LiteralPath $dllPath) {
   [System.Reflection.Assembly]::LoadFrom($dllPath) | Out-Null
 } else {
@@ -43,6 +50,7 @@ public static class DesktopNative {
 
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -60,6 +68,100 @@ public static class DesktopNative {
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessWindowStation(IntPtr hWinSta);
   [DllImport("user32.dll", SetLastError = true)] public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT {
+    public ushort wVk;
+    public ushort wScan;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MOUSEINPUT {
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct HARDWAREINPUT {
+    public uint uMsg;
+    public ushort wParamL;
+    public ushort wParamH;
+  }
+
+  [StructLayout(LayoutKind.Explicit)]
+  public struct InputUnion {
+    [FieldOffset(0)] public MOUSEINPUT mi;
+    [FieldOffset(0)] public KEYBDINPUT ki;
+    [FieldOffset(0)] public HARDWAREINPUT hi;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct INPUT {
+    public uint type;
+    public InputUnion u;
+  }
+
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+  public static void SendUnicodeChar(char ch) {
+    if (ch == '\r') return;
+    if (ch == '\n') {
+      INPUT down = new INPUT();
+      down.type = 1; // INPUT_KEYBOARD
+      down.u.ki.wVk = 0x0D; // VK_RETURN
+      down.u.ki.wScan = 0;
+      down.u.ki.dwFlags = 0;
+      down.u.ki.time = 0;
+      down.u.ki.dwExtraInfo = UIntPtr.Zero;
+
+      INPUT up = new INPUT();
+      up.type = 1;
+      up.u.ki.wVk = 0x0D;
+      up.u.ki.wScan = 0;
+      up.u.ki.dwFlags = 0x0002; // KEYEVENTF_KEYUP
+      up.u.ki.time = 0;
+      up.u.ki.dwExtraInfo = UIntPtr.Zero;
+
+      INPUT[] retInputs = new INPUT[] { down, up };
+      SendInput(2, retInputs, Marshal.SizeOf(typeof(INPUT)));
+      return;
+    }
+
+    INPUT charDown = new INPUT();
+    charDown.type = 1;
+    charDown.u.ki.wVk = 0;
+    charDown.u.ki.wScan = (ushort)ch;
+    charDown.u.ki.dwFlags = 0x0004; // KEYEVENTF_UNICODE
+    charDown.u.ki.time = 0;
+    charDown.u.ki.dwExtraInfo = UIntPtr.Zero;
+
+    INPUT charUp = new INPUT();
+    charUp.type = 1;
+    charUp.u.ki.wVk = 0;
+    charUp.u.ki.wScan = (ushort)ch;
+    charUp.u.ki.dwFlags = 0x0004 | 0x0002; // KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+    charUp.u.ki.time = 0;
+    charUp.u.ki.dwExtraInfo = UIntPtr.Zero;
+
+    INPUT[] charInputs = new INPUT[] { charDown, charUp };
+    SendInput(2, charInputs, Marshal.SizeOf(typeof(INPUT)));
+  }
+
+  public static void SendUnicodeString(string text) {
+    if (string.IsNullOrEmpty(text)) return;
+    for (int i = 0; i < text.Length; i++) {
+      SendUnicodeChar(text[i]);
+      System.Threading.Thread.Sleep(3);
+    }
+  }
 
   public static bool SwitchToInteractiveDesktop() {
     try {
@@ -344,7 +446,11 @@ public static class DesktopNative {
 
   public static bool ForceForeground(IntPtr hWnd) {
     if (hWnd == IntPtr.Zero || !IsWindow(hWnd)) return false;
+    bool wasIconic = IsIconic(hWnd);
     ShowWindowAsync(hWnd, 9); // SW_RESTORE = 9
+    if (wasIconic) {
+      System.Threading.Thread.Sleep(140);
+    }
     if (SetForegroundWindow(hWnd) && GetForegroundWindow() == hWnd) return true;
 
     // Alt key trick to bypass foreground lock timeout
@@ -851,14 +957,16 @@ function Send-KeyboardKey([string]$keyName) {
       return
     }
 
-    try {
-      $prefix = ""
-      if ($modifiers.Contains(0x11)) { $prefix += "^" }
-      if ($modifiers.Contains(0x12)) { $prefix += "%" }
-      if ($modifiers.Contains(0x10)) { $prefix += "+" }
-      [System.Windows.Forms.SendKeys]::SendWait("$prefix$mainKey")
-      return
-    } catch {}
+    foreach ($m in $modifiers) {
+      [DesktopNative]::keybd_event($m, 0, 0, [UIntPtr]::Zero)
+      [System.Threading.Thread]::Sleep(10)
+    }
+    [DesktopNative]::SendUnicodeString($mainKey)
+    for ($i = $modifiers.Count - 1; $i -ge 0; $i--) {
+      [DesktopNative]::keybd_event($modifiers[$i], 0, 2, [UIntPtr]::Zero)
+      [System.Threading.Thread]::Sleep(10)
+    }
+    return
   }
 
   if ($script:VkMap.ContainsKey($k)) {
@@ -869,16 +977,7 @@ function Send-KeyboardKey([string]$keyName) {
     return
   }
 
-  try {
-    [System.Windows.Forms.SendKeys]::SendWait($k.ToLowerInvariant())
-  } catch {
-    foreach ($ch in $k.ToCharArray()) {
-      $b = [byte]$ch
-      [DesktopNative]::keybd_event($b, 0, 0, [UIntPtr]::Zero)
-      [System.Threading.Thread]::Sleep(10)
-      [DesktopNative]::keybd_event($b, 0, 2, [UIntPtr]::Zero)
-    }
-  }
+  [DesktopNative]::SendUnicodeString($keyName)
 }
 
 function Execute-DesktopRequest($request) {
@@ -1028,7 +1127,8 @@ function Execute-DesktopRequest($request) {
         $winH = $winRect.Bottom - $winRect.Top
         if ($winH -gt 60) {
           $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
-          if (-not $isTaskbarTarget -and ($y -ge ($winRect.Bottom - 8) -and $y -le ($winRect.Bottom + 140))) {
+          $screenBounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          if (-not $isTaskbarTarget -and ($y -gt $winRect.Bottom) -and ($y -le ($winRect.Bottom + 75)) -and ($winRect.Bottom -lt ($screenBounds.Height - 25))) {
             $origY = $y
             $y = $winRect.Bottom - 42
             $clampedNotice = "[AKILLI HIZALAMA: Y koordinati pencere alt sinirina ($y) hizalandi (orijinal: $origY)]"
@@ -1113,7 +1213,8 @@ function Execute-DesktopRequest($request) {
         $winH = $winRect.Bottom - $winRect.Top
         if ($winH -gt 60) {
           $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
-          if (-not $isTaskbarTarget -and ($y -ge ($winRect.Bottom - 8) -and $y -le ($winRect.Bottom + 140))) {
+          $screenBounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          if (-not $isTaskbarTarget -and ($y -gt $winRect.Bottom) -and ($y -le ($winRect.Bottom + 75)) -and ($winRect.Bottom -lt ($screenBounds.Height - 25))) {
             $origY = $y
             $y = $winRect.Bottom - 42
             $clampedNotice = "[AKILLI HIZALAMA: Y koordinati pencere alt sinirina ($y) hizalandi (orijinal: $origY)]"
@@ -1172,7 +1273,8 @@ function Execute-DesktopRequest($request) {
           $winH = $winRect.Bottom - $winRect.Top
           if ($winH -gt 60) {
             $isTaskbarTarget = ($request.target -and ([string]$request.target -match 'taskbar|görev çubuğu|tray|başlat|start'))
-            if (-not $isTaskbarTarget -and ($ty -ge ($winRect.Bottom - 8) -and $ty -le ($winRect.Bottom + 140))) {
+            $screenBounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            if (-not $isTaskbarTarget -and ($ty -gt $winRect.Bottom) -and ($ty -le ($winRect.Bottom + 75)) -and ($winRect.Bottom -lt ($screenBounds.Height - 25))) {
               $ty = $winRect.Bottom - 42
             }
           }
@@ -1205,23 +1307,13 @@ function Execute-DesktopRequest($request) {
       [DesktopNative]::keybd_event(0x56, 0, 2, [UIntPtr]::Zero) # V Up
       [DesktopNative]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) # CTRL Up
     } else {
-      try {
-        $escaped = [regex]::Replace($inputText, '[+^%~(){}\[\]]', { param($m) '{' + $m.Value + '}' })
-        [System.Windows.Forms.SendKeys]::SendWait($escaped)
-      } catch {
-        foreach ($ch in $inputText.ToCharArray()) {
-          $b = [byte]$ch
-          [DesktopNative]::keybd_event($b, 0, 0, [UIntPtr]::Zero)
-          [System.Threading.Thread]::Sleep(5)
-          [DesktopNative]::keybd_event($b, 0, 2, [UIntPtr]::Zero)
-        }
-      }
+      [DesktopNative]::SendUnicodeString($inputText)
     }
 
-    if ($request.press_enter -or $inputText.EndsWith("`n")) {
-      [System.Threading.Thread]::Sleep(30)
+    if ($request.press_enter -or $request.enter -or $request.submit -or $inputText.EndsWith("`n")) {
+      [System.Threading.Thread]::Sleep(50)
       [DesktopNative]::keybd_event(0x0D, 0, 0, [UIntPtr]::Zero) # ENTER Down
-      [System.Threading.Thread]::Sleep(15)
+      [System.Threading.Thread]::Sleep(20)
       [DesktopNative]::keybd_event(0x0D, 0, 2, [UIntPtr]::Zero) # ENTER Up
     }
 

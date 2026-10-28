@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 const backgroundProcesses = new Map();
-const POWERSHELL_SYNTAX_REGEX = /\b(Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|\$env:|\$PSVersionTable)\b/i;
+const POWERSHELL_SYNTAX_REGEX = /(?:\b(?:Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|Stop-|Restart-|Start-|Copy-|Move-|Rename-|Clear-|Write-|Read-|Measure-|Compare-|ConvertTo-|ConvertFrom-|Resolve-|Split-|Join-)\w*|\$env:|\$PSVersionTable|\$ErrorActionPreference|\[System\.|\[Math\]::|\[Console\]::)/i;
 const DEFAULT_SPAWN_ENV = {
     ...process.env,
     CI: 'true',
@@ -14,7 +14,7 @@ function spawnCommand(command, options) {
     const isPowerShell = isWin && POWERSHELL_SYNTAX_REGEX.test(command);
     const env = { ...DEFAULT_SPAWN_ENV };
     if (isPowerShell) {
-        return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+        return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
             cwd: options.cwd,
             shell: false,
             windowsHide: options.windowsHide ?? true,

@@ -121,6 +121,9 @@ async function searchDuckDuckGo(query, maxResults, signal) {
         signal: combinedSignal,
         redirect: 'follow',
     });
+    if (response.url) {
+        validatePublicUrl(response.url);
+    }
     if (!response.ok) {
         return [];
     }
@@ -354,6 +357,9 @@ export async function fetchUrlContent(rawUrl, maxChars = 12000, signal) {
         signal: combinedSignal,
         redirect: 'follow',
     });
+    if (response.url) {
+        validatePublicUrl(response.url);
+    }
     if (!response.ok) {
         throw new Error(`URL indirme başarısız oldu (HTTP ${response.status}: ${response.statusText}): ${rawUrl}`);
     }

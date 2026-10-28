@@ -52,6 +52,7 @@ export declare class GroundingLedger {
     private turnModifiedFiles;
     private turnCommandsRun;
     private turnGitCommits;
+    private turnGuiAndBrowserActions;
     constructor(workspace?: string);
     /**
      * Resets turn-scoped evidence sets and HUD warnings at the start of each new user request.
@@ -77,6 +78,10 @@ export declare class GroundingLedger {
      * Returns git commit count during the current turn.
      */
     getTurnGitCommits(): number;
+    /**
+     * Returns interactive GUI and browser actions executed during the current turn.
+     */
+    getTurnGuiAndBrowserActions(): readonly string[];
     /**
      * Mark a file as inspected (only via real inspection tools such as file_read or file_outline).
      */
@@ -104,6 +109,13 @@ export declare class GroundingLedger {
      * (and was not already modified in this session), reject modification with an anti-hallucination error.
      */
     verifyCanModifyFile(filePath: string, existsOnDisk: boolean, workspace?: string): {
+        allowed: boolean;
+        error?: string;
+    };
+    /**
+     * Alias for verifyCanModifyFile assuming file exists on disk.
+     */
+    canModifyFile(filePath: string, workspace?: string): {
         allowed: boolean;
         error?: string;
     };

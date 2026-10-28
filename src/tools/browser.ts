@@ -9,6 +9,8 @@ import { redactSecrets } from '../sessions.js';
 let context: any;
 let profile: string | undefined;
 let launching: Promise<any> | undefined;
+let currentHeadless: boolean | undefined;
+let activeTabId: number | undefined;
 const tabs = new Map<number, any>();
 let nextId = 1;
 const snapshots = new WeakMap<object, Set<string>>();
@@ -763,6 +765,13 @@ export async function ensureBrowser(options?: { headless?: boolean }): Promise<a
 }
 
 async function browser(options?: { headless?: boolean }): Promise<any> {
+  const defaultHeadless = process.env.TBOT_HEADLESS === 'true';
+  const desiredHeadless = options?.headless !== undefined ? Boolean(options.headless) : defaultHeadless;
+
+  if (context && currentHeadless !== undefined && currentHeadless !== desiredHeadless) {
+    await closeBrowser();
+  }
+
   if (context) return context;
   if (launching) return launching;
 
@@ -776,10 +785,6 @@ async function browser(options?: { headless?: boolean }): Promise<any> {
     }
     const dir = await mkdtemp(join(tmpdir(), 'tbot-browser-'));
     profile = dir;
-
-    // Headless logic: defaults to false (visible interactive window) unless TBOT_HEADLESS === 'true'
-    const defaultHeadless = process.env.TBOT_HEADLESS === 'true';
-    const desiredHeadless = options?.headless !== undefined ? Boolean(options.headless) : defaultHeadless;
 
     const launchContext = async (isHeadless: boolean) => {
       try {
@@ -811,11 +816,13 @@ async function browser(options?: { headless?: boolean }): Promise<any> {
     try {
       try {
         context = await launchContext(desiredHeadless);
+        currentHeadless = desiredHeadless;
       } catch (launchErr) {
         if (!desiredHeadless) {
           // Automatic fallback to headless: true if graphical display is unavailable (e.g. headless Linux / CI)
           try {
             context = await launchContext(true);
+            currentHeadless = true;
           } catch {
             throw launchErr;
           }
@@ -881,7 +888,12 @@ async function pageFor(value: unknown, options?: { headless?: boolean }): Promis
   if (typeof id !== 'number' || !Number.isInteger(id) || !tabs.has(id)) {
     throw new Error('Unknown browser tab. Call browser_tabs to view active tab IDs.');
   }
-  return tabs.get(id);
+  const page = tabs.get(id);
+  if (activeTabId !== id) {
+    activeTabId = id;
+    await inspectPageElements(page).catch(() => {});
+  }
+  return page;
 }
 
 export function safeUrl(raw: string): string {
@@ -940,6 +952,8 @@ export async function closeBrowser(): Promise<void> {
   const dir = profile;
   context = undefined;
   profile = undefined;
+  currentHeadless = undefined;
+  activeTabId = undefined;
   tabs.clear();
   lastElementMap.clear();
   try {
@@ -1153,6 +1167,8 @@ async function runBrowserTool(
         await page.bringToFront();
         await updateLiveBrowserHud(page, 'Sekmeye geçildi');
         await checkUserAborted(page);
+        activeTabId = args.tab as number;
+        await inspectPageElements(page).catch(() => {});
         return JSON.stringify({ action: 'switch', activeTab: args.tab, url: displayUrl(page.url()), title: clean(await page.title()) });
       }
 
@@ -1410,10 +1426,24 @@ async function runBrowserTool(
     if (name === 'browser_evaluate') {
       await checkUserAborted(page);
       const script = str(args.script, 'script');
-      const evalResult = await page.evaluate((code: string) => {
-        // eslint-disable-next-line no-eval
-        return window.eval(code);
-      }, script);
+      let evalResult: unknown;
+      try {
+        evalResult = await page.evaluate(script);
+      } catch (directErr) {
+        try {
+          evalResult = await page.evaluate((code: string) => {
+            try {
+              const fn = new Function(`return (${code})`);
+              return fn();
+            } catch {
+              const fn = new Function(code);
+              return fn();
+            }
+          }, script);
+        } catch {
+          throw directErr;
+        }
+      }
       await checkUserAborted(page);
       const serialized = typeof evalResult === 'object' && evalResult !== null ? JSON.stringify(evalResult) : String(evalResult);
       return cap(serialized, 6000);

@@ -37,7 +37,7 @@ export function isToolResultOk(name: string, output: string): boolean {
   ) {
     return false;
   }
-  if (/"ok"\s*:\s*false/.test(output)) {
+  if (trimmed.startsWith('{') && /"ok"\s*:\s*false/.test(trimmed)) {
     return false;
   }
   if (name === 'shell') {
@@ -395,10 +395,14 @@ export function triggerGuiKillSwitch(reason: string): void {
 export async function executeTool(call: ToolCall, context: ToolContext): Promise<string> {
   const rawArgs = ((call as unknown as { args?: Record<string, unknown> }).args || call.arguments || {}) as Record<string, unknown>;
   const normalized = normalizeToolCall(call.name, rawArgs);
-  call.name = normalized.name;
-  call.arguments = normalized.args;
-  (call as unknown as { args: Record<string, unknown> }).args = normalized.args;
+  const toolName = normalized.name;
   const args = normalized.args;
+  const activeCall: ToolCall = {
+    ...call,
+    name: toolName,
+    arguments: args,
+  };
+  (activeCall as unknown as { args: Record<string, unknown> }).args = args;
   if (context.workspace) {
     globalGroundingLedger.workspace = context.workspace;
   }
@@ -406,23 +410,23 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
   try {
     context.signal?.throwIfAborted();
     const allRemote = remoteTools(context.mcpTools);
-    if (call.name === 'mcp_catalog' && allRemote.length) {
+    if (toolName === 'mcp_catalog' && allRemote.length) {
       const query = typeof args.query === 'string' ? args.query.toLowerCase().slice(0, 200) : '';
       const offset = typeof args.offset === 'number' && Number.isInteger(args.offset) ? Math.max(0, args.offset) : 0;
       const limit = typeof args.limit === 'number' && Number.isInteger(args.limit) ? Math.max(1, Math.min(5, args.limit)) : 2;
       const matched = allRemote.filter(({ definition }) => definition.name.toLowerCase().includes(query));
       const page = matched.slice(offset, offset + limit).map(({ definition }) => ({ ...definition, description: definition.description.slice(0, 600) }));
       const output = `[Untrusted MCP catalog]\n${JSON.stringify({ tools: page, next_offset: offset + limit < matched.length ? offset + limit : null })}`;
-      globalGroundingLedger.recordToolResult(call.name, call.arguments, output as any, isToolResultOk(call.name, output) as any);
+      globalGroundingLedger.recordToolResult(toolName, args, output as any, isToolResultOk(toolName, output) as any);
       return output;
     }
 
-    let actualCall = call;
+    let actualCall = activeCall;
     let actualArgs = args;
-    if (call.name === 'mcp_call') {
+    if (toolName === 'mcp_call') {
       if (typeof args.name !== 'string' || !args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) {
         const err = 'Tool error: mcp_call requires a catalog tool name and arguments object.';
-        globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, false as any);
+        globalGroundingLedger.recordToolResult(toolName, args, err as any, false as any);
         return err;
       }
       actualArgs = args.arguments as Record<string, unknown>;
@@ -430,10 +434,10 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       (actualCall as unknown as { args: Record<string, unknown> }).args = actualArgs;
     }
 
-    const remote = (call.name === 'mcp_call' ? allRemote : featuredTools(context.mcpTools)).find(item => item.definition.name === actualCall.name);
-    if ((!remote && call.name === 'mcp_call') || !getToolDefinitions(context.mcpTools).some(tool => tool.name === call.name)) {
-      const err = `Unknown tool: ${call.name}`;
-      globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, false as any);
+    const remote = (toolName === 'mcp_call' ? allRemote : featuredTools(context.mcpTools)).find(item => item.definition.name === actualCall.name);
+    if ((!remote && toolName === 'mcp_call') || !getToolDefinitions(context.mcpTools).some(tool => tool.name === toolName)) {
+      const err = `Unknown tool: ${toolName}`;
+      globalGroundingLedger.recordToolResult(toolName, args, err as any, false as any);
       return err;
     }
 
@@ -454,7 +458,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
           : actualArgs;
       if (!await context.approve({ tool: actualCall.name, description, arguments: approvalArgs })) {
         const denied = 'Tool action denied by user.';
-        globalGroundingLedger.recordToolResult(call.name, call.arguments, denied as any, false as any);
+        globalGroundingLedger.recordToolResult(toolName, args, denied as any, false as any);
         return denied;
       }
       context.signal?.throwIfAborted();
@@ -465,23 +469,23 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       const result = await remote.connection.execute(actualCall, context.signal);
       const raw = typeof result === 'string' ? result : JSON.stringify(result);
       output = `[Untrusted MCP tool output]\n${raw.length > 12000 ? raw.slice(0, 12000) + '\n[output truncated]' : raw}`;
-    } else if (call.name === 'delegate_task' || getSubagentDefs().some(tool => tool.name === call.name)) {
+    } else if (toolName === 'delegate_task' || getSubagentDefs().some(tool => tool.name === toolName)) {
       const handler = (subagentsMod as any).handleSubagentTool;
       if (typeof handler !== 'function') {
-        throw new Error(`Subagent tool handler is not available for ${call.name}`);
+        throw new Error(`Subagent tool handler is not available for ${toolName}`);
       }
       output = await handler(actualCall, context);
-    } else if (call.name === 'skill_create' || call.name === 'skill_list' || call.name.startsWith('skill_') || getSkillDefs().some(tool => tool.name === call.name)) {
+    } else if (toolName === 'skill_create' || toolName === 'skill_list' || toolName.startsWith('skill_') || getSkillDefs().some(tool => tool.name === toolName)) {
       const handler = (skillsMod as any).handleSkillTool;
       if (typeof handler !== 'function') {
-        throw new Error(`Skill tool handler is not available for ${call.name}`);
+        throw new Error(`Skill tool handler is not available for ${toolName}`);
       }
       output = await handler(actualCall, context);
-    } else if (call.name.startsWith('memory_')) {
+    } else if (toolName.startsWith('memory_')) {
       try {
-        output = await handleMemoryTool(call.name, actualArgs, context);
+        output = await handleMemoryTool(toolName, actualArgs, context);
       } catch (err) {
-        if (call.name === 'memory_forget' && err instanceof Error && err.message.startsWith('Unknown memory tool:')) {
+        if (toolName === 'memory_forget' && err instanceof Error && err.message.startsWith('Unknown memory tool:')) {
           const key = typeof actualArgs.key === 'string' ? actualArgs.key.trim() : '';
           if (!key) throw new Error('Parameter "key" is required.');
           const removed = await forgetFact(context.workspace, key);
@@ -490,28 +494,28 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
           throw err;
         }
       }
-    } else if (call.name === 'web_search' || call.name === 'url_fetch') {
-      output = await executeWebTool(call.name, actualArgs, context.signal);
-    } else if (call.name === 'todo_manage' || call.name === 'goal_manage') {
-      output = await executeWorkflowTool(call.name, actualArgs, context.workspace);
-    } else if (call.name.startsWith('process_')) {
-      output = await handleShellTool(call.name, actualArgs, context.workspace, context.signal);
-    } else if (call.name === 'shell') {
-      output = await handleShellTool(call.name, actualArgs, context.workspace, context.signal);
-    } else if (call.name === 'image_generate') {
-      output = await handleImageTool(call.name, actualArgs, context);
-    } else if (browserToolDefinitions.some(tool => tool.name === call.name)) {
-      output = await handleBrowserTool(call.name, actualArgs, context);
-    } else if (computerToolDefinitions.some(tool => tool.name === call.name)) {
-      output = await handleComputerTool(call.name, actualArgs, context);
-    } else if (gitToolDefinitions.some(tool => tool.name === call.name)) {
-      output = await handleGitTool(call.name, actualArgs, context);
+    } else if (toolName === 'web_search' || toolName === 'url_fetch') {
+      output = await executeWebTool(toolName, actualArgs, context.signal);
+    } else if (toolName === 'todo_manage' || toolName === 'goal_manage') {
+      output = await executeWorkflowTool(toolName, actualArgs, context.workspace);
+    } else if (toolName.startsWith('process_')) {
+      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+    } else if (toolName === 'shell') {
+      output = await handleShellTool(toolName, actualArgs, context.workspace, context.signal);
+    } else if (toolName === 'image_generate') {
+      output = await handleImageTool(toolName, actualArgs, context);
+    } else if (browserToolDefinitions.some(tool => tool.name === toolName)) {
+      output = await handleBrowserTool(toolName, actualArgs, context);
+    } else if (computerToolDefinitions.some(tool => tool.name === toolName)) {
+      output = await handleComputerTool(toolName, actualArgs, context);
+    } else if (gitToolDefinitions.some(tool => tool.name === toolName)) {
+      output = await handleGitTool(toolName, actualArgs, context);
     } else {
-      output = await handleFileTool(call.name, actualArgs, context.workspace, context.signal);
+      output = await handleFileTool(toolName, actualArgs, context.workspace, context.signal);
     }
 
-    globalGroundingLedger.recordToolResult(call.name, call.arguments, output as any, isToolResultOk(call.name, output) as any);
-    if (actualCall.name !== call.name) {
+    globalGroundingLedger.recordToolResult(toolName, args, output as any, isToolResultOk(toolName, output) as any);
+    if (actualCall.name !== toolName) {
       globalGroundingLedger.recordToolResult(actualCall.name, actualArgs, output as any, isToolResultOk(actualCall.name, output) as any);
     }
     if (typeof output === 'string' && (output.includes('[ACİL DURDURMA') || output.includes('KULLANICI ACİL DURDURMA'))) {
@@ -524,7 +528,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       triggerGuiKillSwitch(err);
     }
     try {
-      globalGroundingLedger.recordToolResult(call.name, call.arguments, err as any, isToolResultOk(call.name, err) as any);
+      globalGroundingLedger.recordToolResult(toolName, args, err as any, isToolResultOk(toolName, err) as any);
     } catch { /* ignore */ }
     return err;
   }
