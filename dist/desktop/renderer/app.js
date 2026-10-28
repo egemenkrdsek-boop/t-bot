@@ -1626,7 +1626,9 @@
       }
 
       case '/checkpoints': {
-        const checkpoints = await tbot.listCheckpoints?.(state.workspace).catch(() => []) || [];
+        const checkpoints = tbot.listCheckpoints
+          ? await tbot.listCheckpoints(state.workspace).catch(() => [])
+          : [];
         if (!checkpoints.length) {
           notice('Henüz dosya checkpoint\'i yok.');
           break;
@@ -1637,7 +1639,9 @@
       }
 
       case '/undo': {
-        const checkpoints = await tbot.listCheckpoints?.(state.workspace).catch(() => []) || [];
+        const checkpoints = tbot.listCheckpoints
+          ? await tbot.listCheckpoints(state.workspace).catch(() => [])
+          : [];
         if (!checkpoints.length) {
           notice('Geri yüklenecek checkpoint yok.');
           break;
@@ -1652,8 +1656,9 @@
           notice('Geri yükleme iptal edildi.');
           break;
         }
-        const restored = await tbot.restoreCheckpoint?.(state.workspace, target.id, true)
-          .catch(error => ({ ok: false, error: String(error) }));
+        const restored = tbot.restoreCheckpoint
+          ? await tbot.restoreCheckpoint(state.workspace, target.id, true).catch(error => ({ ok: false, error: String(error) }))
+          : { ok: false, error: 'Masaüstü köprüsü checkpoint geri yüklemeyi desteklemiyor.' };
         notice(restored?.ok
           ? `Geri yüklendi: **${escapeHtml(String(restored.path || target.path))}** (${Number(restored.bytes || 0)} bayt). Bu işlem de checkpoint olarak saklandı.`
           : `Geri yüklenemedi: ${escapeHtml(String(restored?.error || 'bilinmeyen hata'))}`);

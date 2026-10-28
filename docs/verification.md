@@ -237,7 +237,7 @@ Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, r
 | --- | --- |
 | `npm pack --ignore-scripts` | CLI tarball `t-bot-cli-4.0.0.tgz` üretildi |
 | `npm run dist:win` | Windows x64 NSIS yükleyicisi ve SHA256 manifesti üretildi |
-| `release/T-Bot-Setup-4.0.0.exe` | 128.582.069 byte; SHA256 `f437bb87a04c9a88fd3d8505a918a2a1fd740ea2db5aead1fd40251f5dd0e77b` |
-| `app.asar` SHA256 | `118d428926edcf93e8fdf1338b09e75f86f4823f5e0eb9beca2c86de17c7eb07` (manifest ile aynı) |
+| `release/T-Bot-Setup-4.0.0.exe` | 128.582.213 byte; SHA256 `fd0131557f30d5baa0c1ea265e55d0b5910f7a9c6e97d8a4df1b56f927d1973e` |
+| `app.asar` SHA256 | `deee0450dc2bf2b4abd5c0d059d78264b04e4f75d55041cfb38f511bd675c771` (manifest ile aynı) |
 | CLI sürümü | `node dist/index.js --version` → `T Bot 4.0.0` |
 | Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar üretildi |
