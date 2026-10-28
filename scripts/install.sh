@@ -4,13 +4,34 @@ for tool in node npm git; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'Required command missing: %s. Install Node.js >=22.12 and Git.\n' "$tool" >&2; exit 1; }
 done
 node -e "const [a,b]=process.versions.node.split('.').map(Number); if(a<22||(a===22&&b<12))process.exit(1)" || { printf 'Node.js >=22.12.0 is required.\n' >&2; exit 1; }
-printf 'Installing T Bot CLI from GitHub main...\n'
-ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --global 'git+https://github.com/egemenkrdsek-boop/t-bot.git#main'
+STAGING=$(mktemp -d "${TMPDIR:-/tmp}/tbot-install.XXXXXXXX")
+trap 'rm -rf -- "$STAGING"' EXIT
+trap 'exit 1' HUP INT TERM
+printf 'Building T Bot CLI from GitHub main in a temporary checkout...\n'
+git clone --depth 1 --branch main -- 'https://github.com/egemenkrdsek-boop/t-bot.git' "$STAGING"
+REVISION=$(git -C "$STAGING" rev-parse HEAD)
+[ "$REVISION" = "$(git -C "$STAGING" rev-parse refs/remotes/origin/main)" ] || { printf 'Checkout does not match the remote main branch.\n' >&2; exit 1; }
+printf 'Source revision: %s\n' "$REVISION"
+(
+  cd "$STAGING"
+  ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --global=false --include=dev --ignore-scripts=false
+)
+VERSION=$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version' "$STAGING/package.json")
+BUILT_VERSION=$(node "$STAGING/dist/index.js" --version)
+[ "$BUILT_VERSION" = "T Bot $VERSION" ] || { printf 'Built CLI version check failed; global CLI was not changed.\n' >&2; exit 1; }
+node "$STAGING/dist/index.js" --help >/dev/null
+(cd "$STAGING" && npm pack --global=false --ignore-scripts)
+TARBALL="$STAGING/t-bot-cli-$VERSION.tgz"
+[ -f "$TARBALL" ] || { printf 'CLI package missing: %s\n' "$TARBALL" >&2; exit 1; }
+# Only a completely built package reaches the global installation.
+npm install --global --ignore-scripts "$TARBALL"
 NPM_PREFIX=$(npm prefix --global)
 TBOT_BIN="$NPM_PREFIX/bin/tbot"
 [ -x "$TBOT_BIN" ] || { printf 'CLI executable not found: %s\n' "$TBOT_BIN" >&2; exit 1; }
 "$TBOT_BIN" --help
-"$TBOT_BIN" --version
+INSTALLED_VERSION=$("$TBOT_BIN" --version)
+[ "$INSTALLED_VERSION" = "T Bot $VERSION" ] || { printf 'Installed CLI failed the expected version check.\n' >&2; exit 1; }
+printf '%s\n' "$INSTALLED_VERSION"
 printf 'T Bot CLI installed and verified. Run tbot config, then tbot.\n'
 case ":$PATH:" in
   *":$NPM_PREFIX/bin:"*) ;;

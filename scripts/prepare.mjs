@@ -2,8 +2,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 if (fs.existsSync('src/index.ts')) {
-  if (!process.env.npm_execpath) throw new Error('Run prepare through npm so its build command can be resolved.');
-  const result = spawnSync(process.execPath, [process.env.npm_execpath, 'run', 'build'], { stdio: 'inherit' });
+  const result = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
   if (result.error) throw result.error;
   process.exit(result.status ?? 1);
 }

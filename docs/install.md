@@ -2,7 +2,7 @@
 
 ## Gereksinimler
 
-- Node.js >=22.12.0, npm ve Git. Kilitli Electron geliştirme bağımlılığı bu Node sürümünü gerektirir; Git kaynak kurulumları `prepare` sırasında geliştirme bağımlılıklarını da kullanır.
+- Node.js >=22.12.0, npm ve Git. Kilitli Electron geliştirme bağımlılığı bu Node sürümünü gerektirir; geçici kaynak checkout'unda `npm ci` geliştirme bağımlılıklarını da kurar.
 - GitHub/npm erişimi ve npm global prefix dizinine yazma izni.
 - Windows masaüstü paketi oluşturmak için Windows x64, Electron ve electron-builder/NSIS indirmeleri için ağ erişimi.
 - Tarayıcı işlemleri için Chrome veya Playwright uyumlu Chromium; `playwright-core` tarayıcıyı otomatik indirmez.
@@ -12,22 +12,18 @@
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 -ErrorAction Stop | iex
 ```
 
 Linux/macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh
+sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Bu betikler çalışma dizininizdeki yerel kopyayı seçmez; her zaman uzak `main` dalını kurar. `main` değişebilir; tekrarlanabilir bir sürüm için aşağıdaki npm komutundaki `main` yerine doğruladığınız tam commit SHA'sını kullanın:
+Bu betikler çalışma dizininizdeki yerel kopyayı seçmez; uzak `main` dalını benzersiz geçici dizine klonlar ve seçilen commit SHA'sını gösterir. `npm ci --global=false --include=dev --ignore-scripts=false` kilitli bağımlılıkları yerelde kurar ve `prepare` ile derler. Kaynak CLI yardım/sürüm kontrollerinden sonra tarball üretilir; ancak bundan sonra `npm install --global --ignore-scripts <tarball>` çalışır. Böylece kaynak derleme/paketleme hatası mevcut global CLI'yi değiştirmez. Global yazma işleminin disk/izin hatasında otomatik rollback garantisi yoktur. Geçici checkout işlem sonunda temizlenir.
 
-```sh
-npm install -g 'git+https://github.com/egemenkrdsek-boop/t-bot.git#main'
-```
-
-Kaynakta `prepare` derleme hatalarını görünür biçimde döndürür. Hazır npm tarball'ında kaynak yoksa gerekli CLI ve masaüstü dosyalarının varlığını denetler. `--ignore-scripts` kullanımı kaynak kurulumunun derlenmesini engeller. Betikler Electron ikilisini CLI kurulumu için indirmez.
+Doğrudan `npm install -g git+...` npm 11 global Git hazırlığında yerel derleyici bağımlılıklarını bulamadığı için desteklenmez. Tekrarlanabilir kaynak kurulumu için doğruladığınız commit'i ayrı bir checkout'ta seçip `npm ci --global=false --include=dev --ignore-scripts=false`, `npm pack --ignore-scripts` ve üretilen tarball için `npm install -g --ignore-scripts <dosya>` kullanın. Kaynakta `prepare` derleme hatalarını korur; derleyici PATH shim'i yerine kurulu TypeScript modülünden çözülür. Hazır tarball'da kaynak yoksa gerekli dağıtım dosyaları denetlenir. `--ignore-scripts` kaynak derlemesinde kullanılmamalıdır. Betikler CLI kurulumu için Electron ikilisini indirmez.
 
 Windows betiği npm global prefix'ini kullanıcı PATH'ine ekler. Linux/macOS betiği yalnızca gerekli profil değişikliğini gösterir; alt shell üst shell'in PATH'ini değiştiremez. Unix'te gerekirse shell profilinize `export PATH="$(npm prefix -g)/bin:$PATH"` ekleyin. Yazma izni hatasında kullanıcıya ait npm prefix'i kullanın; kurulum hatasını `--force` ile örtmeyin.
 

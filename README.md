@@ -11,24 +11,16 @@ T Bot; terminalden veya Windows masaüstü uygulamasından kullanılan yerel bir
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.ps1 -ErrorAction Stop | iex
 ```
 
 Linux / macOS:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh | sh
+sh -c 'script=$(curl -fsSL https://raw.githubusercontent.com/egemenkrdsek-boop/t-bot/main/scripts/install.sh) && printf "%s\n" "$script" | sh'
 ```
 
-Betikler CLI kurar, `--help` ve `--version` başarısız olursa hata verir. Windows kullanıcı PATH'ini günceller; Unix betiği gerekiyorsa shell profilinizde eklemeniz gereken dizini gösterir. Aynı komutu tekrar çalıştırarak güncelleyebilirsiniz. Bunlar Windows masaüstü yükleyicisini kurmaz.
-
-Doğrudan npm alternatifi:
-
-```sh
-npm install -g 'git+https://github.com/egemenkrdsek-boop/t-bot.git#main'
-tbot config
-tbot
-```
+Betikler uzak `main` commitini geçici bir checkout'ta kilitli bağımlılıklarla derler, kaynak sürümünü ve yardımını doğrular, ardından hazır tarball'ı global kurar. Derleme veya paketleme başarısızsa mevcut global CLI'ye dokunulmaz; global kurulum aşamasındaki disk/izin hataları için otomatik rollback garantisi yoktur. Kurulan sürüm de kaynak sürümüyle karşılaştırılır. Windows kullanıcı PATH'ini günceller; Unix betiği gerekiyorsa shell profilinizde eklemeniz gereken dizini gösterir. Aynı komutu tekrar çalıştırarak güncelleyebilirsiniz. Bunlar Windows masaüstü yükleyicisini kurmaz. Doğrudan `npm install -g git+...` yolu npm 11 global Git hazırlığında başarısız olduğu için desteklenen kurulum yolu değildir.
 
 ## Windows masaüstü uygulaması
 

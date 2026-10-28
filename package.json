@@ -33,7 +33,7 @@
   },
   "scripts": {
     "copy:desktop": "node scripts/copy-desktop.mjs",
-    "build": "tsc && npm run copy:desktop",
+    "build": "node scripts/build.mjs",
     "desktop": "npm run build && electron .",
     "dist:win": "npm run build && electron-builder --config electron-builder.yml --win --x64 --publish never && node scripts/release-manifest.mjs",
     "start": "node --expose-gc dist/index.js",
