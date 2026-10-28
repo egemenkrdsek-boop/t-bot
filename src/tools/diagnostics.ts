@@ -10,7 +10,7 @@
  * exists, and returns a bounded list of syntactic and semantic errors. It is
  * not a full LSP client and it does not claim to diagnose other languages.
  */
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { relative, resolve } from 'node:path';
 import type * as TS from 'typescript';
 import type { ToolDefinition } from '../types.js';
@@ -108,10 +108,20 @@ export async function handleDiagnosticsTool(
   if (name !== 'diagnostics') throw new Error(`Unknown diagnostics tool: ${name}`);
   signal?.throwIfAborted();
 
+  // CI can hand us a short 8.3 alias (RUNNER~1) while TypeScript returns long
+  // canonical paths (or vice versa). Diagnose everything against one canonical
+  // workspace so containment checks and tsconfig includes agree.
+  let canonicalWorkspace: string;
+  try {
+    canonicalWorkspace = await realpath(resolve(workspace));
+  } catch {
+    canonicalWorkspace = resolve(workspace);
+  }
+
   const ts = await import('typescript');
   signal?.throwIfAborted();
 
-  const configPath = ts.findConfigFile(workspace, ts.sys.fileExists, 'tsconfig.json');
+  const configPath = ts.findConfigFile(canonicalWorkspace, ts.sys.fileExists, 'tsconfig.json');
   let options = defaultOptions(ts);
   let rootNames: string[] = [];
 
@@ -119,7 +129,7 @@ export async function handleDiagnosticsTool(
     try {
       const config = ts.readConfigFile(configPath, ts.sys.readFile);
       if (!config.error) {
-        const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, workspace);
+        const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, canonicalWorkspace);
         options = { ...parsed.options, noEmit: true, skipLibCheck: true };
         rootNames = parsed.fileNames;
       }
@@ -129,17 +139,17 @@ export async function handleDiagnosticsTool(
   }
 
   if (typeof args.path === 'string' && args.path.trim()) {
-    const target = await resolveWorkspacePath(workspace, args.path.trim());
+    const target = await resolveWorkspacePath(canonicalWorkspace, args.path.trim());
     let targetIsDirectory = false;
     try { targetIsDirectory = (await stat(target)).isDirectory(); } catch { /* compiler reports a missing file */ }
     rootNames = targetIsDirectory
       ? ts.sys.readDirectory(target, [...SOURCE_EXTENSIONS], EXCLUDED_DIRECTORIES, undefined, MAX_FILES)
       : [target];
   } else if (!rootNames.length) {
-    rootNames = workspaceFiles(ts, workspace);
+    rootNames = workspaceFiles(ts, canonicalWorkspace);
   }
 
-  const files = await selectSourceFiles(workspace, rootNames);
+  const files = await selectSourceFiles(canonicalWorkspace, rootNames);
   if (!files.length) {
     return JSON.stringify({
       ok: false,
@@ -161,7 +171,7 @@ export async function handleDiagnosticsTool(
     ? Math.max(1, Math.min(MAX_DIAGNOSTICS, Math.floor(args.limit)))
     : 50;
   const formatted = diagnostics
-    .map(diagnostic => formatDiagnostic(ts, diagnostic, workspace))
+    .map(diagnostic => formatDiagnostic(ts, diagnostic, canonicalWorkspace))
     .sort((a, b) => Number(a.severity !== 'error') - Number(b.severity !== 'error'))
     .slice(0, limit);
   const errors = formatted.filter(item => item.severity === 'error').length;

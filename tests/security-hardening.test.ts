@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -29,7 +29,11 @@ test('workspace containment rejects .. and symlink/junction escapes', async () =
     await assert.rejects(resolveWorkspacePath(workspace, '../outside/secret.txt'), /escapes workspace/);
     await assert.rejects(resolveWorkspacePath(workspace, join(outside, 'secret.txt')), /escapes workspace/);
     await assert.rejects(resolveWorkspacePath(workspace, 'a/../../outside/secret.txt'), /escapes workspace/);
-    assert.equal(await resolveWorkspacePath(workspace, 'src/index.ts'), join(workspace, 'src', 'index.ts'));
+    // resolveWorkspacePath returns the canonical (realpath) root; CI temp
+    // directories may be reached through a short 8.3 alias, so compare
+    // against the realpath instead of the mkdtemp spelling.
+    const canonicalWorkspace = await realpath(workspace);
+    assert.equal(await resolveWorkspacePath(workspace, 'src/index.ts'), join(canonicalWorkspace, 'src', 'index.ts'));
 
     await symlink(outside, join(workspace, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(resolveWorkspacePath(workspace, 'link/secret.txt'), /Symbolic links are not allowed/);

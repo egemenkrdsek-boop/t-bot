@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { handleDiagnosticsTool } from '../src/tools/diagnostics.js';
@@ -12,7 +12,9 @@ test('the TypeScript compiler is loaded lazily, not at module startup', async ()
 });
 
 test('diagnostics reports a real type error and supports a directory target', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'tbot-diagnostics-'));
+  // CI temp paths may be short 8.3 aliases; diagnostics receives the canonical
+  // path (the product also realpaths its input).
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), 'tbot-diagnostics-')));
   try {
     await writeFile(join(workspace, 'tsconfig.json'), JSON.stringify({
       compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext' },
