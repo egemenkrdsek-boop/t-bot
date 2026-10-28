@@ -1,6 +1,37 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 const backgroundProcesses = new Map();
+const POWERSHELL_SYNTAX_REGEX = /\b(Get-|Set-|New-|Remove-|Invoke-|Select-|Where-|ForEach-|Out-|Test-Path|Start-Process|\$env:|\$PSVersionTable)\b/i;
+const DEFAULT_SPAWN_ENV = {
+    ...process.env,
+    CI: 'true',
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    NPM_CONFIG_YES: 'true',
+};
+function spawnCommand(command, options) {
+    const isWin = process.platform === 'win32';
+    const isPowerShell = isWin && POWERSHELL_SYNTAX_REGEX.test(command);
+    const env = { ...DEFAULT_SPAWN_ENV };
+    if (isPowerShell) {
+        return spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command], {
+            cwd: options.cwd,
+            shell: false,
+            windowsHide: options.windowsHide ?? true,
+            detached: options.detached,
+            stdio: options.stdio,
+            env,
+        });
+    }
+    return spawn(command, {
+        cwd: options.cwd,
+        shell: true,
+        windowsHide: options.windowsHide ?? true,
+        detached: options.detached,
+        stdio: options.stdio,
+        env,
+    });
+}
 export function stopAllBackgroundProcesses() {
     for (const proc of backgroundProcesses.values()) {
         if (proc.status === 'running' && proc.pid) {
@@ -147,7 +178,24 @@ export const shellToolDefinitions = [
             additionalProperties: false,
         },
     },
+    {
+        name: 'process_write',
+        description: 'Send input text to a running background process standard input (stdin).',
+        parameters: {
+            type: 'object',
+            properties: {
+                process_id: { type: 'string', description: 'The process ID of the background process.' },
+                id: { type: 'string', description: 'Alternative process ID alias.' },
+                input: { type: 'string', description: 'The input text string to send to standard input.' },
+                append_newline: { type: 'boolean', description: 'Whether to append a trailing newline (default true).' },
+            },
+            required: ['input'],
+            additionalProperties: false,
+        },
+    },
 ];
+export const SHELL_TOOLS = shellToolDefinitions;
+export const executeShellTool = handleShellTool;
 export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspaceOrSignal, maybeSignal) {
     let name = 'shell';
     let args = {};
@@ -233,18 +281,57 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
         enforceProcessLimit();
         return JSON.stringify({ processId: proc.processId, status: proc.status, message: `Process ${processId} stopped.` }, null, 2);
     }
+    if (name === 'process_write') {
+        const rawId = args.process_id ?? args.id;
+        if (rawId === undefined || rawId === null || String(rawId).trim() === '') {
+            throw new Error('process_id (veya id) parametresi belirtilmelidir.');
+        }
+        const procKey = String(rawId).trim();
+        let proc = backgroundProcesses.get(procKey);
+        if (!proc) {
+            for (const p of backgroundProcesses.values()) {
+                if (String(p.pid) === procKey || p.processId.endsWith(procKey)) {
+                    proc = p;
+                    break;
+                }
+            }
+        }
+        if (!proc) {
+            throw new Error(`Arka plan süreci bulunamadı: '${procKey}'`);
+        }
+        if (proc.status !== 'running' || !proc.child.stdin || proc.child.stdin.destroyed) {
+            throw new Error(`Süreç '${procKey}' çalışır durumda değil veya stdin kapalı (Durum: ${proc.status}).`);
+        }
+        const input = typeof args.input === 'string' ? args.input : String(args.input ?? '');
+        const appendNewline = args.append_newline !== false;
+        const toWrite = appendNewline ? (input.endsWith('\n') ? input : `${input}\n`) : input;
+        await new Promise((resolve, reject) => {
+            proc.child.stdin.write(toWrite, 'utf8', (err) => {
+                if (err)
+                    reject(err);
+                else
+                    resolve();
+            });
+        });
+        return JSON.stringify({
+            processId: proc.processId,
+            pid: proc.pid,
+            status: proc.status,
+            bytesWritten: Buffer.byteLength(toWrite, 'utf8'),
+            message: `Girdi başarıyla sürecin stdin akışına gönderildi.`,
+        }, null, 2);
+    }
     // Handle standard 'shell' command
     if (typeof args.command !== 'string' || !args.command.trim())
         throw new Error('command must be a non-empty string');
     // Background execution mode
     if (args.background === true) {
         const processId = 'proc_' + randomUUID().slice(0, 8);
-        const child = spawn(args.command, {
+        const child = spawnCommand(args.command, {
             cwd: workspace,
-            shell: true,
             windowsHide: true,
             detached: process.platform !== 'win32',
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
         });
         const managed = {
             processId,
@@ -256,6 +343,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
             exitCode: null,
             output: '',
             child,
+            stdin: child.stdin,
         };
         backgroundProcesses.set(processId, managed);
         enforceProcessLimit();
@@ -297,7 +385,7 @@ export async function handleShellTool(toolNameOrArgs, argsOrWorkspace, workspace
     // Synchronous execution mode
     const timeout = typeof args.timeout_ms === 'number' && Number.isFinite(args.timeout_ms) ? Math.min(120000, Math.max(1000, args.timeout_ms)) : 30000;
     return new Promise((resolve, reject) => {
-        const child = spawn(args.command, { cwd: workspace, shell: true, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawnCommand(args.command, { cwd: workspace, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         let truncated = false;
         let settled = false;

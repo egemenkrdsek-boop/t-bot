@@ -16,7 +16,7 @@ export declare function estimateTokens(text: string): number;
  * Uses WeakMap memoization on Message and ToolDefinition objects.
  */
 export declare function estimateMessagesTokens(messages: Message[], systemPrompt?: string, tools?: ToolDefinition[]): number;
-/** Always preserved 9 core tools that must never be pruned. */
+/** Always preserved core tools that must never be pruned. */
 export declare const CORE_TOOLS: Set<string>;
 /**
  * Sticky intent groups activated during the current session.
@@ -96,6 +96,7 @@ export declare class TokenSessionTracker {
         prunedSchemaTokens?: number;
         compressedHistoryTokens?: number;
     }): TokenSavingsReport;
+    getSavingsPercentage(): number;
     getReport(): TokenSavingsReport;
     reset(): void;
 }

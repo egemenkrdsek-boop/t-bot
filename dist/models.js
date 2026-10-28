@@ -1,8 +1,8 @@
 const FALLBACK = {
-    openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra', 'gpt-5.1', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'o3', 'o4-mini'],
-    anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-latest'],
-    gemini: ['gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-    openrouter: ['openai/gpt-4.1', 'openai/gpt-4o', 'openai/o3', 'openai/o4-mini', 'anthropic/claude-sonnet-4', 'anthropic/claude-3-7-sonnet-latest', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'],
+    openai: ['o3-mini', 'o1', 'o1-mini', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5.1', 'gpt-5-mini', 'o3', 'o4-mini'],
+    anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-sonnet-4-20250514', 'claude-3-5-haiku-latest', 'claude-opus-5-5'],
+    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-4-argon', 'gemini-3.8-flash'],
+    openrouter: ['openai/gpt-4o', 'openai/gpt-4.1', 'openai/o3-mini', 'openai/o1', 'anthropic/claude-3-7-sonnet-latest', 'anthropic/claude-3-5-sonnet-latest', 'google/gemini-2.5-pro', 'google/gemini-2.5-flash'],
     groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
     together: ['meta-llama/Llama-3.3-70B-Instruct-Turbo'],
     deepseek: ['deepseek-chat', 'deepseek-reasoner'],
@@ -68,8 +68,8 @@ export async function discoverModels(provider, apiKey, signal) {
                     continue;
             }
             else if (provider === 'openai') {
-                // The Models API does not advertise chat/tool capabilities: include known chat families only.
-                if (!/^(gpt-4\.1|gpt-4o|gpt-5(?:[.-]|$)|gpt-6(?:[.-]|$)|o3(?:[.-]|$)|o4-mini)/.test(id) || /(?:audio|realtime|transcribe|tts|image|search|deep-research|chat|pro|codex)/i.test(id))
+                // Chat ve function-call destekli gerçek OpenAI model aileleri (o1, o3, o4, gpt-4, gpt-5, gpt-6 vb.)
+                if (!/^(o1|o3|o4|gpt-4|gpt-5|gpt-6)/i.test(id) || /(?:audio|realtime|transcribe|tts|whisper|dall-e|embedding|moderation)/i.test(id))
                     continue;
             }
             else if (provider === 'anthropic') {

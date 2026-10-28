@@ -1,4 +1,4 @@
-import type { AgentInput, Message } from './types.js';
+import type { AgentInput, Message, ToolDefinition } from './types.js';
 export interface Goal {
     id: string;
     objective: string;
@@ -26,3 +26,17 @@ export declare function runGoal(input: AgentInput, runner?: (input: AgentInput) 
 export declare function planTask(input: AgentInput): Promise<Message[]>;
 /** Yalnızca kullanıcı görüntülenen planı açıkça onayladıktan sonra çağrılmalıdır. */
 export declare function executePlan(input: AgentInput, plan: string, runner?: (input: AgentInput) => Promise<Message[]>): Promise<Message[]>;
+export interface TodoItem {
+    id: string;
+    text: string;
+    status: 'pending' | 'in_progress' | 'completed';
+}
+export declare function getTodos(workspace: string): Promise<TodoItem[]>;
+export declare function saveTodos(workspace: string, todos: TodoItem[]): Promise<void>;
+/**
+ * Aktif /goal hedefini ve varsa aktif todo maddelerini ([✓], [◉], [ ])
+ * maksimum 6-8 satırlık çok kompakt bir canlı görev pusulası olarak döndürür.
+ */
+export declare function getActiveFocusSummary(workspaceRoot?: string): string;
+export declare function executeWorkflowTool(name: string, args: Record<string, unknown>, workspaceRoot: string): Promise<string>;
+export declare const WORKFLOW_TOOLS: ToolDefinition[];

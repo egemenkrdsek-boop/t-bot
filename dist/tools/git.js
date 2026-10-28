@@ -151,12 +151,18 @@ export async function handleGitTool(name, args, context) {
         if (/[\s~^:?*\[\\]/.test(branchName) || branchName.startsWith('-'))
             throw new Error('Invalid branch name');
         if (args.checkout) {
+            let branchExists = false;
             try {
-                return await runGit(workspace, ['checkout', branchName], context.signal);
+                await runGit(workspace, ['rev-parse', '--verify', `refs/heads/${branchName}`], context.signal);
+                branchExists = true;
             }
             catch {
-                return await runGit(workspace, ['checkout', '-b', branchName], context.signal);
+                branchExists = false;
             }
+            if (branchExists) {
+                return runGit(workspace, ['checkout', branchName], context.signal);
+            }
+            return runGit(workspace, ['checkout', '-b', branchName], context.signal);
         }
         return runGit(workspace, ['branch', branchName], context.signal);
     }

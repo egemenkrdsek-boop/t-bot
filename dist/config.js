@@ -10,12 +10,27 @@ const revisions = new WeakMap();
 const remember = (config, revision) => { revisions.set(config, revision); return config; };
 export const DEFAULT_CONFIG = { provider: 'openai', model: 'gpt-4o-mini', workspacePermissions: {} };
 const defaultConfig = () => ({ ...DEFAULT_CONFIG, workspacePermissions: {} });
+function isPrivateOrLocalHost(hostname) {
+    if (['localhost', '127.0.0.1', '[::1]'].includes(hostname) || hostname.endsWith('.local')) {
+        return true;
+    }
+    // 10.0.0.0/8
+    if (/^10(?:\.\d{1,3}){3}$/.test(hostname))
+        return true;
+    // 192.168.0.0/16
+    if (/^192\.168(?:\.\d{1,3}){2}$/.test(hostname))
+        return true;
+    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+    if (/^172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}$/.test(hostname))
+        return true;
+    return false;
+}
 function validBaseUrl(value) {
     if (typeof value !== 'string' || !value.trim())
         return false;
     try {
         const url = new URL(value);
-        const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+        const local = isPrivateOrLocalHost(url.hostname);
         return (url.protocol === 'https:' || (url.protocol === 'http:' && local)) && !url.username && !url.password && !url.search && !url.hash;
     }
     catch {

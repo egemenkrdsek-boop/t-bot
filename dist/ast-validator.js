@@ -11,6 +11,56 @@ const HTML_VOID_ELEMENTS = new Set([
     'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 /**
+ * In-memory ledger tracking cross-file symbol debts during multi-file refactoring.
+ * Key: normalized absolute target file path -> Value: Set of required symbol names.
+ */
+const pendingExports = new Map();
+export function getPendingCrossFileExports() {
+    return pendingExports;
+}
+export function clearPendingCrossFileExports() {
+    pendingExports.clear();
+}
+/**
+ * Normalizes a path canonically for cross-file export mapping.
+ */
+function canonicalizePath(p) {
+    const norm = path.normalize(p);
+    return process.platform === 'win32' ? norm.toLowerCase() : norm;
+}
+/**
+ * Computes the Levenshtein edit distance between two strings.
+ */
+export function levenshteinDistance(a, b) {
+    if (a === b)
+        return 0;
+    if (!a.length)
+        return b.length;
+    if (!b.length)
+        return a.length;
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) {
+        matrix[i] = [i];
+    }
+    for (let j = 0; j <= a.length; j++) {
+        matrix[0][j] = j;
+    }
+    for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+            if (b.charAt(i - 1) === a.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            }
+            else {
+                matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, // substitution
+                matrix[i][j - 1] + 1, // insertion
+                matrix[i - 1][j] + 1 // deletion
+                );
+            }
+        }
+    }
+    return matrix[b.length][a.length];
+}
+/**
  * Resolves a relative import specifier (./ or ../) against the filesystem.
  * Supports TypeScript ESM conventions (.js -> .ts/.tsx) and index files.
  */
@@ -102,32 +152,11 @@ function hasDefaultModifier(node) {
     return Boolean(modifiers?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword));
 }
 /**
- * Parses a target TypeScript/JavaScript module and extracts its exported symbol names.
+ * Extracts exported symbols directly from a parsed TypeScript/JavaScript SourceFile AST.
  */
-export function extractModuleExports(targetFilePath) {
+export function extractExportsFromSourceFile(sourceFile, content) {
     const exports = new Set();
     let hasWildcard = false;
-    const ext = path.extname(targetFilePath).toLowerCase();
-    if (ext === '.json') {
-        exports.add('default');
-        hasWildcard = true;
-        return { exports, hasWildcard };
-    }
-    let content = '';
-    try {
-        content = fs.readFileSync(targetFilePath, 'utf8');
-    }
-    catch {
-        return { exports, hasWildcard: true };
-    }
-    const scriptKind = ext === '.tsx'
-        ? ts.ScriptKind.TSX
-        : ext === '.jsx'
-            ? ts.ScriptKind.JSX
-            : ext === '.js' || ext === '.mjs' || ext === '.cjs'
-                ? ts.ScriptKind.JS
-                : ts.ScriptKind.TS;
-    const sourceFile = ts.createSourceFile(targetFilePath, content, ts.ScriptTarget.Latest, true, scriptKind);
     for (const stmt of sourceFile.statements) {
         if (hasExportModifier(stmt)) {
             if (hasDefaultModifier(stmt)) {
@@ -176,6 +205,35 @@ export function extractModuleExports(targetFilePath) {
         hasWildcard = true;
     }
     return { exports, hasWildcard };
+}
+/**
+ * Parses a target TypeScript/JavaScript module and extracts its exported symbol names.
+ */
+export function extractModuleExports(targetFilePath) {
+    const exports = new Set();
+    let hasWildcard = false;
+    const ext = path.extname(targetFilePath).toLowerCase();
+    if (ext === '.json') {
+        exports.add('default');
+        hasWildcard = true;
+        return { exports, hasWildcard };
+    }
+    let content = '';
+    try {
+        content = fs.readFileSync(targetFilePath, 'utf8');
+    }
+    catch {
+        return { exports, hasWildcard: true };
+    }
+    const scriptKind = ext === '.tsx'
+        ? ts.ScriptKind.TSX
+        : ext === '.jsx'
+            ? ts.ScriptKind.JSX
+            : ext === '.js' || ext === '.mjs' || ext === '.cjs'
+                ? ts.ScriptKind.JS
+                : ts.ScriptKind.TS;
+    const sourceFile = ts.createSourceFile(targetFilePath, content, ts.ScriptTarget.Latest, true, scriptKind);
+    return extractExportsFromSourceFile(sourceFile, content);
 }
 function getBarePackageName(spec) {
     if (!spec ||
@@ -307,6 +365,27 @@ function validateTsJsAstAndGrounding(filePath, content, workspace, ext) {
             warnings,
         };
     }
+    // Extract exports of the current file being validated to satisfy pending debts
+    const currentExports = extractExportsFromSourceFile(sourceFile, content);
+    const fullFilePath = path.isAbsolute(filePath)
+        ? filePath
+        : path.resolve(workspace, filePath);
+    const canonicalCurrent = canonicalizePath(fullFilePath);
+    for (const [targetPath, debtSet] of pendingExports.entries()) {
+        if (canonicalizePath(targetPath) === canonicalCurrent) {
+            if (currentExports.hasWildcard) {
+                pendingExports.delete(targetPath);
+            }
+            else {
+                for (const sym of currentExports.exports) {
+                    debtSet.delete(sym);
+                }
+                if (debtSet.size === 0) {
+                    pendingExports.delete(targetPath);
+                }
+            }
+        }
+    }
     // Traverse top-level and nested ImportDeclaration / ExportDeclaration nodes
     const checkNode = (node) => {
         if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
@@ -344,12 +423,35 @@ function validateTsJsAstAndGrounding(filePath, content, workspace, ext) {
                             if (!hasWildcard) {
                                 for (const sym of requestedSymbols) {
                                     if (!actualExports.has(sym)) {
-                                        const exportList = Array.from(actualExports);
-                                        return {
-                                            valid: false,
-                                            error: `[HALÜSİNASYON ENGELİ - UYDURMA SEMBOL] '${spec}' dosyasında '${sym}' adında bir export bulunmuyor! Mevcut exportlar: [${exportList.join(', ')}]`,
-                                            warnings,
-                                        };
+                                        // 1. Check for typos with Levenshtein distance <= 2
+                                        let bestMatch = null;
+                                        let minDistance = 999;
+                                        for (const cand of actualExports) {
+                                            const distCase = levenshteinDistance(sym, cand);
+                                            const distLower = levenshteinDistance(sym.toLowerCase(), cand.toLowerCase());
+                                            const effectiveDist = Math.min(distCase, distLower);
+                                            if (effectiveDist <= 2 && effectiveDist < minDistance) {
+                                                minDistance = effectiveDist;
+                                                bestMatch = cand;
+                                            }
+                                        }
+                                        if (bestMatch) {
+                                            const exportList = Array.from(actualExports);
+                                            return {
+                                                valid: false,
+                                                error: `[HALÜSİNASYON ENGELİ - YAZIM HATASI] '${spec}' dosyasında '${sym}' adında bir export bulunmuyor. Bunu mu demek istediniz: '${bestMatch}'? (Mevcut exportlar: [${exportList.join(', ')}])`,
+                                                warnings,
+                                            };
+                                        }
+                                        // 2. Completely new symbol, but resolvedTarget exists in workspace (multi-file refactoring scenario)
+                                        const canonicalTarget = canonicalizePath(resolvedTarget);
+                                        let debts = pendingExports.get(canonicalTarget);
+                                        if (!debts) {
+                                            debts = new Set();
+                                            pendingExports.set(canonicalTarget, debts);
+                                        }
+                                        debts.add(sym);
+                                        warnings.push(`[ÇAPRAZ DOSYA BORCU: '${spec}' içinde '${sym}' henüz export edilmemiş. Bu tur bitmeden hedef dosyayı güncelleyip '${sym}' sembolünü export etmelisiniz.]`);
                                     }
                                 }
                             }
@@ -593,6 +695,337 @@ function validateHtmlSyntax(content) {
     return { valid: true };
 }
 /**
+ * Validates structural syntax (bracket balance, quote closures, comment integrity)
+ * for Go, Rust, Shell, PowerShell, CSS and HTML files.
+ */
+export function validateMultiLangSyntax(filePath, content, ext) {
+    const cleanExt = ext.toLowerCase();
+    if (cleanExt === '.html' || cleanExt === '.htm') {
+        return validateHtmlSyntax(content);
+    }
+    const langNames = {
+        '.go': 'Go',
+        '.rs': 'Rust',
+        '.sh': 'Shell',
+        '.ps1': 'PowerShell',
+        '.css': 'CSS',
+    };
+    const lang = langNames[cleanExt] ?? cleanExt.slice(1).toUpperCase();
+    const bracketStack = [];
+    const pairs = { ')': '(', ']': '[', '}': '{' };
+    let i = 0;
+    let line = 1;
+    let col = 1;
+    while (i < content.length) {
+        const ch = content[i];
+        const next = content[i + 1] ?? '';
+        // Line counting
+        if (ch === '\n') {
+            line++;
+            col = 1;
+            i++;
+            continue;
+        }
+        // 1. Comments
+        // Go, Rust, CSS multi-line: /* ... */
+        if ((cleanExt === '.go' || cleanExt === '.rs' || cleanExt === '.css') && ch === '/' && next === '*') {
+            const startLine = line;
+            const startCol = col;
+            i += 2;
+            col += 2;
+            let closed = false;
+            let depth = 1;
+            while (i < content.length) {
+                if (content[i] === '\n') {
+                    line++;
+                    col = 1;
+                    i++;
+                    continue;
+                }
+                // Rust supports nested block comments
+                if (cleanExt === '.rs' && content[i] === '/' && content[i + 1] === '*') {
+                    depth++;
+                    i += 2;
+                    col += 2;
+                    continue;
+                }
+                if (content[i] === '*' && content[i + 1] === '/') {
+                    depth--;
+                    i += 2;
+                    col += 2;
+                    if (depth === 0) {
+                        closed = true;
+                        break;
+                    }
+                    continue;
+                }
+                i++;
+                col++;
+            }
+            if (!closed) {
+                return {
+                    valid: false,
+                    error: `${lang} Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış çok satırlı yorum '/* ... */'.`,
+                };
+            }
+            continue;
+        }
+        // Go, Rust single-line: // ...
+        if ((cleanExt === '.go' || cleanExt === '.rs') && ch === '/' && next === '/') {
+            while (i < content.length && content[i] !== '\n') {
+                i++;
+                col++;
+            }
+            continue;
+        }
+        // PowerShell multi-line: <# ... #>
+        if (cleanExt === '.ps1' && ch === '<' && next === '#') {
+            const startLine = line;
+            const startCol = col;
+            i += 2;
+            col += 2;
+            let closed = false;
+            while (i < content.length) {
+                if (content[i] === '\n') {
+                    line++;
+                    col = 1;
+                    i++;
+                    continue;
+                }
+                if (content[i] === '#' && content[i + 1] === '>') {
+                    i += 2;
+                    col += 2;
+                    closed = true;
+                    break;
+                }
+                i++;
+                col++;
+            }
+            if (!closed) {
+                return {
+                    valid: false,
+                    error: `PowerShell Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış yorum bloğu '<# ... #>'.`,
+                };
+            }
+            continue;
+        }
+        // Shell (#) and PowerShell (#) single-line comments
+        if ((cleanExt === '.sh' || cleanExt === '.ps1') && ch === '#') {
+            while (i < content.length && content[i] !== '\n') {
+                i++;
+                col++;
+            }
+            continue;
+        }
+        // 2. Strings & Raw Strings
+        // Go raw string: `...`
+        if (cleanExt === '.go' && ch === '`') {
+            const startLine = line;
+            const startCol = col;
+            i++;
+            col++;
+            let closed = false;
+            while (i < content.length) {
+                if (content[i] === '`') {
+                    i++;
+                    col++;
+                    closed = true;
+                    break;
+                }
+                if (content[i] === '\n') {
+                    line++;
+                    col = 1;
+                }
+                else {
+                    col++;
+                }
+                i++;
+            }
+            if (!closed) {
+                return {
+                    valid: false,
+                    error: `Go Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış raw string literali (\`).`,
+                };
+            }
+            continue;
+        }
+        // Rust raw string: r"..." or r#"..."#
+        if (cleanExt === '.rs' && ch === 'r' && (next === '"' || next === '#')) {
+            const startLine = line;
+            const startCol = col;
+            let hashCount = 0;
+            let p = i + 1;
+            while (p < content.length && content[p] === '#') {
+                hashCount++;
+                p++;
+            }
+            if (p < content.length && content[p] === '"') {
+                i = p + 1;
+                col += (p - i + 1);
+                const closing = `"${'#'.repeat(hashCount)}`;
+                let closed = false;
+                while (i < content.length) {
+                    if (content.startsWith(closing, i)) {
+                        i += closing.length;
+                        col += closing.length;
+                        closed = true;
+                        break;
+                    }
+                    if (content[i] === '\n') {
+                        line++;
+                        col = 1;
+                    }
+                    else {
+                        col++;
+                    }
+                    i++;
+                }
+                if (!closed) {
+                    return {
+                        valid: false,
+                        error: `Rust Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış raw string literali (${closing}).`,
+                    };
+                }
+                continue;
+            }
+        }
+        // Rust character literal: 'x' or '\n'
+        if (cleanExt === '.rs' && ch === "'") {
+            // Check if it's lifetime e.g. 'a, 'static
+            const matchLifetime = content.slice(i).match(/^'([a-zA-Z_][a-zA-Z0-9_]*)\b/);
+            // If it looks like a char literal ('a', '\n', '\\')
+            const matchChar = content.slice(i).match(/^'(?:[^'\\]|\\.)'/);
+            if (matchChar) {
+                i += matchChar[0].length;
+                col += matchChar[0].length;
+                continue;
+            }
+            if (matchLifetime && !content.slice(i + matchLifetime[0].length).startsWith("'")) {
+                i += matchLifetime[0].length;
+                col += matchLifetime[0].length;
+                continue;
+            }
+        }
+        // Standard double / single quote strings
+        if (ch === '"' || ch === "'") {
+            const quoteChar = ch;
+            const startLine = line;
+            const startCol = col;
+            i++;
+            col++;
+            let closed = false;
+            while (i < content.length) {
+                const curr = content[i];
+                // Shell single quotes do not permit escapes inside '...'
+                if (cleanExt === '.sh' && quoteChar === "'") {
+                    if (curr === "'") {
+                        i++;
+                        col++;
+                        closed = true;
+                        break;
+                    }
+                    if (curr === '\n') {
+                        line++;
+                        col = 1;
+                    }
+                    else {
+                        col++;
+                    }
+                    i++;
+                    continue;
+                }
+                // PowerShell double-quote escape: ` or ""
+                if (cleanExt === '.ps1' && quoteChar === '"' && curr === '`') {
+                    i += 2;
+                    col += 2;
+                    continue;
+                }
+                if (cleanExt === '.ps1' && curr === quoteChar && content[i + 1] === quoteChar) {
+                    i += 2;
+                    col += 2;
+                    continue;
+                }
+                // Standard backslash escape
+                if (curr === '\\') {
+                    i += 2;
+                    col += 2;
+                    continue;
+                }
+                if (curr === quoteChar) {
+                    i++;
+                    col++;
+                    closed = true;
+                    break;
+                }
+                if (curr === '\n') {
+                    // Go and CSS single-line strings cannot span newlines unescaped
+                    if (cleanExt === '.go' || cleanExt === '.css') {
+                        return {
+                            valid: false,
+                            error: `${lang} Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış string literali (${quoteChar}).`,
+                        };
+                    }
+                    line++;
+                    col = 1;
+                }
+                else {
+                    col++;
+                }
+                i++;
+            }
+            if (!closed) {
+                return {
+                    valid: false,
+                    error: `${lang} Sözdizimi Hatası (Satır ${startLine}:${startCol}): Kapatılmamış string literali (${quoteChar}).`,
+                };
+            }
+            continue;
+        }
+        // 3. Brackets () [] {}
+        if (ch === '(' || ch === '[' || ch === '{') {
+            bracketStack.push({ char: ch, line, col });
+        }
+        else if (ch === ')' || ch === ']' || ch === '}') {
+            // In Shell (bash/sh), case pattern clause e.g. "pattern)" does not require an opening "("
+            if (cleanExt === '.sh' && ch === ')') {
+                if (bracketStack.length === 0 || bracketStack[bracketStack.length - 1].char !== '(') {
+                    // Check if preceded by valid pattern or word in case statement
+                    const upToNow = content.slice(Math.max(0, i - 80), i).trim();
+                    if (/\b(?:in|\*|[a-zA-Z0-9_-]+)\s*$/.test(upToNow)) {
+                        i++;
+                        col++;
+                        continue;
+                    }
+                }
+            }
+            const expected = pairs[ch];
+            if (bracketStack.length === 0) {
+                return {
+                    valid: false,
+                    error: `${lang} Sözdizimi Hatası (Satır ${line}:${col}): Beklenmeyen kapatma parantezi '${ch}'.`,
+                };
+            }
+            const top = bracketStack.pop();
+            if (top.char !== expected) {
+                return {
+                    valid: false,
+                    error: `${lang} Sözdizimi Hatası (Satır ${line}:${col}): '${top.char}' (Satır ${top.line}:${top.col}) ile '${ch}' parantez uyuşmazlığı.`,
+                };
+            }
+        }
+        i++;
+        col++;
+    }
+    if (bracketStack.length > 0) {
+        const top = bracketStack[bracketStack.length - 1];
+        return {
+            valid: false,
+            error: `${lang} Sözdizimi Hatası (Satır ${top.line}:${top.col}): Kapatılmamış parantez '${top.char}'.`,
+        };
+    }
+    return { valid: true };
+}
+/**
  * Deterministic in-memory AST and Grounding validator that runs BEFORE writing to disk.
  */
 export async function validateCodeAstAndGrounding(filePath, content, workspace) {
@@ -613,8 +1046,14 @@ export async function validateCodeAstAndGrounding(filePath, content, workspace) 
     if (ext === '.py') {
         return validatePythonSyntax(content);
     }
-    if (ext === '.html' || ext === '.htm') {
-        return validateHtmlSyntax(content);
+    if (ext === '.go' ||
+        ext === '.rs' ||
+        ext === '.sh' ||
+        ext === '.ps1' ||
+        ext === '.html' ||
+        ext === '.htm' ||
+        ext === '.css') {
+        return validateMultiLangSyntax(filePath, content, ext);
     }
     return { valid: true };
 }

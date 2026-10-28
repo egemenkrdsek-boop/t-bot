@@ -34,9 +34,141 @@ export function createOpenAIResponsesProvider(config) {
                 flushImages();
                 const effort = describeEffort('openai', config.model, config.effort).effective;
                 const body = { model: config.model, input, store: false, stream: true, ...(effort ? { reasoning: { effort } } : {}), ...(tools.length ? { tools: tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false })) } : {}) };
-                const response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(body), signal, redirect: 'error' });
+                let response = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: { authorization: `Bearer ${config.apiKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify(body), signal, redirect: 'error' });
                 if (response.status === 401) {
                     yield { type: 'error', code: 'authentication', error: 'OpenAI kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden API anahtarını kontrol edin.' };
+                    return;
+                }
+                // /v1/responses 404 veya 400 dönerse standart /v1/chat/completions SSE akışına otomatik fallback yap
+                if (response.status === 404 || response.status === 400) {
+                    const chatMessages = [];
+                    for (const m of messages) {
+                        if (m.role === 'tool') {
+                            chatMessages.push({ role: 'tool', tool_call_id: m.toolCallId, content: m.content });
+                        }
+                        else if (m.role === 'assistant') {
+                            chatMessages.push({
+                                role: 'assistant',
+                                content: m.content || null,
+                                ...(m.toolCalls?.length
+                                    ? {
+                                        tool_calls: m.toolCalls.map((c) => ({
+                                            id: c.id,
+                                            type: 'function',
+                                            function: { name: c.name, arguments: JSON.stringify(c.arguments) },
+                                        })),
+                                    }
+                                    : {}),
+                            });
+                        }
+                        else {
+                            chatMessages.push({ role: m.role, content: m.content });
+                        }
+                    }
+                    const chatBody = {
+                        model: config.model,
+                        messages: chatMessages,
+                        stream: true,
+                        stream_options: { include_usage: true },
+                        ...(tools.length
+                            ? {
+                                tools: tools.map((t) => ({
+                                    type: 'function',
+                                    function: { name: t.name, description: t.description, parameters: t.parameters },
+                                })),
+                            }
+                            : {}),
+                    };
+                    const chatRes = await fetch('https://api.openai.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            authorization: `Bearer ${config.apiKey}`,
+                            'content-type': 'application/json',
+                            accept: 'text/event-stream',
+                        },
+                        body: JSON.stringify(chatBody),
+                        signal,
+                        redirect: 'error',
+                    });
+                    if (chatRes.status === 401) {
+                        yield {
+                            type: 'error',
+                            code: 'authentication',
+                            error: 'OpenAI kimlik doğrulamayı kabul etmedi (HTTP 401). /auth üzerinden API anahtarını kontrol edin.',
+                        };
+                        return;
+                    }
+                    if (!chatRes.ok)
+                        throw new Error(`Provider request failed (HTTP ${chatRes.status}).`);
+                    if (!chatRes.body)
+                        throw new Error('Provider returned an empty response stream.');
+                    const toolCallsMap = new Map();
+                    let chatUsage;
+                    for await (const payload of sse(chatRes.body)) {
+                        if (!payload || payload === '[DONE]')
+                            continue;
+                        let parsed;
+                        try {
+                            parsed = JSON.parse(payload);
+                        }
+                        catch {
+                            continue;
+                        }
+                        if (parsed.usage)
+                            chatUsage = parsed.usage;
+                        const choice = parsed.choices?.[0];
+                        if (!choice)
+                            continue;
+                        const delta = choice.delta;
+                        if (delta?.content && typeof delta.content === 'string') {
+                            yield { type: 'text', text: delta.content };
+                        }
+                        if (Array.isArray(delta?.tool_calls)) {
+                            for (const tc of delta.tool_calls) {
+                                const idx = typeof tc.index === 'number' ? tc.index : 0;
+                                const existing = toolCallsMap.get(idx) || { id: '', name: '', args: '' };
+                                if (tc.id)
+                                    existing.id += tc.id;
+                                if (tc.function?.name)
+                                    existing.name += tc.function.name;
+                                if (tc.function?.arguments)
+                                    existing.args += tc.function.arguments;
+                                toolCallsMap.set(idx, existing);
+                            }
+                        }
+                    }
+                    const resolvedCalls = [];
+                    for (const tc of toolCallsMap.values()) {
+                        if (tc.name) {
+                            let parsedArgs = {};
+                            try {
+                                parsedArgs = JSON.parse(tc.args || '{}');
+                            }
+                            catch {
+                                parsedArgs = {};
+                            }
+                            resolvedCalls.push({
+                                id: tc.id || `call_${Math.random().toString(36).slice(2)}`,
+                                name: tc.name,
+                                arguments: parsedArgs,
+                            });
+                        }
+                    }
+                    if (resolvedCalls.length) {
+                        yield { type: 'tool_calls', calls: resolvedCalls };
+                    }
+                    if (chatUsage) {
+                        const inputDetails = typeof chatUsage.prompt_tokens_details === 'object' && chatUsage.prompt_tokens_details !== null
+                            ? chatUsage.prompt_tokens_details
+                            : undefined;
+                        const cachedTokens = typeof inputDetails?.cached_tokens === 'number' ? inputDetails.cached_tokens : undefined;
+                        yield {
+                            type: 'usage',
+                            inputTokens: typeof chatUsage.prompt_tokens === 'number' ? chatUsage.prompt_tokens : undefined,
+                            outputTokens: typeof chatUsage.completion_tokens === 'number' ? chatUsage.completion_tokens : undefined,
+                            ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+                        };
+                    }
                     return;
                 }
                 if (!response.ok)

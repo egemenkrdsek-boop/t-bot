@@ -1,5 +1,9 @@
 import path from 'node:path';
-import { validateCodeAstAndGrounding } from './ast-validator.js';
+import {
+  validateCodeAstAndGrounding,
+  getPendingCrossFileExports,
+  clearPendingCrossFileExports,
+} from './ast-validator.js';
 
 /**
  * Command run record stored in the GroundingLedger.
@@ -53,6 +57,41 @@ export function normalizePath(filePath: string, workspace?: string): string {
 }
 
 /**
+ * Checks whether tool output text indicates a runtime or validation error.
+ */
+function isToolResultOk(name: string, output: string): boolean {
+  if (typeof output !== 'string') return false;
+  const trimmed = output.trimStart();
+  if (
+    trimmed.startsWith('Tool error:') ||
+    trimmed.startsWith('Araç Hatası:') ||
+    trimmed.startsWith('Araç hatası:') ||
+    trimmed.startsWith('Tool action denied') ||
+    trimmed.startsWith('Tool denied:') ||
+    trimmed.startsWith('Araç reddedildi') ||
+    trimmed.startsWith('Unknown tool:')
+  ) {
+    return false;
+  }
+  if (/"ok"\s*:\s*false/.test(output)) {
+    return false;
+  }
+  if (name === 'shell' || name === 'run_command' || name === 'execute_command') {
+    if (output.includes('Timed out') || output.includes('Aborted')) {
+      return false;
+    }
+    const exitMatch = output.match(/Exit code:\s*(\d+)/i);
+    if (exitMatch && Number(exitMatch[1]) !== 0) {
+      return false;
+    }
+    if (/Exit code:\s*(?:-\d+|signal\b)/i.test(output)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * GroundingLedger tracks all file inspections, modifications, and command executions
  * during a session and per turn to strictly enforce Grounding and the Read-Before-Write invariant.
  */
@@ -80,6 +119,14 @@ export class GroundingLedger {
     this.turnCommandsRun = [];
     this.turnGitCommits = 0;
     this.warnings = [];
+    clearPendingCrossFileExports();
+  }
+
+  /**
+   * Alias for beginTurn(). Resets turn-scoped evidence and clears pending cross-file export debts.
+   */
+  public resetTurn(): void {
+    this.beginTurn();
   }
 
   /**
@@ -163,7 +210,7 @@ export class GroundingLedger {
   }
 
   /**
-   * Clear all recorded states (session and turn).
+   * Clear all recorded states (session and turn) and pending cross-file export debts.
    */
   public clear(): void {
     this.inspectedFiles.clear();
@@ -174,6 +221,7 @@ export class GroundingLedger {
     this.gitCommits = 0;
     this.turnGitCommits = 0;
     this.warnings = [];
+    clearPendingCrossFileExports();
   }
 
   /**
@@ -199,16 +247,39 @@ export class GroundingLedger {
 
   /**
    * Record tool execution results to maintain the grounding ledger.
-   * Note: file_search is intentionally excluded from markFileInspected so files must be
-   * genuinely read or outlined via file_read / file_outline before modification.
+   * Accepts both 4-argument calls (toolName, args, resultString, isError/ok) and legacy
+   * 3-argument calls (toolName, args, { ok, output }, workspace).
    */
   public recordToolResult(
     toolName: string,
     args: Record<string, unknown>,
-    result: { ok: boolean; output: string },
-    workspace?: string
+    result: { ok: boolean; output: string } | string,
+    isErrorOrOkOrWorkspace?: boolean | string,
+    maybeWorkspace?: string
   ): void {
-    const ws = workspace ?? this.workspace;
+    let rawOutput = '';
+    let rawOk = true;
+
+    if (typeof result === 'object' && result !== null) {
+      rawOutput = typeof result.output === 'string' ? result.output : '';
+      rawOk = Boolean(result.ok);
+    } else if (typeof result === 'string') {
+      rawOutput = result;
+      if (typeof isErrorOrOkOrWorkspace === 'boolean') {
+        rawOk = isErrorOrOkOrWorkspace;
+      } else {
+        rawOk = true;
+      }
+    }
+
+    const ok = rawOk && isToolResultOk(toolName, rawOutput);
+    const ws =
+      typeof isErrorOrOkOrWorkspace === 'string'
+        ? isErrorOrOkOrWorkspace
+        : typeof maybeWorkspace === 'string'
+          ? maybeWorkspace
+          : this.workspace;
+
     const filePath =
       typeof args.path === 'string'
         ? args.path
@@ -217,11 +288,11 @@ export class GroundingLedger {
           : '';
 
     if (toolName === 'file_read' || toolName === 'file_outline') {
-      if (result.ok && filePath) {
+      if (ok && filePath) {
         this.markFileInspected(filePath, ws);
       }
     } else if (toolName === 'file_write' || toolName === 'file_patch') {
-      if (result.ok && filePath) {
+      if (ok && filePath) {
         this.markFileModified(filePath, ws);
       }
     } else if (
@@ -237,19 +308,19 @@ export class GroundingLedger {
             : typeof args.CommandLine === 'string'
               ? args.CommandLine
               : '';
-      const snippet = result.output ? result.output.slice(0, 300) : '';
+      const snippet = rawOutput ? rawOutput.slice(0, 300) : '';
       this.recordShellCommand({
         command: cmd,
-        ok: result.ok,
+        ok,
         timestamp: Date.now(),
         outputSnippet: snippet,
       });
-      if (result.ok && /(?:^|\s)git\s+commit\b/i.test(cmd)) {
+      if (ok && /(?:^|\s)git\s+commit\b/i.test(cmd)) {
         this.gitCommits++;
         this.turnGitCommits++;
       }
     } else if (toolName === 'git_commit') {
-      if (result.ok) {
+      if (ok) {
         this.gitCommits++;
         this.turnGitCommits++;
       }
@@ -307,6 +378,13 @@ export class GroundingLedger {
       verifiedCommands: this.commandsRun.filter(c => c.ok).length,
       warnings: [...this.warnings],
     };
+  }
+
+  /**
+   * Verify claims made in assistant response against ledger evidence and cross-file exports.
+   */
+  public verifyClaims(assistantResponse: string): ClaimAuditResult {
+    return auditAssistantClaims(assistantResponse, this);
   }
 }
 
@@ -393,8 +471,8 @@ export async function validateFileSyntax(
 
 /**
  * Claim-Evidence Gate:
- * Audits model response text against the current turn's actual tool history.
- * Detects ungrounded claims about test passes, successful builds, git commits, and file modifications.
+ * Audits model response text against the current turn's actual tool history and pending cross-file export debts.
+ * Detects ungrounded claims about test passes, successful builds, git commits, file modifications, and unsatisfied cross-file export debts.
  */
 export function auditAssistantClaims(
   responseText: string,
@@ -466,6 +544,27 @@ export function auditAssistantClaims(
     }
   }
 
+  // 5. Audit Unsatisfied Cross-File Export Debts (PendingExportLedger)
+  const pendingExports = getPendingCrossFileExports();
+  const unsatisfiedDebts: Array<{ file: string; symbols: string[] }> = [];
+
+  for (const [targetFile, symSet] of pendingExports.entries()) {
+    if (symSet.size > 0) {
+      unsatisfiedDebts.push({
+        file: targetFile,
+        symbols: Array.from(symSet),
+      });
+    }
+  }
+
+  if (unsatisfiedDebts.length > 0) {
+    for (const debt of unsatisfiedDebts) {
+      warnings.push(
+        `Anti-Halüsinasyon / Karşılanmamış Çapraz Dosya Borcu: '${debt.file}' dosyasında henüz şu sembol(ler) export edilmedi: [${debt.symbols.join(', ')}].`
+      );
+    }
+  }
+
   for (const warning of warnings) {
     ledger.addWarning(warning);
   }
@@ -475,9 +574,18 @@ export function auditAssistantClaims(
     ? undefined
     : [
         'DİKKAT (Anti-Halüsinasyon Doğrulama Uyarısı):',
-        'Yanıtınızda bu turdaki araç kanıtlarıyla doğrulanmayan iddialar tespit edildi:',
+        'Yanıtınızda bu turdaki araç kanıtlarıyla doğrulanmayan iddialar veya eksik çapraz dosya exportları tespit edildi:',
         ...warnings.map(w => `- ${w}`),
-        'Lütfen gerçek araç çalıştırma kanıtına dayanmayan iddialarda bulunmayın veya eksik araç çağrılarını gerçekten çalıştırın.',
+        ...(unsatisfiedDebts.length > 0
+          ? [
+              '\nKarşılanmamış Çapraz Dosya Borçları:',
+              ...unsatisfiedDebts.map(
+                d => `- Hedef Dosya: '${d.file}' -> Export Edilmesi Gereken Semboller: [${d.symbols.join(', ')}]`
+              ),
+              'Lütfen bu turu tamamlamadan önce yukarıdaki dosyalara ilgili exportları ekleyin veya hatalı importları düzeltin!',
+            ]
+          : []),
+        'Lütfen gerçek araç çalıştırma kanıtına dayanmayan iddialarda bulunmayın veya eksik işlemleri tamamlayın.',
       ].join('\n');
 
   return {
@@ -485,4 +593,15 @@ export function auditAssistantClaims(
     warnings,
     correctionPrompt,
   };
+}
+
+/**
+ * Verifies assistant claims and cross-file export commitments against turn evidence.
+ * Exported for standard agent verification pipelines.
+ */
+export function verifyClaims(
+  assistantResponse: string,
+  ledger: GroundingLedger = globalGroundingLedger
+): ClaimAuditResult {
+  return auditAssistantClaims(assistantResponse, ledger);
 }

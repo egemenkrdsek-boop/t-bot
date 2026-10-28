@@ -92,10 +92,14 @@ Kurulumla birlikte aşağıdaki yeni nesil yetenekler ve araçlar doğrudan akti
 * **Gerçek TypeScript AST + Çapraz Dosya Sembol/Paket Doğrulama:** `ts.createSourceFile` ile tam AST ayrıştırma, bozuk kodda anında otomatik rollback, göreli importlarda sembol ihracı (`export`) doğrulaması ve `package.json` bağımlılık kontrolü.
 * **Diferansiyel Okuma Önbelleği ve %67+ Token Tasarrufu:** Değişmeyen dosyaları tekrar göndermeyen SHA-256 diferansiyel önbellek ve niyet-duyarlı araç şeması budama.
 * **Zengin Araç Seti:**
-  - Dosya & Arama: `file_read`, `file_write`, `file_patch`, `file_outline`, `file_glob`, `dir_list`, `code_search`
-  - Kabuk & Süreç: `shell`, `process_list`, `process_output`, `process_stop`
-  - Otonom & Hermes: `delegate_task`, `skill_create`, `skill_list`, `goal_manage`, `memory_save`, `memory_recall`, `memory_forget`
-  - Tarayıcı & Masaüstü: `browser_open`, `browser_click`, `browser_type`, `browser_fill`, `browser_screenshot`, `browser_evaluate`, `browser_close`, `desktop_action`, `image_generate`
+  - Dosya & Kod: `file_read`, `file_write`, `file_patch`, `file_outline`, `file_glob`, `file_search`, `file_list`
+  - Kabuk & Süreç: `shell`, `process_list`, `process_output`, `process_write`, `process_stop`
+  - Ağ & Web: `web_search`, `url_fetch`
+  - Tarayıcı (Playwright): `browser_open`, `browser_inspect`, `browser_click`, `browser_type`, `browser_scroll`, `browser_press`, `browser_hover`, `browser_evaluate`, `browser_tabs`, `browser_screenshot`
+  - Masaüstü: `computer` (Win32 DLL önbellekli fare, klavye, ekran görüntüsü ve pencere kontrolü)
+  - Görev & Hedef: `todo_manage`, `goal_manage`, `delegate_task`
+  - Bellek & Evrim: `memory_save`, `memory_recall`, `memory_forget`, `skill_create`, `skill_list`
+  - Görsel & Git: `image_generate`, `git_*` (`git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_branch`, `git_push`)
 
 ---
 

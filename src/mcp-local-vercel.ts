@@ -11,6 +11,20 @@ interface PackedFile {
 }
 
 const SKIP_FILES = new Set(['.npmrc', 'id_rsa', 'id_ed25519', '.netrc', '.pypirc']);
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  '.tbot',
+  '.next',
+  'build',
+  'out',
+  '.cache',
+  '.turbo',
+  'coverage',
+  '.vscode',
+  '.idea',
+]);
 
 export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<PackedFile[]> {
   const packed: PackedFile[] = [];
@@ -19,7 +33,7 @@ export async function packWorkspaceFiles(cwd: string = process.cwd()): Promise<P
 
   const isIgnored = (name: string): boolean => {
     const lower = name.toLowerCase();
-    if (name === 'node_modules' || name === '.git' || name === 'dist' || name === '.tbot') return true;
+    if (IGNORED_DIRS.has(name) || IGNORED_DIRS.has(lower)) return true;
     if (lower.startsWith('.env')) return true;
     if (SKIP_FILES.has(lower) || SKIP_FILES.has(name)) return true;
     if (lower.endsWith('.pem') || lower.endsWith('.key')) return true;

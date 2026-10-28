@@ -5,6 +5,8 @@ import { computerToolDefinitions, handleComputerTool } from './computer.js';
 import { gitToolDefinitions, handleGitTool } from './git.js';
 import { imageToolDefinitions, handleImageTool } from './image.js';
 import { memoryToolDefinitions, handleMemoryTool, forgetFact } from '../memory.js';
+import { WEB_TOOLS, executeWebTool } from './web.js';
+import { WORKFLOW_TOOLS, executeWorkflowTool } from '../workflows.js';
 import * as skillsMod from '../skills.js';
 import * as subagentsMod from '../subagents.js';
 import { globalGroundingLedger } from '../grounding.js';
@@ -39,31 +41,107 @@ export function isToolResultOk(name, output) {
     }
     return true;
 }
-// Normalize GroundingLedger.recordToolResult so both (name, args, output, ok) and (name, args, { ok, output }, workspace) work seamlessly
-const ledgerProto = Object.getPrototypeOf(globalGroundingLedger);
-if (ledgerProto && typeof ledgerProto.recordToolResult === 'function' && !ledgerProto.__wrappedRecordToolResult) {
-    const origRecord = ledgerProto.recordToolResult;
-    ledgerProto.recordToolResult = function (toolName, args, resultOrOutput, okOrWorkspace, maybeWorkspace) {
-        const rawOutput = typeof resultOrOutput === 'string' ? resultOrOutput : (resultOrOutput?.output ?? '');
-        const rawOk = typeof resultOrOutput === 'string'
-            ? typeof okOrWorkspace === 'boolean'
-                ? okOrWorkspace
-                : true
-            : Boolean(resultOrOutput?.ok);
-        const ok = rawOk && isToolResultOk(toolName, rawOutput);
-        const ws = typeof okOrWorkspace === 'string'
-            ? okOrWorkspace
-            : typeof maybeWorkspace === 'string'
-                ? maybeWorkspace
-                : this.workspace;
-        const fnStr = Function.prototype.toString.call(origRecord);
-        const fnHead = fnStr.slice(0, 200);
-        if (/\(\s*[^,]+,\s*[^,]+,\s*result\b/.test(fnHead) && !fnStr.includes('typeof result')) {
-            return origRecord.call(this, toolName, args, { ok, output: rawOutput }, ws);
-        }
-        return origRecord.call(this, toolName, args, rawOutput, ok, ws);
+/**
+ * Fuzzy Tool and Argument Normalization (Aliases).
+ * Maps tool nicknames (cat, grep, ls, bash, search_web, todo, etc.) and
+ * argument aliases (filePath, cmd, q, startLine, oldText, etc.) to canonical contracts.
+ */
+export function normalizeToolCall(name, rawArgs) {
+    const toolAliases = {
+        read_file: 'file_read',
+        read: 'file_read',
+        cat: 'file_read',
+        view_file: 'file_read',
+        write_file: 'file_write',
+        create_file: 'file_write',
+        save_file: 'file_write',
+        edit_file: 'file_patch',
+        patch_file: 'file_patch',
+        replace_in_file: 'file_patch',
+        modify_file: 'file_patch',
+        list_dir: 'file_list',
+        dir_list: 'file_list',
+        ls: 'file_list',
+        list_files: 'file_list',
+        find_files: 'file_glob',
+        glob: 'file_glob',
+        grep: 'file_search',
+        code_search: 'file_search',
+        search_files: 'file_search',
+        ripgrep: 'file_search',
+        outline: 'file_outline',
+        ast_outline: 'file_outline',
+        symbols: 'file_outline',
+        run_command: 'shell',
+        execute_command: 'shell',
+        bash: 'shell',
+        terminal: 'shell',
+        cmd: 'shell',
+        powershell: 'shell',
+        exec: 'shell',
+        desktop: 'computer',
+        desktop_action: 'computer',
+        os_control: 'computer',
+        search_web: 'web_search',
+        google: 'web_search',
+        internet_search: 'web_search',
+        fetch_url: 'url_fetch',
+        read_url: 'url_fetch',
+        http_get: 'url_fetch',
+        todo: 'todo_manage',
+        todos: 'todo_manage',
+        task_tracker: 'todo_manage',
+        goal: 'goal_manage',
+        goals: 'goal_manage',
     };
-    Object.defineProperty(ledgerProto, '__wrappedRecordToolResult', { value: true, enumerable: false });
+    const normalizedName = toolAliases[name] ?? name;
+    const args = { ...rawArgs };
+    if (normalizedName.startsWith('file_')) {
+        // path alias
+        const pathVal = args.path ?? args.filePath ?? args.file_path ?? args.file ?? args.filename ?? args.target_file;
+        if (pathVal !== undefined) {
+            args.path = pathVal;
+        }
+        // start_line alias
+        const startLineVal = args.start_line ?? args.startLine ?? args.line_start;
+        if (startLineVal !== undefined) {
+            args.start_line = startLineVal;
+        }
+        // end_line alias
+        const endLineVal = args.end_line ?? args.endLine ?? args.line_end;
+        if (endLineVal !== undefined) {
+            args.end_line = endLineVal;
+        }
+        // old_text alias
+        const oldTextVal = args.old_text ?? args.oldText ?? args.search ?? args.target ?? args.find;
+        if (oldTextVal !== undefined) {
+            args.old_text = oldTextVal;
+        }
+        // new_text alias
+        const newTextVal = args.new_text ?? args.newText ?? args.replace ?? args.replacement;
+        if (newTextVal !== undefined) {
+            args.new_text = newTextVal;
+        }
+    }
+    else if (normalizedName === 'shell') {
+        const cmdVal = args.command ?? args.cmd ?? args.script ?? args.commandLine;
+        if (cmdVal !== undefined) {
+            args.command = cmdVal;
+        }
+    }
+    else if (normalizedName === 'web_search') {
+        const queryVal = args.query ?? args.q ?? args.search_query;
+        if (queryVal !== undefined) {
+            args.query = queryVal;
+        }
+    }
+    else if (normalizedName === 'url_fetch') {
+        const urlVal = args.url ?? args.target_url ?? args.link;
+        if (urlVal !== undefined) {
+            args.url = urlVal;
+        }
+    }
+    return { name: normalizedName, args };
 }
 const fallbackMemoryForgetDefinition = {
     name: 'memory_forget',
@@ -107,6 +185,8 @@ function buildLocalToolDefinitions() {
         ...gitToolDefinitions,
         ...imageToolDefinitions,
         ...memoryDefs,
+        ...WEB_TOOLS,
+        ...WORKFLOW_TOOLS,
         ...getSkillDefs(),
         ...getSubagentDefs(),
     ];
@@ -169,6 +249,8 @@ export const READ_ONLY_TOOLS = new Set([
     'process_output',
     'skill_list',
     'delegate_task',
+    'web_search',
+    'url_fetch',
 ]);
 export function getToolDefinitions(connectionsOrPolicy, policy = 'all') {
     let connections;
@@ -222,9 +304,12 @@ export const APPROVAL_REQUIRED_TOOLS = [
     'computer',
 ];
 export async function executeTool(call, context) {
-    const args = (call.args || call.arguments || {});
-    call.args = args;
-    call.arguments = args;
+    const rawArgs = (call.args || call.arguments || {});
+    const normalized = normalizeToolCall(call.name, rawArgs);
+    call.name = normalized.name;
+    call.arguments = normalized.args;
+    call.args = normalized.args;
+    const args = normalized.args;
     if (context.workspace) {
         globalGroundingLedger.workspace = context.workspace;
     }
@@ -313,6 +398,12 @@ export async function executeTool(call, context) {
                     throw err;
                 }
             }
+        }
+        else if (call.name === 'web_search' || call.name === 'url_fetch') {
+            output = await executeWebTool(call.name, actualArgs, context.signal);
+        }
+        else if (call.name === 'todo_manage' || call.name === 'goal_manage') {
+            output = await executeWorkflowTool(call.name, actualArgs, context.workspace);
         }
         else if (call.name.startsWith('process_')) {
             output = await handleShellTool(call.name, actualArgs, context.workspace, context.signal);

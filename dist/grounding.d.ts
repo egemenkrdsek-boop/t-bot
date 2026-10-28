@@ -58,6 +58,10 @@ export declare class GroundingLedger {
      */
     beginTurn(): void;
     /**
+     * Alias for beginTurn(). Resets turn-scoped evidence and clears pending cross-file export debts.
+     */
+    resetTurn(): void;
+    /**
      * Clears active grounding warnings.
      */
     clearWarnings(): void;
@@ -91,7 +95,7 @@ export declare class GroundingLedger {
      */
     recordShellCommand(commandOrRecord: string | CommandRunRecord, ok?: boolean, outputSnippet?: string): void;
     /**
-     * Clear all recorded states (session and turn).
+     * Clear all recorded states (session and turn) and pending cross-file export debts.
      */
     clear(): void;
     /**
@@ -105,13 +109,13 @@ export declare class GroundingLedger {
     };
     /**
      * Record tool execution results to maintain the grounding ledger.
-     * Note: file_search is intentionally excluded from markFileInspected so files must be
-     * genuinely read or outlined via file_read / file_outline before modification.
+     * Accepts both 4-argument calls (toolName, args, resultString, isError/ok) and legacy
+     * 3-argument calls (toolName, args, { ok, output }, workspace).
      */
     recordToolResult(toolName: string, args: Record<string, unknown>, result: {
         ok: boolean;
         output: string;
-    }, workspace?: string): void;
+    } | string, isErrorOrOkOrWorkspace?: boolean | string, maybeWorkspace?: string): void;
     /**
      * Compact (~1,500 chars) evidence summary for Ultracode auditor / verification checks.
      */
@@ -120,6 +124,10 @@ export declare class GroundingLedger {
      * Return grounding status for HUD and diagnostics.
      */
     getStatus(): GroundingStatus;
+    /**
+     * Verify claims made in assistant response against ledger evidence and cross-file exports.
+     */
+    verifyClaims(assistantResponse: string): ClaimAuditResult;
 }
 /**
  * Global singleton grounding ledger.
@@ -152,7 +160,12 @@ export declare function scanTypeScript(content: string): {
 export declare function validateFileSyntax(filePath: string, content: string, workspace?: string): Promise<SyntaxValidationResult>;
 /**
  * Claim-Evidence Gate:
- * Audits model response text against the current turn's actual tool history.
- * Detects ungrounded claims about test passes, successful builds, git commits, and file modifications.
+ * Audits model response text against the current turn's actual tool history and pending cross-file export debts.
+ * Detects ungrounded claims about test passes, successful builds, git commits, file modifications, and unsatisfied cross-file export debts.
  */
 export declare function auditAssistantClaims(responseText: string, ledger?: GroundingLedger): ClaimAuditResult;
+/**
+ * Verifies assistant claims and cross-file export commitments against turn evidence.
+ * Exported for standard agent verification pipelines.
+ */
+export declare function verifyClaims(assistantResponse: string, ledger?: GroundingLedger): ClaimAuditResult;

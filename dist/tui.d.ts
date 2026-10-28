@@ -11,7 +11,7 @@ export interface HudConfig {
 }
 /**
  * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
- * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export declare function renderHudBar(config: HudConfig): string;
 export interface EventPrinterOptions {

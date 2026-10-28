@@ -13,6 +13,59 @@ const VALID_CATEGORIES = new Set([
 const MAX_MEMORY_CONTEXT_CHARS = 2400;
 const MAX_CONSTITUTION_CHARS = 1800;
 const CONSTITUTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.tbot/rules.md'];
+/**
+ * Technical Turkish/English synonym groups for high-accuracy cross-lingual BM25 retrieval.
+ */
+const TECHNICAL_SYNONYM_GROUPS = [
+    // Auth / Login / Authorization
+    ['auth', 'authentication', 'authorization', 'login', 'giris', 'yetki', 'yetkilendirme', 'jwt', 'token', 'session', 'oturum', 'oauth', 'password', 'sifre', 'bearer'],
+    // Database / Storage / ORM
+    ['db', 'database', 'veritabani', 'sql', 'nosql', 'postgres', 'postgresql', 'prisma', 'supabase', 'sqlite', 'mysql', 'orm', 'migration', 'goc', 'depolama', 'storage', 'schema'],
+    // Testing / Verification / QA
+    ['test', 'testing', 'dogrulama', 'kontrol', 'jest', 'vitest', 'mocha', 'playwright', 'unit', 'integration', 'assertion', 'assert', 'qa', 'audit', 'denetim'],
+    // UI / Frontend / Theme
+    ['ui', 'gui', 'tui', 'frontend', 'arayuz', 'on yuz', 'tema', 'theme', 'css', 'tailwind', 'style', 'stil', 'component', 'bilesen', 'layout', 'duzen', 'markup'],
+    // Backend / Server / API
+    ['backend', 'server', 'sunucu', 'api', 'endpoint', 'servis', 'service', 'rest', 'http', 'route', 'yonlendirme', 'controller', 'arka yuz'],
+    // Performance / Memory / Resource
+    ['perf', 'performance', 'performans', 'ram', 'bellek', 'memory', 'cpu', 'hiz', 'speed', 'optimizasyon', 'optimization', 'token', 'cache', 'onbellek', 'leak', 'sizinti'],
+    // Config / Environment
+    ['config', 'configuration', 'yapilandirma', 'ayar', 'ayarlar', 'env', 'environment', 'ortam', 'degisken', 'options', 'settings'],
+    // Git / VCS
+    ['git', 'commit', 'branch', 'dal', 'repo', 'repository', 'depo', 'merge', 'pr', 'pull request'],
+    // Build / Package / Dependency
+    ['build', 'compile', 'derle', 'derleme', 'package', 'paket', 'bundle', 'bundler', 'tsc', 'npm', 'pnpm', 'yarn', 'dependency', 'bagimlilik'],
+    // Error / Bug / Debug / Fix
+    ['error', 'err', 'bug', 'hata', 'sorun', 'problem', 'fix', 'cozum', 'duzeltme', 'debug', 'ayiklama', 'crash', 'exception', 'istisna'],
+];
+function normalizeWord(word) {
+    return word
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/ı/g, 'i')
+        .trim();
+}
+const SYNONYM_MAP = new Map();
+for (const group of TECHNICAL_SYNONYM_GROUPS) {
+    const normalizedWords = group.map(normalizeWord);
+    for (const word of normalizedWords) {
+        let set = SYNONYM_MAP.get(word);
+        if (!set) {
+            set = new Set();
+            SYNONYM_MAP.set(word, set);
+        }
+        for (const syn of normalizedWords) {
+            if (syn !== word) {
+                set.add(syn);
+            }
+        }
+    }
+}
+function getSynonyms(token) {
+    const norm = normalizeWord(token);
+    return SYNONYM_MAP.get(norm) ?? SYNONYM_MAP.get(token.toLowerCase());
+}
 function getProjectMemoryPath(workspace) {
     return join(resolve(workspace), '.tbot', 'memory.json');
 }
@@ -160,23 +213,43 @@ function tokenizeText(text) {
         .map(t => t.trim())
         .filter(t => t.length >= 2);
 }
-function countTermOccurrences(haystackTokens, rawHaystack, queryToken) {
+function countTermOccurrencesWithSynonyms(haystackTokens, rawHaystack, queryToken, synonyms) {
     let count = 0;
+    const normQt = normalizeWord(queryToken);
     for (const token of haystackTokens) {
-        if (token === queryToken) {
+        const normToken = normalizeWord(token);
+        if (token === queryToken || normToken === normQt) {
             count += 1;
         }
-        else if (token.includes(queryToken) || (queryToken.length >= 4 && queryToken.includes(token))) {
+        else if (token.includes(queryToken) ||
+            normToken.includes(normQt) ||
+            (normQt.length >= 4 && normQt.includes(normToken))) {
             count += 0.6;
         }
+        else if (synonyms && (synonyms.has(normToken) || synonyms.has(token.toLowerCase()))) {
+            // Technical synonym match (e.g. auth <-> yetkilendirme / jwt / login)
+            count += 0.85;
+        }
     }
-    if (count === 0 && rawHaystack.includes(queryToken)) {
-        count = 0.5;
+    if (count === 0) {
+        const normHaystack = normalizeWord(rawHaystack);
+        if (rawHaystack.includes(queryToken) || normHaystack.includes(normQt)) {
+            count = 0.5;
+        }
+        else if (synonyms) {
+            for (const syn of synonyms) {
+                if (normHaystack.includes(syn)) {
+                    count = 0.45;
+                    break;
+                }
+            }
+        }
     }
     return count;
 }
 /**
- * Recalls facts from project and global memory, with BM25/TF lexical overlap + recency scoring.
+ * Recalls facts from project and global memory, with BM25/TF lexical overlap,
+ * Turkish/English technical synonym expansion, and recency scoring.
  * Project entries take precedence over global entries with identical keys.
  */
 export async function recallFacts(workspace, query) {
@@ -201,10 +274,17 @@ export async function recallFacts(workspace, query) {
     const rawQuery = query.trim().toLowerCase();
     const queryTokens = tokenizeText(rawQuery);
     if (queryTokens.length === 0) {
-        const filtered = all.filter(e => e.key.toLowerCase().includes(rawQuery) ||
-            e.value.toLowerCase().includes(rawQuery) ||
-            (e.category && e.category.toLowerCase().includes(rawQuery)) ||
-            (e.tags && e.tags.some(t => t.toLowerCase().includes(rawQuery))));
+        const normRawQuery = normalizeWord(rawQuery);
+        const filtered = all.filter(e => {
+            const k = normalizeWord(e.key);
+            const v = normalizeWord(e.value);
+            const c = normalizeWord(e.category ?? '');
+            const t = (e.tags ?? []).map(normalizeWord).join(' ');
+            return (k.includes(normRawQuery) ||
+                v.includes(normRawQuery) ||
+                c.includes(normRawQuery) ||
+                t.includes(normRawQuery));
+        });
         filtered.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         return filtered;
     }
@@ -236,15 +316,31 @@ export async function recallFacts(workspace, query) {
     const avgDocLen = docs.reduce((sum, d) => sum + d.docLen, 0) / Math.max(1, N);
     const k1 = 1.2;
     const b = 0.75;
-    // Compute IDF per query token
+    // Compute IDF per query token (taking synonyms into account for doc frequency)
     const idfMap = new Map();
     for (const qt of queryTokens) {
+        const synonyms = getSynonyms(qt);
+        const normQt = normalizeWord(qt);
         let df = 0;
         for (const d of docs) {
-            if (d.keyLower.includes(qt) ||
+            let matches = d.keyLower.includes(qt) ||
                 d.valLower.includes(qt) ||
                 d.catLower.includes(qt) ||
-                d.tagsLower.includes(qt)) {
+                d.tagsLower.includes(qt) ||
+                normalizeWord(d.keyLower).includes(normQt) ||
+                normalizeWord(d.valLower).includes(normQt);
+            if (!matches && synonyms) {
+                for (const syn of synonyms) {
+                    if (normalizeWord(d.keyLower).includes(syn) ||
+                        normalizeWord(d.valLower).includes(syn) ||
+                        normalizeWord(d.catLower).includes(syn) ||
+                        normalizeWord(d.tagsLower).includes(syn)) {
+                        matches = true;
+                        break;
+                    }
+                }
+            }
+            if (matches) {
                 df++;
             }
         }
@@ -265,11 +361,12 @@ export async function recallFacts(workspace, query) {
         if (d.valLower.includes(rawQuery))
             lexicalScore += 2.5;
         for (const qt of queryTokens) {
+            const synonyms = getSynonyms(qt);
             const idf = idfMap.get(qt) ?? 0.5;
-            const tfKey = countTermOccurrences(d.keyTokens, d.keyLower, qt) * 3.0;
-            const tfTags = countTermOccurrences(d.tagTokens, d.tagsLower, qt) * 2.5;
-            const tfCat = countTermOccurrences(d.catTokens, d.catLower, qt) * 2.0;
-            const tfVal = countTermOccurrences(d.valTokens, d.valLower, qt) * 1.0;
+            const tfKey = countTermOccurrencesWithSynonyms(d.keyTokens, d.keyLower, qt, synonyms) * 3.0;
+            const tfTags = countTermOccurrencesWithSynonyms(d.tagTokens, d.tagsLower, qt, synonyms) * 2.5;
+            const tfCat = countTermOccurrencesWithSynonyms(d.catTokens, d.catLower, qt, synonyms) * 2.0;
+            const tfVal = countTermOccurrencesWithSynonyms(d.valTokens, d.valLower, qt, synonyms) * 1.0;
             const weightedTf = tfKey + tfTags + tfCat + tfVal;
             if (weightedTf > 0) {
                 const normTf = (weightedTf * (k1 + 1)) /
@@ -299,6 +396,10 @@ export async function recallFacts(workspace, query) {
     });
     return scored.map(s => s.entry);
 }
+/**
+ * Technical synonym expanded BM25 memory retrieval alias for recallFacts.
+ */
+export const recallMemories = recallFacts;
 /**
  * Removes a fact by key from project and/or global memory.
  */

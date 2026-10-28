@@ -10,7 +10,8 @@ export async function selectOption(title, choices) {
     const borderChar = unicode ? '│' : '|';
     const arrowChar = unicode ? '❯' : '>';
     const draw = () => {
-        const clearSeq = rendered ? `\x1b[${rendered}A\x1b[J` : '';
+        const safeRendered = Math.min(rendered, Math.max(1, (process.stdout.rows || 24) - 2));
+        const clearSeq = rendered ? `\x1b[${safeRendered}A\x1b[J` : '';
         const height = Math.max(1, Math.min(choices.length, Math.max(3, (process.stdout.rows || 24) - 6), 12));
         const start = Math.max(0, Math.min(selected - Math.floor(height / 2), choices.length - height));
         const rows = choices.slice(start, start + height).map((choice, offset) => {
@@ -54,7 +55,8 @@ export async function selectOption(title, choices) {
                 stdin.setRawMode(Boolean(previousRaw));
             if (wasPaused)
                 stdin.pause();
-            stdout.write(`\x1b[${rendered}A\x1b[J\x1b[?25h`);
+            const safeRendered = Math.min(rendered, Math.max(1, (process.stdout.rows || 24) - 2));
+            stdout.write(`\x1b[${safeRendered}A\x1b[J\x1b[?25h`);
             if (value !== undefined) {
                 stdout.write(`${theme.muted(clean(title))} ${theme.brightMint(arrowChar)} ${theme.iceWhite(clean(choices[selected].label))}\n`);
             }

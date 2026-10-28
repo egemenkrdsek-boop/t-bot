@@ -4,13 +4,27 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 const SKIP_FILES = new Set(['.npmrc', 'id_rsa', 'id_ed25519', '.netrc', '.pypirc']);
+const IGNORED_DIRS = new Set([
+    'node_modules',
+    '.git',
+    'dist',
+    '.tbot',
+    '.next',
+    'build',
+    'out',
+    '.cache',
+    '.turbo',
+    'coverage',
+    '.vscode',
+    '.idea',
+]);
 export async function packWorkspaceFiles(cwd = process.cwd()) {
     const packed = [];
     const MAX_FILES = 80;
     const MAX_FILE_SIZE = 250 * 1024; // 250 KB
     const isIgnored = (name) => {
         const lower = name.toLowerCase();
-        if (name === 'node_modules' || name === '.git' || name === 'dist' || name === '.tbot')
+        if (IGNORED_DIRS.has(name) || IGNORED_DIRS.has(lower))
             return true;
         if (lower.startsWith('.env'))
             return true;

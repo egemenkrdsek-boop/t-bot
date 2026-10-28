@@ -1,4 +1,4 @@
-import { theme, unicode } from './theme.js';
+import { cyberPulseBadge, theme, unicode } from './theme.js';
 // Sol rozet (14x14 matris - assets/tabit.webp sol ikonundan örneklenmiştir):
 // W = Saf Parlak Tabit Beyazı (#FFFFFF) T sembolü,
 // G = Açık ve Parlak Tabit Yeşili (#84CC32 -> #B8EC6E) diyagonal gradyan zemin.
@@ -106,8 +106,8 @@ export function logo(width, frame = -1) {
     const trueColor = Boolean(process.env.WT_SESSION) || /truecolor|24bit/i.test(process.env.COLORTERM ?? '') || Boolean(process.stdout.isTTY);
     const color256 = /256color/i.test(process.env.TERM ?? '');
     const lines = [];
-    // 8 karelik (frame = 0..7) diyagonal saf beyaz / açık parlak Tabit yeşili ışıltı dalgası
-    const wavePos = frame >= 0 ? frame * 8 : -100;
+    // 10 karelik (frame = 0..9) diyagonal saf beyaz / açık parlak Tabit yeşili ışıltı dalgası
+    const wavePos = frame >= 0 ? frame * 7.5 : -100;
     const wordWidth = word[0].length;
     for (let y = 0; y < mark.length; y += 2) {
         let row = '  ';
@@ -171,11 +171,12 @@ export function logo(width, frame = -1) {
             row += '\x1b[0m';
         lines.push(row);
     }
-    // Alt bilgi rozet satırı (geniş terminallerde)
+    // Alt bilgi rozet satırı (geniş terminallerde canlı sistem telemetri rozeti)
     if (!compact && width >= 66) {
+        const badgeText = '◈ SİBER-ZEN ÇEKİRDEK · AST GROUNDER · %50-%75 TOKEN MOTORU · SIFIR GECİKME DAEMON';
         const pill = monochrome
-            ? '  ╭─ ⚡ Tri-Core  │  🛡 Zero-Hallucination  │  💎 %50-75 Token Tasarrufu ─╮'
-            : `  ${theme.crystalCyan('╭─')} ${theme.brightMint('⚡ Tri-Core')}  ${theme.dim('│')}  ${theme.iceWhite('🛡 Zero-Hallucination')}  ${theme.dim('│')}  ${theme.crystalCyan('💎 %50-75 Token Tasarrufu')} ${theme.crystalCyan('─╮')}`;
+            ? `  ╭─ ${badgeText} ─╮`
+            : `  ${theme.crystalCyan('╭─')} ${cyberPulseBadge(badgeText, frame >= 0 ? frame : 0)} ${theme.crystalCyan('─╮')}`;
         lines.push(pill);
     }
     return lines;
@@ -214,7 +215,7 @@ export async function animateLogo(widthOrDelay, isExiting, frameDelayMs = 55) {
         const initialLines = logo(cols, 0);
         const lineCount = initialLines.length;
         process.stdout.write(`\n${initialLines.join('\n')}\n`);
-        const totalFrames = 8;
+        const totalFrames = 10;
         for (let frame = 1; frame <= totalFrames; frame++) {
             if (isExiting?.())
                 break;

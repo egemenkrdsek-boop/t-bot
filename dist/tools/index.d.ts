@@ -10,6 +10,15 @@ export interface ToolContext {
     [key: string]: unknown;
 }
 export declare function isToolResultOk(name: string, output: string): boolean;
+/**
+ * Fuzzy Tool and Argument Normalization (Aliases).
+ * Maps tool nicknames (cat, grep, ls, bash, search_web, todo, etc.) and
+ * argument aliases (filePath, cmd, q, startLine, oldText, etc.) to canonical contracts.
+ */
+export declare function normalizeToolCall(name: string, rawArgs: Record<string, unknown>): {
+    name: string;
+    args: Record<string, unknown>;
+};
 export declare const localToolDefinitions: ToolDefinition[];
 export declare const toolDefinitions: ToolDefinition[];
 export declare const READ_ONLY_TOOLS: Set<string>;

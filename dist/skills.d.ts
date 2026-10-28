@@ -21,6 +21,18 @@ export declare function stripSkillCommand(message: string, workspace?: string): 
 export declare function resolveSkills(message: string, workspace?: string): SkillDefinition[];
 export declare function buildSkillPrompt(skills?: readonly (SkillDefinition | string)[], workspace?: string): string;
 export declare function skillRequiresReadOnly(skills: readonly SkillDefinition[], message: string): boolean;
+/**
+ * Autonomous Skill Distillation (Hermes Agent feature).
+ * Distills a reusable project skill (.tbot/skills/auto-<slug>.md)
+ * from a successful multi-tool engineering turn deterministically without LLM calls.
+ */
+export declare function autoDistillSkillFromTurn(params: {
+    workspaceRoot: string;
+    userPrompt: string;
+    finalAnswer: string;
+    toolsUsed: string[];
+    modifiedFiles: string[];
+}): Promise<string | null>;
 export declare const skillToolDefinitions: ToolDefinition[];
 export declare function handleSkillTool(call: ToolCall, workspace: string | {
     workspace: string;

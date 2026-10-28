@@ -6,6 +6,7 @@ import type { ToolDefinition } from '../types.js';
 import { globalGroundingLedger, validateFileSyntax } from '../grounding.js';
 import { extractFileAstOutline } from '../repo-map.js';
 import { globalContextCache } from '../context-cache.js';
+import { estimateTokens, globalTokenTracker } from '../token-optimizer.js';
 import { handleShellTool } from './shell.js';
 
 const string = (args: Record<string, unknown>, key: string): string => {
@@ -53,6 +54,7 @@ export const fileToolDefinitions: ToolDefinition[] = [
         max_bytes: { type: 'integer', minimum: 1, maximum: 100000 },
         start_line: { type: 'integer', minimum: 1, description: 'Optional 1-based start line' },
         end_line: { type: 'integer', minimum: 1, description: 'Optional 1-based end line' },
+        skeleton: { type: 'boolean', description: 'Yalnızca AST sembol/fonksiyon imzalarını ve satır aralıklarını döndür (%75 token tasarrufu).' },
       },
       ['path']
     ),
@@ -356,7 +358,43 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     if (!stat.isFile()) throw new Error('Not a regular file');
     const relPath = path.relative(workspace, target).replace(/\\/g, '/') || path.basename(target);
 
-    // Line range mode
+    // 1. File size guard (>10 MB) to prevent OOM
+    if (stat.size > 10 * 1024 * 1024) {
+      throw new Error(`[BOYUT ENGELİ: '${relPath}' dosyası 10 MB sınırını aşıyor (${(stat.size / (1024 * 1024)).toFixed(1)} MB); bellek tükenmesini (OOM) önlemek için okuma engellendi.]`);
+    }
+
+    // 2. Binary file protection: inspect first 4096 bytes for null byte (\0)
+    const probeHandle = await fs.open(target, 'r');
+    let isBinary = false;
+    try {
+      const probeBuf = Buffer.alloc(Math.min(4096, stat.size));
+      const { bytesRead } = await probeHandle.read(probeBuf, 0, probeBuf.length, 0);
+      for (let i = 0; i < bytesRead; i++) {
+        if (probeBuf[i] === 0) {
+          isBinary = true;
+          break;
+        }
+      }
+    } finally {
+      await probeHandle.close();
+    }
+    if (isBinary) {
+      return `[İKİLİ DOSYA ENGELİ: '${relPath}' ikili (binary) bir dosyadır ve metin olarak okunamaz.]`;
+    }
+
+    // 3. Explicit AST Skeleton reading (%75 token savings)
+    if (args.skeleton === true) {
+      const content = await fs.readFile(target, 'utf8');
+      const outline = extractFileAstOutline(relPath, content);
+      const fullTokens = estimateTokens(content);
+      const skeletonTokens = estimateTokens(outline.formatted);
+      const savedTokens = Math.max(0, fullTokens - skeletonTokens);
+      globalTokenTracker.recordContextCacheSaving(savedTokens);
+      globalGroundingLedger.markFileInspected(target, workspace);
+      return outline.formatted;
+    }
+
+    // 4. Line range mode
     if (args.start_line !== undefined || args.end_line !== undefined) {
       const content = await fs.readFile(target, 'utf8');
       const allLines = content.split(/\r?\n/);
@@ -367,6 +405,29 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
       globalGroundingLedger.markFileInspected(target, workspace);
       const diff = globalContextCache.checkAndRecordRead(workspace, relPath, content, start, end, formatted);
       return diff.output;
+    }
+
+    // 5. Automatic Large File Skeletonization (>320 lines of code)
+    const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs']);
+    const ext = path.extname(target).toLowerCase();
+    if (CODE_EXTENSIONS.has(ext) && (args.offset === undefined || args.offset === 0)) {
+      const content = await fs.readFile(target, 'utf8');
+      const allLines = content.split(/\r?\n/);
+      if (allLines.length > 320) {
+        const head = allLines.slice(0, 80).map((l, idx) => `${idx + 1}: ${l}`).join('\n');
+        const outline = extractFileAstOutline(relPath, content);
+        const tailStart = Math.max(80, allLines.length - 30);
+        const tail = allLines.slice(-30).map((l, idx) => `${tailStart + idx + 1}: ${l}`).join('\n');
+        const summaryMsg = `[AKILLI AST İSKELET ÖZETİ: Dosya ${allLines.length} satır. Token tasarrufu için aşağıda tüm sembollerin satır aralıkları verilmiştir; hedef fonksiyonu start_line/end_line ile okuyun]`;
+        const result = `${head}\n\n${summaryMsg}\n\n${outline.formatted}\n\n[Son 30 Satır]:\n${tail}`;
+
+        const fullTokens = estimateTokens(content);
+        const resultTokens = estimateTokens(result);
+        const savedTokens = Math.max(0, fullTokens - resultTokens);
+        globalTokenTracker.recordContextCacheSaving(savedTokens);
+        globalGroundingLedger.markFileInspected(target, workspace);
+        return result;
+      }
     }
 
     // Default offset / max_bytes mode
@@ -510,7 +571,11 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     const relPath = path.relative(workspace, target).replace(/\\/g, '/');
     globalContextCache.invalidateFile(workspace, relPath);
     globalGroundingLedger.markFileModified(target, workspace);
-    return 'File written.';
+    let msg = 'File written.';
+    if (syntax.warnings && syntax.warnings.length > 0) {
+      msg += `\n[AST UYARILARI]:\n${syntax.warnings.map(w => `- ${w}`).join('\n')}`;
+    }
+    return msg;
   }
 
   if (name === 'file_patch') {
@@ -580,7 +645,11 @@ export async function handleFileTool(name: string, args: Record<string, unknown>
     const rel = path.relative(workspace, target).replace(/\\/g, '/') || input;
     globalContextCache.invalidateFile(workspace, rel);
     globalGroundingLedger.markFileModified(target, workspace);
-    return `File patched: ${rel} (+${added}/-${removed} lines, around L${firstPatchLine})`;
+    let msg = `File patched: ${rel} (+${added}/-${removed} lines, around L${firstPatchLine})`;
+    if (syntax.warnings && syntax.warnings.length > 0) {
+      msg += `\n[AST UYARILARI]:\n${syntax.warnings.map(w => `- ${w}`).join('\n')}`;
+    }
+    return msg;
   }
 
   if (name === 'file_search') {

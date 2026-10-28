@@ -30,9 +30,158 @@ function safeUrl(value: string): URL {
 }
 function endpoint(base: string, path: string): string { const url = safeUrl(base); url.pathname = `${url.pathname.replace(/\/$/, '')}/${path}`; return url.toString(); }
 function objectArgs(raw: string): Record<string, unknown> {
-  const value: unknown = JSON.parse(raw || '{}');
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
-  return value as Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(raw || '{}');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
+    }
+    return value as Record<string, unknown>;
+  } catch {
+    return repairJsonArgs(raw);
+  }
+}
+
+/**
+ * Deterministic JSON Repair Engine for LLM tool call arguments.
+ * Repairs markdown code blocks, unescaped newlines/tabs inside string literals,
+ * trailing commas before closing braces/brackets, and unclosed quotes/brackets/braces.
+ */
+export function repairJsonArgs(raw: string): Record<string, unknown> {
+  if (!raw || !raw.trim()) return {};
+
+  let cleaned = raw.trim();
+
+  // 1. Clean leading/trailing markdown code fences (```json ... ``` or ``` ... ```)
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  }
+
+  // If there is preamble text before the first '{', slice from the first '{'
+  const firstBrace = cleaned.indexOf('{');
+  if (firstBrace !== -1) {
+    cleaned = cleaned.slice(firstBrace);
+  }
+
+  // 2. Character-by-character state machine for string literals:
+  // Escapes unescaped newlines (\n, \r) and tabs (\t) into \n, \r, \t.
+  // Also detects and closes unclosed string literals at EOF.
+  let inString = false;
+  let escaped = false;
+  let pass1 = '';
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inString) {
+      if (escaped) {
+        pass1 += ch;
+        escaped = false;
+      } else if (ch === '\\') {
+        pass1 += ch;
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+        pass1 += ch;
+      } else if (ch === '\n') {
+        pass1 += '\\n';
+      } else if (ch === '\r') {
+        pass1 += '\\r';
+      } else if (ch === '\t') {
+        pass1 += '\\t';
+      } else {
+        pass1 += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inString = true;
+      }
+      pass1 += ch;
+    }
+  }
+
+  if (inString) {
+    if (escaped) pass1 += '\\';
+    pass1 += '"';
+  }
+
+  // 3. Remove trailing commas before closing braces/brackets (, } -> }, , ] -> ])
+  // and 4. Stack tracking for auto-closing unclosed brackets/braces
+  let inStr = false;
+  let esc = false;
+  const stack: string[] = [];
+  let pass2 = '';
+
+  for (let i = 0; i < pass1.length; i++) {
+    const ch = pass1[i];
+    if (inStr) {
+      pass2 += ch;
+      if (esc) {
+        esc = false;
+      } else if (ch === '\\') {
+        esc = true;
+      } else if (ch === '"') {
+        inStr = false;
+      }
+    } else {
+      if (ch === '"') {
+        inStr = true;
+        pass2 += ch;
+      } else if (ch === '{') {
+        stack.push('}');
+        pass2 += ch;
+      } else if (ch === '[') {
+        stack.push(']');
+        pass2 += ch;
+      } else if (ch === '}') {
+        if (stack.length > 0 && stack[stack.length - 1] === '}') {
+          stack.pop();
+        }
+        pass2 += ch;
+      } else if (ch === ']') {
+        if (stack.length > 0 && stack[stack.length - 1] === ']') {
+          stack.pop();
+        }
+        pass2 += ch;
+      } else if (ch === ',') {
+        // Look ahead: skip whitespace to check if followed by '}' or ']'
+        let j = i + 1;
+        while (j < pass1.length && /\s/.test(pass1[j])) {
+          j++;
+        }
+        if (j < pass1.length && (pass1[j] === '}' || pass1[j] === ']')) {
+          continue; // omit trailing comma
+        }
+        pass2 += ch;
+      } else {
+        pass2 += ch;
+      }
+    }
+  }
+
+  if (inStr) {
+    if (esc) pass2 += '\\';
+    pass2 += '"';
+  }
+
+  // Remove any trailing comma at the end of input before closing stack braces
+  let trimmed = pass2.trimEnd();
+  while (trimmed.endsWith(',')) {
+    trimmed = trimmed.slice(0, -1).trimEnd();
+  }
+
+  // Close remaining open brackets and braces in LIFO order
+  while (stack.length > 0) {
+    trimmed += stack.pop();
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new Error('Araç argümanları bir JSON nesnesi olmalıdır.');
+  }
 }
 export async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader(); const decoder = new TextDecoder();
@@ -219,9 +368,31 @@ export function createProvider(config: ProviderConfig): Provider {
           }
         }
       }
-      if ((pending.size || complete.length) && (!finished || !toolFinish)) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
-      if (!finished) throw new Error('Tamamlanmamış sağlayıcı akışı.');
-      for (const call of pending.values()) { if (!call.id || !call.name) throw new Error('Eksik araç çağrısı alındı.'); complete.push({ id: call.id, name: call.name, arguments: objectArgs(call.args) }); }
+      // Parse any pending streamed tool calls into complete
+      for (const call of pending.values()) {
+        if (!call.name) {
+          if (!finished && !complete.length) throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
+          throw new Error('Eksik araç çağrısı alındı.');
+        }
+        const callId = call.id || `call_${crypto.randomUUID()}`;
+        try {
+          const parsedArgs = objectArgs(call.args);
+          complete.push({ id: callId, name: call.name, arguments: parsedArgs });
+        } catch (e) {
+          if (!finished && !complete.length) {
+            throw new Error('Tamamlanmamış sağlayıcı akışı; araç çağrıları atıldı.');
+          }
+          throw e;
+        }
+      }
+
+      // If stream was interrupted without completing any tool calls or finishing normally
+      if (!finished && !complete.length) {
+        throw new Error('Tamamlanmamış sağlayıcı akışı.');
+      }
+
+      // Many providers (OpenRouter, Ollama, vLLM, DeepSeek) return finish_reason: "stop" (toolFinish = false).
+      // If we have valid complete tool calls, accept and yield them even if toolFinish is false.
       if (complete.length) yield { type: 'tool_calls', calls: complete };
       if (inputTokens !== undefined || outputTokens !== undefined || cachedTokens !== undefined) yield { type: 'usage', inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}) } as ProviderEvent;
     } catch (error) { yield { type: 'error', error: options.signal?.aborted ? 'İstek iptal edildi.' : signal.aborted ? 'Sağlayıcı İsteği Zaman Aşımına Uğradı.' : error instanceof Error && /^(Sağlayıcı|Tamamlanmamış|Eksik|Araç|Bilinmeyen|Bir model|Özel bir|Uç nokta|Provider|Incomplete|Tool arguments)/.test(error.message) ? error.message : 'Sağlayıcı isteği başarısız oldu veya geçersiz veri döndürdü.' }; }

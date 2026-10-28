@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline';
 import type { AgentEvent, ApprovalRequest, Message, Provider } from './types.js';
 import {
   formatDuration,
+  renderCyberWave,
   renderProgressBar,
   symbols,
   theme,
@@ -26,9 +27,17 @@ export interface HudConfig {
   mcpCount?: number;
 }
 
+function renderMiniSavingsBar(percent: number, cells = 5): string {
+  const safeCells = Math.max(1, cells);
+  const clamped = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+  const filled = Math.round((clamped / 100) * safeCells);
+  const empty = Math.max(0, safeCells - filled);
+  return `${theme.brightMint('▰'.repeat(filled))}${theme.dim('▱'.repeat(empty))}`;
+}
+
 /**
  * Tekilleştirilmiş Zarif Cyber-Zen HUD Çubuğu:
- * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
+ * ╭─[ Model: ... │ Efor: ... │ Tasarruf: %XX ▰▱ (Y Tok) │ Doğrulama: Doğrulandı │ Bellek: XX MB ● (Sistem: %YY) │ Bot: Aktif / Pasif ]─╮
  */
 export function renderHudBar(config: HudConfig): string {
   const model = config.model || 'Model';
@@ -37,7 +46,8 @@ export function renderHudBar(config: HudConfig): string {
   const report = globalTokenTracker.getReport();
   const savingsPct = report.savingsPercent || 0;
   const savedTokens = report.totalSavedTokens > 0 ? report.totalSavedTokens.toLocaleString() : '0';
-  const savingsStr = theme.brightMint(`Tasarruf: %${savingsPct} (${savedTokens} Tok)`);
+  const miniBar = renderMiniSavingsBar(savingsPct, 5);
+  const savingsStr = `${theme.brightMint(`Tasarruf: %${savingsPct}`)} ${miniBar} ${theme.dim(`(${savedTokens} Tok)`)}`;
 
   const gStatus = globalGroundingLedger.getStatus();
   const groundingStr = gStatus.warnings.length === 0
@@ -45,7 +55,8 @@ export function renderHudBar(config: HudConfig): string {
     : theme.amber(`Doğrulama: Uyarı (${gStatus.warnings.length})`);
 
   const mem = getMemoryStats();
-  const ramStr = theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB (Sistem: %${mem.systemUsedPercent})`);
+  const ramStatusDot = mem.pressure === 'high' ? theme.danger('▲') : (mem.pressure === 'moderate' ? theme.amber('■') : theme.success('●'));
+  const ramStr = `${theme.crystalCyan(`Bellek: ${mem.heapUsedMB} MB`)} ${ramStatusDot} ${theme.dim(`(Sistem: %${mem.systemUsedPercent})`)}`;
 
   const botStatus = getTelegramBotStatus();
   const botPart = botStatus.running
@@ -87,6 +98,7 @@ export const TOOL_TITLE_MAP: Record<string, string> = {
   process_list: 'İşlem Listesi',
   process_output: 'İşlem Çıktısı',
   process_stop: 'İşlem Durdurma',
+  process_write: 'Süreç Girdisi Gönderme',
   git_status: 'Git Durumu',
   git_diff: 'Git Farkı',
   git_log: 'Git Günlüğü',
@@ -94,20 +106,26 @@ export const TOOL_TITLE_MAP: Record<string, string> = {
   git_commit: 'Git İşleme',
   git_push: 'Git Gönderme',
   git_branch: 'Git Dalı',
+  web_search: 'Web Araması',
+  url_fetch: 'Web Sayfası Okuma',
   browser_navigate: 'Tarayıcı Gezinme',
   browser_click: 'Tarayıcı Tıklama',
   browser_type: 'Tarayıcı Yazma',
   browser_fill: 'Form Doldurma',
   browser_press: 'Tarayıcı Tuş Basımı',
   browser_scroll: 'Tarayıcı Kaydırma',
+  browser_hover: 'Tarayıcı Üzerine Gelme',
+  browser_evaluate: 'Tarayıcı Betik Çalıştırma',
   browser_inspect: 'Sayfa İnceleme',
-  browser_tabs: 'Sekme Yönetimi',
+  browser_tabs: 'Tarayıcı Sekme Yönetimi',
   browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
   computer: 'Bilgisayar Kontrolü',
   image_generate: 'Görsel Üretimi',
   memory_save: 'Bellek Kaydetme',
   memory_recall: 'Bellek Hatırlama',
   memory_forget: 'Hafıza Silme',
+  todo_manage: 'Görev Pusulası',
+  goal_manage: 'Hedef Yönetimi',
   skill_create: 'Yetenek Oluşturma',
   skill_list: 'Yetenek Listesi',
   delegate_task: 'Alt Ajan Görevlendirme',
@@ -139,11 +157,12 @@ function extractToolTarget(args: unknown): string {
 
   const priorityKeys = [
     'path', 'filePath', 'file', 'filename', 'pattern',
-    'command', 'cmd',
-    'query', 'q',
+    'query', 'q', 'search',
     'url', 'selector',
-    'action', 'role', 'task',
-    'key', 'name', 'prompt',
+    'command', 'cmd',
+    'action', 'role', 'task', 'goal', 'objective', 'todo',
+    'key', 'name', 'prompt', 'input', 'code', 'script',
+    'tabId', 'target',
   ];
 
   for (const key of priorityKeys) {
@@ -302,7 +321,11 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
   const renderSpinnerLine = (): string => {
     const elapsed = formatDuration(Date.now() - thinkingStartedAt);
     const stepPrefix = stepCount > 0 ? `${theme.softLavender(`[Adım ${stepCount}]`)} ` : '';
-    const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${theme.crystalCyan(WAVE_BARS[waveFrame]!)} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)}`;
+    const wave = renderCyberWave(spinnerFrame, 8);
+    const mem = getMemoryStats();
+    const tokenReport = globalTokenTracker.getReport();
+    const telemetry = `${theme.crystalCyan(`▣ ${mem.heapUsedMB}MB`)} ${theme.brightMint(`%${tokenReport.savingsPercent ?? 0}`)}`;
+    const rawLine = `  ${theme.brightMint(BRAILLE_SPINNER[spinnerFrame]!)} ${wave} ${stepPrefix}${theme.text(currentSpinnerLabel)} ${theme.dim(`· ${elapsed}`)} ${theme.dim('·')} ${telemetry}`;
     const maxCols = Math.max(40, (process.stdout.columns || 100) - 2);
     return truncateAnsi(rawLine, maxCols);
   };
@@ -320,12 +343,30 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
 
   const stopSpinner = stopThinking;
 
+  const updateSpinnerLabel = (label: string): void => {
+    currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
+    if (options.interactive && spinnerTimer) {
+      const line = renderSpinnerLine();
+      process.stdout.write(`\x1b[?2026h\r\x1b[2K${line}\x1b[?2026l`);
+    }
+  };
+
+  const printPermanentLine = (text: string): void => {
+    if (options.interactive && spinnerTimer) {
+      const currentSpinner = renderSpinnerLine();
+      process.stdout.write(`\x1b[?2026h\r\x1b[2K${text}\n${currentSpinner}\x1b[?2026l`);
+    } else {
+      write(`${text}\n`);
+    }
+  };
+
   const startThinking = (label = 'Düşünülüyor…'): void => {
     currentSpinnerLabel = label.replace(/\r?\n/g, ' ').trim();
     if (!options.interactive) return;
     if (spinnerTimer) {
-      clearInterval(spinnerTimer);
-      spinnerTimer = undefined;
+      // Eğer spinner zaten çalışıyorsa zıplatmadan yerinde güncelle
+      updateSpinnerLabel(label);
+      return;
     }
     thinkingStartedAt = Date.now();
     spinnerFrame = 0;
@@ -429,8 +470,6 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
       }
 
       case 'status': {
-        stopThinking();
-        finishStream();
         const msg = safe(event.message);
 
         // 1. Ultracode [Aşama X/4] -> 4-Aşamalı Görsel Stepper
@@ -438,11 +477,12 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
         if (ultraMatch) {
           const stageNum = Math.max(1, Math.min(4, parseInt(ultraMatch[1]!, 10)));
           const detail = ultraMatch[2]?.trim();
-          write(`${renderUltracodeStepper(stageNum)}\n`);
+          let line = renderUltracodeStepper(stageNum);
           if (detail) {
-            write(`  ${theme.muted('╰─')} ${theme.crystalCyan('▸')} ${theme.text(detail)}\n`);
+            line += `\n  ${theme.muted('╰─')} ${theme.crystalCyan('▸')} ${theme.text(detail)}`;
           }
-          startThinking(msg);
+          printPermanentLine(line);
+          updateSpinnerLabel(msg);
           break;
         }
 
@@ -455,8 +495,9 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
           const detail = goalMatch[3]?.trim();
           const bar = renderProgressBar(pct, 18);
           const detailSuffix = detail ? ` ${theme.dim('·')} ${theme.text(detail)}` : '';
-          write(`  ${theme.muted('╭─')} ${theme.brightMint('◆ Otonom Hedef')} ${theme.dim(`[Adım ${stepX}/${totalY}]`)} ${bar} ${theme.crystalCyan(`%${pct}`)}${detailSuffix}\n`);
-          startThinking(msg);
+          const line = `  ${theme.muted('╭─')} ${theme.brightMint('◆ Otonom Hedef')} ${theme.dim(`[Adım ${stepX}/${totalY}]`)} ${bar} ${theme.crystalCyan(`%${pct}`)}${detailSuffix}`;
+          printPermanentLine(line);
+          updateSpinnerLabel(msg);
           break;
         }
 
@@ -465,17 +506,22 @@ export function createEventPrinter(options: EventPrinterOptions): EventPrinter {
         if (roleMatch) {
           const role = roleMatch[1]!.trim();
           const rest = roleMatch[2]!.trim();
-          write(`  ├─ ◈ ${theme.brightMint(`[${role}]`)} ${theme.text(rest)}\n`);
-          startThinking(msg);
+          const line = `  ├─ ◈ ${theme.brightMint(`[${role}]`)} ${theme.text(rest)}`;
+          printPermanentLine(line);
+          updateSpinnerLabel(msg);
           break;
         }
 
-        const isWorkflowStatus = /Ultracode|Aşama|Adım|Hedef|Plan|MCP|Alt Ajan/i.test(msg);
-        if (isWorkflowStatus) {
-          write(`  ├─ ${theme.badge('◈ AKIŞ')} ${theme.text(msg)}\n`);
-          startThinking(msg);
+        // 4. Sıradan durum mesajları: Spinner çalışıyorsa sıfır-sıçrama ile yerinde güncelle
+        if (spinnerTimer) {
+          updateSpinnerLabel(msg);
         } else {
-          write(`${theme.muted(msg)}\n`);
+          const isWorkflowStatus = /Ultracode|Aşama|Adım|Hedef|Plan|MCP|Alt Ajan/i.test(msg);
+          if (isWorkflowStatus) {
+            write(`  ├─ ${theme.badge('◈ AKIŞ')} ${theme.text(msg)}\n`);
+          } else {
+            write(`${theme.muted(msg)}\n`);
+          }
         }
         break;
       }

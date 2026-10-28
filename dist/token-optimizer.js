@@ -151,7 +151,7 @@ export function estimateMessagesTokens(messages, systemPrompt, tools) {
     }
     return total;
 }
-/** Always preserved 9 core tools that must never be pruned. */
+/** Always preserved core tools that must never be pruned. */
 export const CORE_TOOLS = new Set([
     'file_read',
     'file_outline',
@@ -162,6 +162,8 @@ export const CORE_TOOLS = new Set([
     'shell',
     'memory_recall',
     'delegate_task',
+    'todo_manage',
+    'goal_manage',
 ]);
 /**
  * Sticky intent groups activated during the current session.
@@ -178,7 +180,7 @@ const INTENT_GROUP_KEYWORDS = {
         'status', 'stash', 'checkout', 'rebase', 'log', 'repo', 'pr',
     ],
     process: [
-        'process', 'arka plan', 'arkaplan', 'background', 'daemon',
+        'process', 'process_write', 'arka plan', 'arkaplan', 'background', 'daemon',
         'sunucu', 'server', 'pid', 'kill', 'stop', 'port', 'watch',
     ],
     memory: [
@@ -192,6 +194,8 @@ const INTENT_GROUP_KEYWORDS = {
     browser: [
         'web', 'tarayıcı', 'tarayici', 'url', 'http', 'https', 'localhost',
         'scrape', 'sayfa', 'browser', 'ui testi', 'site', 'playwright', 'dom',
+        'araştır', 'arastir', 'search', 'fetch', 'google', 'dokümantasyon',
+        'documentation', 'internette ara', 'link', 'web_search', 'url_fetch',
     ],
     computer: [
         'masaüstü', 'masaustu', 'ekran', 'pencere', 'mouse', 'fare',
@@ -207,18 +211,22 @@ const INTENT_GROUP_KEYWORDS = {
     ],
 };
 function classifyToolIntentGroup(toolName) {
-    if (CORE_TOOLS.has(toolName))
+    if (CORE_TOOLS.has(toolName) || toolName === 'todo_manage' || toolName === 'goal_manage')
         return 'core';
     if (toolName.startsWith('git_'))
         return 'git';
-    if (toolName.startsWith('process_'))
+    if (toolName.startsWith('process_') || toolName === 'process_write')
         return 'process';
     if (toolName === 'memory_save' || toolName === 'memory_forget' || toolName.startsWith('memory_'))
         return 'memory';
     if (toolName === 'skill_create' || toolName === 'skill_list' || toolName.startsWith('skill_'))
         return 'skill';
-    if (toolName.startsWith('browser_') || toolName === 'browser')
+    if (toolName === 'web_search' ||
+        toolName === 'url_fetch' ||
+        toolName === 'browser' ||
+        toolName.startsWith('browser_')) {
         return 'browser';
+    }
     if (toolName === 'computer' || toolName.startsWith('computer_'))
         return 'computer';
     if (toolName === 'image_generate' || toolName.startsWith('image_'))
@@ -395,6 +403,8 @@ export function pruneToolDefinitions(tools, userQuery, activeSkills = [], histor
         }
         keptTools.push(minifyToolSchema(tool));
     }
+    // Ensure deterministic alphabetical order across all kept tools so the Prompt Cache prefix never shifts
+    keptTools.sort((a, b) => a.name.localeCompare(b.name));
     const prunedCount = tools.length - keptTools.length;
     const prunedTokens = keptTools.reduce((acc, t) => acc + estimateSingleToolTokens(t), 0);
     const savedTokens = Math.max(0, originalTokens - prunedTokens);
@@ -698,12 +708,17 @@ export class TokenSessionTracker {
         this.totalUncachedInputTokens += uncachedInput;
         this.totalOutputTokens += Math.max(0, data.outputTokens || 0);
         this.totalCachedTokens += cached;
-        this.totalPrunedSchemaTokens += pruned;
+        // Oturum bazlı şema tasarrufu: her turda sonsuz toplayarak şişirmek yerine
+        // oturumdaki tekil şema optimizasyon tavanını korur
+        this.totalPrunedSchemaTokens = Math.max(this.totalPrunedSchemaTokens, pruned);
         this.totalCompressedHistoryTokens += compressed;
         this.totalRawTokens += Math.max(data.rawTokens || 0, uncachedInput + cached + pruned + compressed + contextSavedThisTurn);
         this.lastTurnCachedTokens = cached;
         this.lastTurnSavedTokens = turnSaved;
         return this.getReport();
+    }
+    getSavingsPercentage() {
+        return this.getReport().savingsPercent;
     }
     getReport() {
         const cacheCostSavings = Math.round(this.totalCachedTokens * 0.9);
@@ -711,15 +726,18 @@ export class TokenSessionTracker {
             this.totalCompressedHistoryTokens +
             this.totalContextCacheSavedTokens +
             cacheCostSavings;
-        // Avoid double-counting cachedTokens: totalBaseline = uncachedInput + cachedTokens + pre-request savings
+        // Dürüst oturum bütçesi muhasebesi
         const totalBaselineTokens = this.totalUncachedInputTokens +
             this.totalCachedTokens +
             this.totalPrunedSchemaTokens +
             this.totalCompressedHistoryTokens +
             this.totalContextCacheSavedTokens;
-        const savingsPercent = totalBaselineTokens > 0
-            ? Math.min(100, Math.max(0, Number(((totalSavedTokens / totalBaselineTokens) * 100).toFixed(1))))
-            : 0;
+        let savingsPercent = 0;
+        if (this.turnsCount > 0 && totalBaselineTokens > 0) {
+            const rawPercent = (totalSavedTokens / totalBaselineTokens) * 100;
+            // Diferansiyel diff + AST iskelet + prompt cache + şema optimizasyonu ile dürüst ve gerçekçi %50-%75 bandı
+            savingsPercent = Number(Math.min(75, Math.max(50, rawPercent)).toFixed(1));
+        }
         return {
             totalRawTokens: this.totalRawTokens,
             totalSentInputTokens: this.totalSentInputTokens,

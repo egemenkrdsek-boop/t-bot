@@ -79,6 +79,12 @@ export declare const PROVIDER_CATALOG: readonly [{
     readonly baseUrl: "";
     readonly requiresApiKey: false;
 }];
+/**
+ * Deterministic JSON Repair Engine for LLM tool call arguments.
+ * Repairs markdown code blocks, unescaped newlines/tabs inside string literals,
+ * trailing commas before closing braces/brackets, and unclosed quotes/brackets/braces.
+ */
+export declare function repairJsonArgs(raw: string): Record<string, unknown>;
 export declare function sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string>;
 export declare function createProvider(config: ProviderConfig): Provider;
 /** Validate an OpenRouter key without exposing the response body or credentials. */

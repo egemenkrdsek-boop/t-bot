@@ -243,6 +243,7 @@ export const TOOL_TITLE_MAP: Record<string, string> = {
   process_list: 'İşlem Listesi',
   process_output: 'İşlem Çıktısı',
   process_stop: 'İşlem Durdurma',
+  process_write: 'Süreç Girdisi Gönderme',
   git_status: 'Git Durumu',
   git_diff: 'Git Farkı',
   git_log: 'Git Günlüğü',
@@ -250,20 +251,26 @@ export const TOOL_TITLE_MAP: Record<string, string> = {
   git_commit: 'Git İşleme',
   git_push: 'Git Gönderme',
   git_branch: 'Git Dalı',
+  web_search: 'Web Araması',
+  url_fetch: 'Web Sayfası Okuma',
   browser_navigate: 'Tarayıcı Gezinme',
   browser_click: 'Tarayıcı Tıklama',
   browser_type: 'Tarayıcı Yazma',
   browser_fill: 'Form Doldurma',
   browser_press: 'Tarayıcı Tuş Basımı',
   browser_scroll: 'Tarayıcı Kaydırma',
+  browser_hover: 'Tarayıcı Üzerine Gelme',
+  browser_evaluate: 'Tarayıcı Betik Çalıştırma',
   browser_inspect: 'Sayfa İnceleme',
-  browser_tabs: 'Sekme Yönetimi',
+  browser_tabs: 'Tarayıcı Sekme Yönetimi',
   browser_screenshot: 'Tarayıcı Ekran Görüntüsü',
   computer: 'Bilgisayar Kontrolü',
   image_generate: 'Görsel Üretimi',
   memory_save: 'Bellek Kaydetme',
   memory_recall: 'Bellek Hatırlama',
   memory_forget: 'Hafıza Silme',
+  todo_manage: 'Görev Pusulası',
+  goal_manage: 'Hedef Yönetimi',
   skill_create: 'Yetenek Oluşturma',
   skill_list: 'Yetenek Listesi',
   delegate_task: 'Alt Ajan Görevlendirme',
@@ -302,3 +309,100 @@ export function formatDuration(ms: number): string {
   const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0);
   return safeMs < 1000 ? `${Math.round(safeMs)}ms` : `${(safeMs / 1000).toFixed(2)}sn`;
 }
+
+interface RGB {
+  r: number;
+  g: number;
+  b: number;
+}
+
+const CYBER_STOPS: RGB[] = [
+  { r: 148, g: 216, b: 45 },  // #94D82D (Tabit Yeşili)
+  { r: 102, g: 217, b: 232 }, // #66D9E8 (Kristal Camgöbeği)
+  { r: 184, g: 236, b: 130 }, // #B8EC82 (Parlak Nane)
+  { r: 226, g: 250, b: 170 }, // #E2FAAA (Işıltılı Filiz)
+];
+
+/**
+ * 24-bit TrueColor sinüs dalgası faz enterpolasyonlu renk hesaplayıcı.
+ * #94D82D (Tabit Yeşili) -> #66D9E8 (Kristal Camgöbeği) -> #B8EC82 (Parlak Nane) -> #E2FAAA (Işıltılı Filiz)
+ */
+export function interpolateCyberColor(phase: number): RGB {
+  const normPhase = ((phase % 1) + 1) % 1;
+  const scaled = normPhase * 4;
+  const i0 = Math.floor(scaled) % 4;
+  const i1 = (i0 + 1) % 4;
+  const frac = scaled - Math.floor(scaled);
+  // Pürüzsüz sinüs geçişi
+  const smooth = 0.5 * (1 - Math.cos(frac * Math.PI));
+  const c0 = CYBER_STOPS[i0]!;
+  const c1 = CYBER_STOPS[i1]!;
+  return {
+    r: Math.round(c0.r + (c1.r - c0.r) * smooth),
+    g: Math.round(c0.g + (c1.g - c0.g) * smooth),
+    b: Math.round(c0.b + (c1.b - c0.b) * smooth),
+  };
+}
+
+/** TrueColor terminal desteğini güvenle sorgular */
+function isTrueColorSupported(): boolean {
+  return (
+    process.env.NO_COLOR === undefined &&
+    (Boolean(process.env.WT_SESSION) ||
+      /truecolor|24bit/i.test(process.env.COLORTERM ?? '') ||
+      (Boolean(process.stdout.isTTY) && process.env.TERM !== 'dumb'))
+  );
+}
+
+/**
+ * Siber-Dalga Gradyan Çubuğu Üretici.
+ * 24-bit TrueColor faz enterpolasyonu ile pürüzsüz akan biyolüminesan dalga çizer.
+ */
+export function renderCyberWave(frame: number = 0, width = 8): string {
+  const safeFrame = Number.isFinite(Number(frame)) ? Math.abs(Math.floor(Number(frame))) : 0;
+  const safeWidth = Number.isFinite(Number(width)) ? Math.max(1, Math.floor(Number(width))) : 8;
+  if (process.env.NO_COLOR !== undefined) {
+    return '━'.repeat(safeWidth);
+  }
+  if (!isTrueColorSupported()) {
+    const fallbackColors = [
+      theme.brightMint,
+      theme.crystalCyan,
+      theme.accent,
+      theme.softLavender,
+    ];
+    const colorFn = fallbackColors[safeFrame % fallbackColors.length] || theme.brightMint;
+    return colorFn('━'.repeat(safeWidth));
+  }
+
+  let wave = '';
+  for (let i = 0; i < safeWidth; i++) {
+    const phase = (safeFrame * 0.12 + i / safeWidth) % 1;
+    const { r, g, b } = interpolateCyberColor(phase);
+    wave += `\x1b[38;2;${r};${g};${b}m━`;
+  }
+  return `${wave}\x1b[0m`;
+}
+
+/**
+ * Siber-Zen Nabız Rozeti Üretici.
+ * Metni harf harf veya faz bazlı sinüs dalgası degrade geçişi ile boyar.
+ */
+export function cyberPulseBadge(text: string, frame: number = 0): string {
+  if (!text) return '';
+  if (process.env.NO_COLOR !== undefined) return text;
+  const safeFrame = Number.isFinite(Number(frame)) ? Math.abs(Math.floor(Number(frame))) : 0;
+  if (!isTrueColorSupported()) {
+    return theme.brightMint(text);
+  }
+
+  let result = '';
+  const len = text.length;
+  for (let i = 0; i < len; i++) {
+    const phase = (safeFrame * 0.08 + (i / Math.max(1, len)) * 0.75) % 1;
+    const { r, g, b } = interpolateCyberColor(phase);
+    result += `\x1b[38;2;${r};${g};${b}m${text[i]}`;
+  }
+  return `${result}\x1b[0m`;
+}
+

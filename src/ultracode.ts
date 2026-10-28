@@ -51,6 +51,61 @@ function buildCompactTurnEvidence(currentTurn: Message[], ledgerSummary: string)
 }
 
 /**
+ * Denetçi raporunu analiz ederek onarım gerekip gerekmediğini hatasız tespit eder.
+ * Negatif ifadeleri ("herhangi bir hata tespit edilmemiştir", "hata yok", "sorunsuz")
+ * filtreleyerek sahte onarım tetiklemelerini engeller.
+ */
+function checkNeedsRepair(reviewText: string): boolean {
+  if (!reviewText) return false;
+  if (reviewText.includes('[ONARIM_GEREKLI]')) return true;
+  if (reviewText.includes('[ONAYLANDI]')) return false;
+
+  const cleanText = reviewText
+    .replace(/(?:herhangi bir\s+)?(?:hata|kusur|eksik|sorun|problem)(?:\s+veya\s+(?:hata|kusur|eksik|sorun|problem))*\s+(?:tespit edilmemiştir|bulunmamaktadır|yoktur|yok|görülmedi|mevcut değil)/gi, '')
+    .replace(/hata\s+yok(?:tur)?/gi, '')
+    .replace(/sorun\s+yok(?:tur)?/gi, '')
+    .replace(/eksik\s+yok(?:tur)?/gi, '')
+    .replace(/kusur(?:suz|u\s+yok)/gi, '')
+    .replace(/sorunsuz(?:dur)?/gi, '')
+    .replace(/başarıyla\s+tamamlanmıştır/gi, '');
+
+  const positiveBugRegex = /(?:düzeltilmesi gereken|giderilmesi gereken|somut hata|kritik hata|kod hatası|kırılma|mantık hatası|güvenlik açığı|bug tespit edildi|hata bulundu|eksiklik bulundu|onarılması gereken)/i;
+  return positiveBugRegex.test(cleanText);
+}
+
+/**
+ * Aşama 4 özet turu kullanım ve tasarruf kaydını tekilleştirilmiş tek bir blokta yönetir.
+ * Double-counting oluşmasını engeller.
+ */
+function recordSummaryUsage(
+  input: UltracodeInput,
+  summaryMessages: Message[],
+  summaryText: string,
+  eventCachedTokens?: number,
+  eventInputTokens?: number,
+  eventOutputTokens?: number
+): void {
+  const sentInputTokens = eventInputTokens ?? estimateMessagesTokens(summaryMessages);
+  const outputTokens = eventOutputTokens ?? estimateMessagesTokens([{ role: 'assistant', content: summaryText }]);
+  const report = globalTokenTracker.recordTurn({
+    rawTokens: sentInputTokens,
+    sentInputTokens,
+    outputTokens,
+    cachedTokens: eventCachedTokens,
+    prunedSchemaTokens: 0,
+    compressedHistoryTokens: 0,
+  });
+  input.onEvent({
+    type: 'usage',
+    inputTokens: sentInputTokens,
+    outputTokens,
+    cachedTokens: report.turnCachedTokens ?? 0,
+    savedTokens: report.turnSavedTokens ?? 0,
+    savingsPercent: report.savingsPercent,
+  });
+}
+
+/**
  * 4 Aşamalı Öz-Onarımlı (Self-Healing) Ultracode Mühendislik Hattı:
  * 1. Uzman Alt Ajan Araştırması ve Uygulama
  * 2. Bağımsız Kalite ve Güvenlik Denetimi
@@ -137,11 +192,7 @@ DEĞERLENDİRME VE ETİKET TALİMATLARI:
   await reclaimMemory(session, false).catch(() => undefined);
 
   // Aşama 3: Otonom Öz-Onarım ve Doğrulama
-  const needsRepair = Boolean(
-    review &&
-      (review.includes('[ONARIM_GEREKLI]') ||
-        (!review.includes('[ONAYLANDI]') && /(hata|bug|error|eksik|kusur|onarıl|repair|fix|broken)/i.test(review)))
-  );
+  const needsRepair = checkNeedsRepair(review || '');
 
   if (needsRepair && !input.signal?.aborted) {
     input.onEvent({
@@ -228,24 +279,14 @@ Gerekli dosya düzenlemelerini ve düzeltmelerini tamamla. Ne yaptığını ve s
       }
       if (event.type === 'usage') {
         summaryUsageRecorded = true;
-        const sentInputTokens = event.inputTokens ?? estimateMessagesTokens(summaryMessages);
-        const outputTokens = event.outputTokens ?? estimateMessagesTokens([{ role: 'assistant', content: summary }]);
-        const report = globalTokenTracker.recordTurn({
-          rawTokens: sentInputTokens + stage2SavedTokens,
-          sentInputTokens,
-          outputTokens,
-          cachedTokens: event.cachedTokens,
-          prunedSchemaTokens: 0,
-          compressedHistoryTokens: stage2SavedTokens,
-        });
-        input.onEvent({
-          type: 'usage',
-          inputTokens: sentInputTokens,
-          outputTokens,
-          cachedTokens: report.turnCachedTokens ?? 0,
-          savedTokens: report.turnSavedTokens ?? 0,
-          savingsPercent: report.savingsPercent,
-        });
+        recordSummaryUsage(
+          input,
+          summaryMessages,
+          summary,
+          event.cachedTokens,
+          event.inputTokens,
+          event.outputTokens
+        );
       }
       if (event.type === 'response_items') responseItems = event.responseItems;
       if (event.type === 'text') {
@@ -259,24 +300,7 @@ Gerekli dosya düzenlemelerini ve düzeltmelerini tamamla. Ne yaptığını ve s
     }
 
     if (!summaryUsageRecorded && !input.signal?.aborted) {
-      const sentInputTokens = estimateMessagesTokens(summaryMessages);
-      const outputTokens = estimateMessagesTokens([{ role: 'assistant', content: summary }]);
-      const report = globalTokenTracker.recordTurn({
-        rawTokens: sentInputTokens + stage2SavedTokens,
-        sentInputTokens,
-        outputTokens,
-        cachedTokens: 0,
-        prunedSchemaTokens: 0,
-        compressedHistoryTokens: stage2SavedTokens,
-      });
-      input.onEvent({
-        type: 'usage',
-        inputTokens: sentInputTokens,
-        outputTokens,
-        cachedTokens: report.turnCachedTokens ?? 0,
-        savedTokens: report.turnSavedTokens ?? 0,
-        savingsPercent: report.savingsPercent,
-      });
+      recordSummaryUsage(input, summaryMessages, summary);
     }
   } catch (error) {
     if (!input.signal?.aborted) {

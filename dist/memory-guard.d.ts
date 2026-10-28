@@ -6,14 +6,14 @@ export interface MemoryStats {
     systemTotalMB: number;
     systemFreeMB: number;
     systemUsedPercent: number;
-    pressure: 'low' | 'moderate' | 'high';
+    pressure: 'low' | 'moderate' | 'high' | 'critical';
 }
 export interface ReclaimResult {
     beforeMB: number;
     afterMB: number;
     freedMB: number;
     compactedCount: number;
-    pressure: 'low' | 'moderate' | 'high';
+    pressure: 'low' | 'moderate' | 'high' | 'critical';
 }
 /**
  * Trims physical working set memory of the current T Bot process using Win32 EmptyWorkingSet API on Windows.

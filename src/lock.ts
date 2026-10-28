@@ -56,7 +56,15 @@ export async function acquireFileLock(
         } else {
           const content = await readFile(lockPath, 'utf8').catch(() => '');
           const pid = parseInt(content.trim(), 10);
-          if (!pid || !isProcessAlive(pid)) {
+          if (!pid) {
+            // 0-byte kilit dosyası yarış durumu: Eğer dosya son 2 saniye içinde oluşturulmuşsa
+            // başka bir süreç henüz PID yazıyor demektir; bayat sayıp silme ve bekle!
+            if (Date.now() - st.mtimeMs < 2000) {
+              isStale = false;
+            } else {
+              isStale = true;
+            }
+          } else if (!isProcessAlive(pid)) {
             isStale = true;
           }
         }

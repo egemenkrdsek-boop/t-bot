@@ -19,10 +19,15 @@ export type ToolResult = string;
  */
 export declare function rememberFact(workspace: string, key: string, value: string, scope?: 'project' | 'global', category?: MemoryCategory, tags?: string[]): Promise<string>;
 /**
- * Recalls facts from project and global memory, with BM25/TF lexical overlap + recency scoring.
+ * Recalls facts from project and global memory, with BM25/TF lexical overlap,
+ * Turkish/English technical synonym expansion, and recency scoring.
  * Project entries take precedence over global entries with identical keys.
  */
 export declare function recallFacts(workspace: string, query?: string): Promise<MemoryFact[]>;
+/**
+ * Technical synonym expanded BM25 memory retrieval alias for recallFacts.
+ */
+export declare const recallMemories: typeof recallFacts;
 /**
  * Removes a fact by key from project and/or global memory.
  */

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { estimateTokens } from './token-optimizer.js';
+import { estimateTokens, globalTokenTracker } from './token-optimizer.js';
 function normalizeWorkspace(workspace) {
     return workspace.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
@@ -9,10 +9,173 @@ function normalizeRelPath(relPath) {
 function buildCacheKey(workspace, relPath) {
     return `${normalizeWorkspace(workspace)}::${normalizeRelPath(relPath)}`;
 }
+const MAX_CACHEABLE_CONTENT_CHARS = 150 * 1024; // 150 KB bellek koruma sınırı
+/**
+ * Line-based Differential Unified Diff Engine.
+ * Produces standard @@ -L...,... +L...,... @@ diff blocks with context lines.
+ */
+export function computeUnifiedLineDiff(prevContent, newContent, contextLines = 2) {
+    if (prevContent === newContent)
+        return '';
+    const oldLines = prevContent.length === 0 ? [] : prevContent.split(/\r?\n/);
+    const newLines = newContent.length === 0 ? [] : newContent.split(/\r?\n/);
+    // 1. Ortak önek (common prefix)
+    let prefix = 0;
+    while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+        prefix++;
+    }
+    // 2. Ortak sonek (common suffix)
+    let oldSuffix = oldLines.length - 1;
+    let newSuffix = newLines.length - 1;
+    while (oldSuffix >= prefix && newSuffix >= prefix && oldLines[oldSuffix] === newLines[newSuffix]) {
+        oldSuffix--;
+        newSuffix--;
+    }
+    const midOld = oldLines.slice(prefix, oldSuffix + 1);
+    const midNew = newLines.slice(prefix, newSuffix + 1);
+    const ops = [];
+    if (midOld.length * midNew.length > 2_000_000) {
+        for (let i = 0; i < midOld.length; i++) {
+            ops.push({ type: 'delete', line: midOld[i], oldIndex: prefix + i, newIndex: -1 });
+        }
+        for (let j = 0; j < midNew.length; j++) {
+            ops.push({ type: 'insert', line: midNew[j], oldIndex: -1, newIndex: prefix + j });
+        }
+    }
+    else {
+        const m = midOld.length;
+        const n = midNew.length;
+        const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+        for (let i = 0; i < m; i++) {
+            for (let j = 0; j < n; j++) {
+                if (midOld[i] === midNew[j]) {
+                    dp[i + 1][j + 1] = dp[i][j] + 1;
+                }
+                else {
+                    dp[i + 1][j + 1] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+                }
+            }
+        }
+        let i = m;
+        let j = n;
+        const revOps = [];
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0 && midOld[i - 1] === midNew[j - 1]) {
+                revOps.push({ type: 'common', line: midOld[i - 1], oldIndex: prefix + i - 1, newIndex: prefix + j - 1 });
+                i--;
+                j--;
+            }
+            else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+                revOps.push({ type: 'insert', line: midNew[j - 1], oldIndex: -1, newIndex: prefix + j - 1 });
+                j--;
+            }
+            else if (i > 0) {
+                revOps.push({ type: 'delete', line: midOld[i - 1], oldIndex: prefix + i - 1, newIndex: -1 });
+                i--;
+            }
+        }
+        revOps.reverse();
+        ops.push(...revOps);
+    }
+    const changeIndices = [];
+    for (let idx = 0; idx < ops.length; idx++) {
+        if (ops[idx].type !== 'common') {
+            changeIndices.push(idx);
+        }
+    }
+    if (changeIndices.length === 0 && prefix === oldLines.length && prefix === newLines.length) {
+        return '';
+    }
+    const groups = [];
+    let curGroup = null;
+    for (const cIdx of changeIndices) {
+        const minOp = Math.max(0, cIdx - contextLines);
+        const maxOp = Math.min(ops.length - 1, cIdx + contextLines);
+        if (!curGroup) {
+            curGroup = { startOp: minOp, endOp: maxOp };
+        }
+        else if (minOp <= curGroup.endOp + 1) {
+            curGroup.endOp = Math.max(curGroup.endOp, maxOp);
+        }
+        else {
+            groups.push(curGroup);
+            curGroup = { startOp: minOp, endOp: maxOp };
+        }
+    }
+    if (curGroup) {
+        groups.push(curGroup);
+    }
+    const hunks = [];
+    for (const group of groups) {
+        const hunkLines = [];
+        let oldStart = -1;
+        let newStart = -1;
+        let oldCount = 0;
+        let newCount = 0;
+        const prefixContextCount = group.startOp === 0 ? Math.min(contextLines, prefix) : 0;
+        for (let p = prefix - prefixContextCount; p < prefix; p++) {
+            if (oldStart === -1)
+                oldStart = p + 1;
+            if (newStart === -1)
+                newStart = p + 1;
+            oldCount++;
+            newCount++;
+            hunkLines.push(` ${oldLines[p]}`);
+        }
+        for (let opIdx = group.startOp; opIdx <= group.endOp; opIdx++) {
+            const op = ops[opIdx];
+            if (op.type === 'common') {
+                if (oldStart === -1)
+                    oldStart = op.oldIndex + 1;
+                if (newStart === -1)
+                    newStart = op.newIndex + 1;
+                oldCount++;
+                newCount++;
+                hunkLines.push(` ${op.line}`);
+            }
+            else if (op.type === 'delete') {
+                if (oldStart === -1)
+                    oldStart = op.oldIndex + 1;
+                if (newStart === -1) {
+                    const fallbackNew = ops.find(o => o.newIndex !== -1)?.newIndex ?? prefix;
+                    newStart = fallbackNew + 1;
+                }
+                oldCount++;
+                hunkLines.push(`-${op.line}`);
+            }
+            else if (op.type === 'insert') {
+                if (newStart === -1)
+                    newStart = op.newIndex + 1;
+                if (oldStart === -1) {
+                    const fallbackOld = ops.find(o => o.oldIndex !== -1)?.oldIndex ?? prefix;
+                    oldStart = fallbackOld + 1;
+                }
+                newCount++;
+                hunkLines.push(`+${op.line}`);
+            }
+        }
+        if (group.endOp === ops.length - 1) {
+            const suffixContextCount = Math.min(contextLines, oldLines.length - (oldSuffix + 1));
+            for (let s = oldSuffix + 1; s < oldSuffix + 1 + suffixContextCount; s++) {
+                oldCount++;
+                newCount++;
+                hunkLines.push(` ${oldLines[s]}`);
+            }
+        }
+        if (oldStart === -1)
+            oldStart = 1;
+        if (newStart === -1)
+            newStart = 1;
+        const header = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`;
+        hunks.push(`${header}\n${hunkLines.join('\n')}`);
+    }
+    return hunks.join('\n');
+}
 /**
  * Differential File Read Cache (FileReadCache).
  * Tracks SHA-256 content hashes, lines, and read line ranges (startLine, endLine, turnIndex)
- * to eliminate redundant full-file or overlapping slice reads across agent turns.
+ * to eliminate redundant full-file or overlapping slice reads across agent turns,
+ * and produces unified line diffs when files are modified.
  */
 export class ContextReadCache {
     entries = new Map();
@@ -58,13 +221,44 @@ export class ContextReadCache {
                     savedTokens: 0,
                 };
             }
-            // File existed in cache but its content hash changed
+            // Dosya önbellekte vardı fakat içeriği (hash) değişti
+            const readRecently = existing.reads.some(r => currentTurn - r.turnIndex <= 8);
+            const isFullRead = effStart === 1 && effEnd >= totalLines;
+            const hasOverlap = existing.reads.some(r => Math.max(r.startLine, effStart) <= Math.min(r.endLine, effEnd));
+            if (readRecently && (isFullRead || hasOverlap) && existing.lastContent) {
+                const diffOutput = computeUnifiedLineDiff(existing.lastContent, fullContent, 2);
+                if (diffOutput && diffOutput.length < formattedSlice.length * 0.65) {
+                    const fullTokens = estimateTokens(formattedSlice);
+                    const diffTokens = estimateTokens(diffOutput);
+                    const savedTokens = Math.max(0, fullTokens - diffTokens);
+                    if (savedTokens > 0) {
+                        const savingRatio = Math.max(1, Math.min(95, Math.round((savedTokens / fullTokens) * 100)));
+                        const output = `[DİFERANSİYEL DIFF ÖNBELLEĞİ: Dosya önceki okumaya göre güncellendi. Yalnızca değişen satır blokları gösteriliyor (~%${savingRatio} token tasarrufu):]\n${diffOutput}`;
+                        existing.hash = hash;
+                        existing.lines = lines;
+                        existing.totalLines = totalLines;
+                        existing.lastContent = fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined;
+                        existing.reads.push({ startLine: effStart, endLine: effEnd, turnIndex: currentTurn });
+                        if (existing.reads.length > 6) {
+                            existing.reads.shift();
+                        }
+                        globalTokenTracker.recordContextCacheSaving(savedTokens);
+                        return {
+                            cached: true,
+                            output,
+                            savedTokens,
+                        };
+                    }
+                }
+            }
+            // Diff %65'ten büyükse veya uygulanamadıysa tam içerik güncellenir
             this.entries.set(key, {
                 workspace: normalizeWorkspace(workspace),
                 normalizedPath: normalizeRelPath(relPath),
                 hash,
                 lines,
                 totalLines,
+                lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
                 reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn }],
             });
             return {
@@ -73,12 +267,14 @@ export class ContextReadCache {
                 savedTokens: 0,
             };
         }
+        // İlk defa okunuyor
         this.entries.set(key, {
             workspace: normalizeWorkspace(workspace),
             normalizedPath: normalizeRelPath(relPath),
             hash,
             lines,
             totalLines,
+            lastContent: fullContent.length <= MAX_CACHEABLE_CONTENT_CHARS ? fullContent : undefined,
             reads: [{ startLine: effStart, endLine: effEnd, turnIndex: currentTurn }],
         });
         return {
@@ -91,8 +287,6 @@ export class ContextReadCache {
         const key = buildCacheKey(workspace, relPath);
         const existing = this.entries.get(key);
         if (existing) {
-            // Clear active read ranges so next read is never treated as a duplicate hit,
-            // while preserving the previous hash to detect content modifications.
             existing.reads = [];
         }
     }

@@ -87,12 +87,15 @@ T Bot 2.0, üç özelleşmiş özerk çekirdeğin entegrasyonuyla çalışır:
 
 | Kategori | Araç İsimleri | Açıklama |
 | :--- | :--- | :--- |
-| **Dosya & Kod** | `file_read`, `file_write`, `file_patch`, `file_outline`, `file_glob`, `dir_list`, `code_search` | Diferansiyel önbellekli okuma, atomik yama, hızlı glob eşleştirme ve sembol haritalama |
-| **Kabuk & Süreç** | `shell`, `process_list`, `process_output`, `process_stop` | Komut yürütme, arka plan süreçlerini izleme ve güvenli süreç durdurma (`process_stop`) |
-| **Git Sürüm Kontrol** | `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_push` | Tam kapsamlı yerel ve uzak Git yönetimi |
-| **Otonom & Hermes** | `delegate_task`, `skill_create`, `skill_list`, `goal_manage`, `memory_save`, `memory_recall`, `memory_forget` | Alt ajan görev devri, öz-evrimleşen beceri üretimi, hedef takibi ve kalıcı bellek yönetimi |
-| **Tarayıcı (Playwright)** | `browser_open`, `browser_click`, `browser_type`, `browser_fill`, `browser_screenshot`, `browser_evaluate`, `browser_close` | İzole tarayıcı otomasyonu, form doldurma (`browser_fill`) ve DOM etkileşimi |
-| **Masaüstü & Web** | `desktop_action`, `web_search`, `url_fetch`, `image_generate` | DLL önbellekli masaüstü kontrolü, web araştırması ve görsel üretimi |
+| **Dosya & Kod** | `file_read`, `file_write`, `file_patch`, `file_outline`, `file_glob`, `file_search`, `file_list` | Diferansiyel önbellekli okuma, atomik yama (`file_patch`), regex arama (`file_search`), dosya listeleme (`file_list`), hızlı glob ve AST sembol haritalama |
+| **Kabuk & Süreç** | `shell`, `process_list`, `process_output`, `process_write`, `process_stop` | Komut yürütme, arka plan süreçlerini izleme, süreç girdisi yazma (`process_write`) ve güvenli süreç sonlandırma (`process_stop`) |
+| **Ağ & Web** | `web_search`, `url_fetch` | Canlı internet araştırması ve web sayfası içeriğini temiz metin olarak ayrıştırma |
+| **Tarayıcı (Playwright)** | `browser_open`, `browser_inspect`, `browser_click`, `browser_type`, `browser_scroll`, `browser_press`, `browser_hover`, `browser_evaluate`, `browser_tabs`, `browser_screenshot` | İzole Chromium profilinde gezinme, DOM analizi, sekme yönetimi, etkileşimli tıklama, kaydırma ve tam sayfa ekran görüntüsü |
+| **Masaüstü & Sistem** | `computer` | Sıfır gecikmeli C# Win32 DLL önbellekli masaüstü kontrolü (ekran görüntüsü alma, fare/klavye kontrolü ve pencere yönetimi) |
+| **Görev & Hedef** | `todo_manage`, `goal_manage`, `delegate_task` | Çok adımlı otonom hedef planlama, yapılacaklar listesi yönetimi ve paralel izole alt ajanlara görev devri |
+| **Bellek & Evrim** | `memory_save`, `memory_recall`, `memory_forget`, `skill_create`, `skill_list` | Proje ve küresel kalıcı bellek yönetimi ile `.tbot/skills/` altında öz-evrimleşen kalıcı beceriler üretme |
+| **Görsel Üretim** | `image_generate` | DALL-E 3 ve Imagen 3 modelleriyle doğrudan çalışma alanında görsel üretimi |
+| **Git Sürüm Kontrol** | `git_status`, `git_diff`, `git_log`, `git_add`, `git_commit`, `git_branch`, `git_push` (`git_*`) | Tam kapsamlı yerel ve uzak Git operasyonları |
 
 ---
 

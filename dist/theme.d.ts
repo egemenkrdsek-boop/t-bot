@@ -76,3 +76,24 @@ export declare function renderProgressBar(percent: number, width?: number): stri
  * Milisaniye cinsinden süreyi okunabilir biçimde biçimlendirir.
  */
 export declare function formatDuration(ms: number): string;
+interface RGB {
+    r: number;
+    g: number;
+    b: number;
+}
+/**
+ * 24-bit TrueColor sinüs dalgası faz enterpolasyonlu renk hesaplayıcı.
+ * #94D82D (Tabit Yeşili) -> #66D9E8 (Kristal Camgöbeği) -> #B8EC82 (Parlak Nane) -> #E2FAAA (Işıltılı Filiz)
+ */
+export declare function interpolateCyberColor(phase: number): RGB;
+/**
+ * Siber-Dalga Gradyan Çubuğu Üretici.
+ * 24-bit TrueColor faz enterpolasyonu ile pürüzsüz akan biyolüminesan dalga çizer.
+ */
+export declare function renderCyberWave(frame?: number, width?: number): string;
+/**
+ * Siber-Zen Nabız Rozeti Üretici.
+ * Metni harf harf veya faz bazlı sinüs dalgası degrade geçişi ile boyar.
+ */
+export declare function cyberPulseBadge(text: string, frame?: number): string;
+export {};

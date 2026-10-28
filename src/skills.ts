@@ -285,6 +285,153 @@ export function skillRequiresReadOnly(skills: readonly SkillDefinition[], messag
   return !/\b(?:fix|implement|change|edit|patch)\s+(?:the\s+|this\s+|that\s+|these\s+|any\s+)?(?:bugs?|issues?|errors?|problems?|code|files?|it|them|changes|fixes|solution)\b|\b(?:duzelt|uygula|degistir|onar)(?:in|iniz|elim|ilsin|mek)?\b/.test(normalize(message));
 }
 
+const STOPWORDS = new Set([
+  'bir', 've', 'ile', 'bu', 'icin', 'için', 'bana', 'bunu', 'nasil', 'nasıl',
+  'yap', 'yapabilir', 'misin', 'lutfen', 'lütfen', 'lazim', 'lazım', 'gerek',
+  'the', 'a', 'an', 'to', 'for', 'in', 'on', 'with', 'and', 'or', 'is', 'it',
+  'how', 'can', 'you', 'please', 'code', 'file', 'dosya', 'kod', 'proje', 'project',
+]);
+
+function extractSlugKeywords(text: string): string[] {
+  const norm = normalize(text);
+  const words = norm
+    .split(/[^a-z0-9_-]+/i)
+    .map(w => w.trim())
+    .filter(w => w.length >= 3 && !STOPWORDS.has(w));
+  return Array.from(new Set(words));
+}
+
+/**
+ * Autonomous Skill Distillation (Hermes Agent feature).
+ * Distills a reusable project skill (.tbot/skills/auto-<slug>.md)
+ * from a successful multi-tool engineering turn deterministically without LLM calls.
+ */
+export async function autoDistillSkillFromTurn(params: {
+  workspaceRoot: string;
+  userPrompt: string;
+  finalAnswer: string;
+  toolsUsed: string[];
+  modifiedFiles: string[];
+}): Promise<string | null> {
+  const { workspaceRoot, userPrompt, finalAnswer, toolsUsed, modifiedFiles } = params;
+
+  // 1. Minimum 5 tool calls required
+  if (!toolsUsed || toolsUsed.length < 5) {
+    return null;
+  }
+
+  // 2. Minimum 1 modified file required
+  if (!modifiedFiles || modifiedFiles.length < 1) {
+    return null;
+  }
+
+  // 3. Must have used verification or command execution tool (shell, run_command, git_commit, etc.)
+  const hasCommandTool = toolsUsed.some(t =>
+    /^(?:shell|run_command|execute_command|git_commit|terminal|bash|powershell|cmd)$/i.test(t)
+  );
+  if (!hasCommandTool) {
+    return null;
+  }
+
+  // 4. Final answer must contain a meaningful engineering solution (>= 50 chars, no error message)
+  const trimmedAnswer = (finalAnswer || '').trim();
+  if (trimmedAnswer.length < 50) {
+    return null;
+  }
+  if (
+    /^(?:tool error|error:|hata:|araç hatası|unknown tool|failed to)/i.test(trimmedAnswer)
+  ) {
+    return null;
+  }
+
+  const projectDir = resolve(workspaceRoot);
+  const skillsDir = join(projectDir, '.tbot', 'skills');
+
+  // 5. Maximum 25 auto-distilled skills limit per workspace
+  try {
+    if (existsSync(skillsDir)) {
+      const existingFiles = readdirSync(skillsDir);
+      const autoSkillFiles = existingFiles.filter(f => f.startsWith('auto-') && f.endsWith('.md'));
+      if (autoSkillFiles.length >= 25) {
+        return null;
+      }
+    }
+  } catch {
+    // Continue if directory read fails
+  }
+
+  // 6. Generate topic slug from userPrompt
+  const keywords = extractSlugKeywords(userPrompt);
+  const slugWords = keywords.slice(0, 4);
+  const slug = slugWords.length > 0 ? slugWords.join('-') : `turn-${Date.now().toString(36)}`;
+  const skillId = `auto-${slug}`;
+  const fileName = `${skillId}.md`;
+  const filePath = join(skillsDir, fileName);
+
+  // Check if an auto-distilled skill for this topic already exists
+  if (existsSync(filePath)) {
+    return null;
+  }
+
+  // 7. Format clean title, triggers, and summary deterministically
+  const rawTitle = slugWords
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+  const title = rawTitle.length > 0 ? `${rawTitle} Çözümü` : 'Otonom Mühendislik Becerisi';
+
+  const triggerSet = new Set<string>();
+  triggerSet.add(slug.replace(/-/g, ' '));
+  for (const kw of keywords.slice(0, 6)) {
+    if (kw.length >= 3) triggerSet.add(kw);
+  }
+  const triggersStr = Array.from(triggerSet).join(', ');
+
+  // Extract clean bullet points / solution steps from finalAnswer
+  const answerLines = trimmedAnswer
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+  const cleanSummaryLines: string[] = [];
+  for (const line of answerLines) {
+    if (line.startsWith('#') || line.startsWith('---')) continue;
+    if (cleanSummaryLines.length < 8) {
+      cleanSummaryLines.push(line.replace(/^[*-]\s*/, ''));
+    }
+  }
+  const summaryText =
+    cleanSummaryLines.length > 0
+      ? cleanSummaryLines.map(l => `- ${l}`).join('\n')
+      : trimmedAnswer.slice(0, 400);
+
+  const markdownContent = [
+    '---',
+    `id: ${skillId}`,
+    `title: ${title}`,
+    `triggers: ${triggersStr}`,
+    'scope: project',
+    '---',
+    `# ${title}`,
+    '',
+    '## Tetikleyici Problem / İstek',
+    userPrompt.trim(),
+    '',
+    '## Değiştirilen Dosyalar',
+    ...Array.from(new Set(modifiedFiles)).map(f => `- \`${f}\``),
+    '',
+    '## Kullanılan Araçlar',
+    ...Array.from(new Set(toolsUsed)).map(t => `- \`${t}\``),
+    '',
+    '## Uygulanan Mühendislik Çözüm Adımları',
+    summaryText,
+    '',
+  ].join('\n');
+
+  await mkdir(skillsDir, { recursive: true });
+  await writeFile(filePath, markdownContent, 'utf8');
+
+  return filePath;
+}
+
 export const skillToolDefinitions: ToolDefinition[] = [
   {
     name: 'skill_create',

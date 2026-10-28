@@ -17,40 +17,41 @@ export const imageToolDefinitions = [{
     }];
 export const IMAGE_MODELS = {
     openai: {
-        default: 'gpt-image-2.5-flare',
+        default: 'dall-e-3',
         choices: [
+            'dall-e-3',
+            'dall-e-2',
+            'gpt-image-1',
             'gpt-image-2.5-flare',
             'gpt-image-2.5-sunburst',
             'gpt-image-2',
             'gpt-image-2-2026-04-21',
             'gpt-image-2.5-flare-2026-09-08',
             'gpt-image-2.5-sunburst-2026-09-08',
-            'gpt-image-1',
-            'dall-e-3',
         ],
     },
     gemini: {
-        default: 'gemini-3.1-flash-image',
+        default: 'imagen-3.0-generate-002',
         choices: [
-            'gemini-nano-banana-2.1',
+            'imagen-3.0-generate-002',
             'gemini-3.1-flash-image',
             'gemini-3.1-flash-lite-image',
             'gemini-3-pro-image',
             'gemini-2.5-flash-image',
-            'imagen-3.0-generate-002',
+            'gemini-nano-banana-2.1',
             'gemini-2.0-flash-preview-image-generation',
         ],
     },
     openrouter: {
-        default: 'google/gemini-3.1-flash-image',
+        default: 'openai/dall-e-3',
         choices: [
+            'openai/dall-e-3',
+            'google/imagen-3.0-generate-002',
+            'openai/gpt-image-1',
             'google/gemini-3.1-flash-image',
             'google/gemini-3.1-flash-lite-image',
             'google/gemini-3-pro-image',
             'openai/gpt-5-image',
-            'openai/gpt-image-1',
-            'openai/dall-e-3',
-            'google/imagen-3.0-generate-002',
             'google/gemini-2.0-flash-preview-image-generation',
         ],
     },
@@ -221,7 +222,7 @@ export async function handleImageTool(name, args, context) {
         const finalPrompt = sourceImageBytes
             ? `[Reference source image: ${sourceImage}]: ${prompt}`
             : prompt;
-        body = { model, prompt: finalPrompt, n: 1, output_format: 'png' };
+        body = { model, prompt: finalPrompt, n: 1, response_format: 'b64_json' };
     }
     else if (router) {
         let routerContent = prompt;
@@ -270,15 +271,52 @@ export async function handleImageTool(name, args, context) {
         throw new Error(`Image provider request failed (HTTP ${response.status}). Check provider access, model availability, and billing.`);
     }
     const json = await readLimited(response);
-    const part = openai || router ? undefined : json?.candidates?.flatMap((candidate) => candidate?.content?.parts ?? []).find((item) => item?.inlineData?.data || item?.inline_data?.data);
-    const dataUrl = router ? json?.choices?.[0]?.message?.images?.[0]?.image_url?.url : undefined;
-    const match = typeof dataUrl === 'string' && dataUrl.length <= maxResponse ? /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl) : null;
-    if (router && !match)
-        throw new Error('OpenRouter returned no supported inline image. Remote image URLs are not fetched.');
-    const image = openai ? decode(json?.data?.[0]?.b64_json) : router ? decode(match[2], match[1]) : decode(part?.inlineData?.data ?? part?.inline_data?.data, part?.inlineData?.mimeType ?? part?.inline_data?.mime_type);
+    let imageBytes;
+    let imageExt = 'png';
+    if (openai) {
+        const item = json?.data?.[0];
+        if (typeof item?.b64_json === 'string' && item.b64_json.length > 0) {
+            const decoded = decode(item.b64_json);
+            imageBytes = decoded.bytes;
+            imageExt = decoded.extension;
+        }
+        else if (typeof item?.url === 'string' && item.url.startsWith('http')) {
+            const imgRes = await fetch(item.url, { signal });
+            if (!imgRes.ok)
+                throw new Error(`Generated image could not be downloaded from URL: HTTP ${imgRes.status}`);
+            const arrayBuf = await imgRes.arrayBuffer();
+            const buf = Buffer.from(arrayBuf);
+            if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+                imageExt = 'png';
+            else if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
+                imageExt = 'jpg';
+            else if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP')
+                imageExt = 'webp';
+            imageBytes = buf;
+        }
+        else {
+            throw new Error('OpenAI image provider returned neither b64_json nor image url.');
+        }
+    }
+    else if (router) {
+        const dataUrl = json?.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+        const match = typeof dataUrl === 'string' && dataUrl.length <= maxResponse ? /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl) : null;
+        if (!match)
+            throw new Error('OpenRouter returned no supported inline image. Remote image URLs are not fetched.');
+        const decoded = decode(match[2], match[1]);
+        imageBytes = decoded.bytes;
+        imageExt = decoded.extension;
+    }
+    else {
+        // Gemini
+        const part = json?.candidates?.flatMap((candidate) => candidate?.content?.parts ?? []).find((item) => item?.inlineData?.data || item?.inline_data?.data);
+        const decoded = decode(part?.inlineData?.data ?? part?.inline_data?.data, part?.inlineData?.mimeType ?? part?.inline_data?.mime_type);
+        imageBytes = decoded.bytes;
+        imageExt = decoded.extension;
+    }
     if (context.signal?.aborted)
         throw new Error('Image generation cancelled.');
-    const output = await save(context.workspace, image.bytes, image.extension, context.signal);
+    const output = await save(context.workspace, imageBytes, imageExt, context.signal);
     return `Generated image saved: ${output}`;
 }
 //# sourceMappingURL=image.js.map

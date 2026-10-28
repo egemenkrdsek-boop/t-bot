@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { Session } from './sessions.js';
 import { closeIdleBrowser } from './tools/browser.js';
+import { closeIdleDesktopDaemon } from './tools/computer.js';
 import { pruneCompletedProcesses } from './tools/shell.js';
 
 export interface MemoryStats {
@@ -13,7 +14,7 @@ export interface MemoryStats {
   systemTotalMB: number;
   systemFreeMB: number;
   systemUsedPercent: number;
-  pressure: 'low' | 'moderate' | 'high';
+  pressure: 'low' | 'moderate' | 'high' | 'critical';
 }
 
 export interface ReclaimResult {
@@ -21,7 +22,7 @@ export interface ReclaimResult {
   afterMB: number;
   freedMB: number;
   compactedCount: number;
-  pressure: 'low' | 'moderate' | 'high';
+  pressure: 'low' | 'moderate' | 'high' | 'critical';
 }
 
 let lastTrimAt = 0;
@@ -111,8 +112,10 @@ export function getMemoryStats(): MemoryStats {
     ? Math.round(((totalBytes - freeBytes) / totalBytes) * 1000) / 10
     : 0;
 
-  let pressure: 'low' | 'moderate' | 'high' = 'low';
-  if (heapUsedMB > 220 || rssMB > 420 || systemFreeMB < 512) {
+  let pressure: 'low' | 'moderate' | 'high' | 'critical' = 'low';
+  if (heapUsedMB > 280 || rssMB > 500 || systemFreeMB < 256) {
+    pressure = 'critical';
+  } else if (heapUsedMB > 220 || rssMB > 420 || systemFreeMB < 512) {
     pressure = 'high';
   } else if (heapUsedMB > 140 || rssMB > 280) {
     pressure = 'moderate';
@@ -186,14 +189,19 @@ export async function reclaimMemory(
       }
     }
 
-    // 2. Close idle browser if active
+    // 2. Close idle browser and desktop daemon if active
     try {
       await closeIdleBrowser();
     } catch {
       // Ignore browser close error during memory reclaim
     }
+    try {
+      await closeIdleDesktopDaemon();
+    } catch {
+      // Ignore desktop daemon close error during memory reclaim
+    }
 
-    // 3. Trigger V8 garbage collection if enabled
+    // 3. Trigger V8 garbage collection if enabled (instant <1ms in-memory GC)
     if (typeof (global as any).gc === 'function') {
       try {
         (global as any).gc();
@@ -202,8 +210,8 @@ export async function reclaimMemory(
       }
     }
 
-    // 4. Windows physical Working Set trim
-    if (force || beforeStats.pressure === 'high') {
+    // 4. Windows physical Working Set trim: SADECE force === true veya pressure === 'critical' iken çalıştır
+    if (force || beforeStats.pressure === 'critical') {
       try {
         await trimWindowsWorkingSet(force);
       } catch {

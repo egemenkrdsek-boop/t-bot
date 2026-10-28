@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { getCustomSecret, getApiKey } from './secrets.js';
 import { loadConfig, saveConfig, resolveProviderConfig, configDirectory } from './config.js';
 import { createProvider } from './providers.js';
@@ -20,6 +21,7 @@ let currentOptions = null;
 let activeApproval = null;
 let handledCount = 0;
 let isAgentBusy = false;
+let pairingCode = null;
 /**
  * Escapes characters that have special meaning in Telegram Markdown v1.
  */
@@ -423,12 +425,21 @@ async function handleIncomingMessage(msg, token, signal, options) {
     if (!text)
         return;
     const allowed = syncEnvAllowedChats(options.config);
-    // Register first user automatically if allowed list is empty
+    // Admin eşleştirme kontrolü (Yetkisiz ele geçirmeyi önlemek için 6 haneli pairingCode zorunludur)
     if (allowed.length === 0) {
-        await persistAllowedChatId(options.config, chatId, options.onLog);
-        const welcome = `*[BİLGİ] T Bot 2.0 Yerel Ağ Geçidine Hoş Geldiniz*\n\nChat ID (\`${chatId}\`) ana yetkili kullanıcı olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
-        await sendTelegramMessage(token, chatId, welcome);
-        options.onLog?.(`[Telegram Bot] İlk yetkili kullanıcı eklendi: Chat ID ${chatId} (${msg.from?.first_name || 'Kullanıcı'})`);
+        const pairMatch = text.match(/^\/pair(?:\s+|=)?(\d{6})/i);
+        if (pairMatch && pairingCode && pairMatch[1] === pairingCode) {
+            pairingCode = null;
+            await persistAllowedChatId(options.config, chatId, options.onLog);
+            const welcome = `*[BİLGİ] Eşleştirme Başarılı!*\n\nChat ID (\`${chatId}\`) ana yönetici olarak kaydedildi. Artık yerel ajana tüm komutları gönderebilirsiniz.`;
+            await sendTelegramMessage(token, chatId, welcome);
+            options.onLog?.(`[Telegram Bot] Yönetici başarıyla eşleştirildi: Chat ID ${chatId} (${msg.from?.first_name || 'Kullanıcı'})`);
+            return;
+        }
+        else {
+            await sendTelegramMessage(token, chatId, "🔒 Bu bot henüz eşleştirilmemiştir. Eşleştirmek için terminal ekranındaki '/pair <KOD>' komutunu gönderin.");
+            return;
+        }
     }
     else if (!allowed.includes(chatId)) {
         options.onLog?.(`[Telegram Bot] Yetkisiz erişim denemesi: Chat ID ${chatId} (${msg.from?.username || msg.from?.first_name || 'Bilinmeyen'})`);
@@ -576,7 +587,12 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
         }
         return;
     }
-    // 5. /clear
+    // Guard against concurrent execution on mutating tasks
+    if (isAgentBusy) {
+        await sendTelegramMessage(token, chatId, '*[MEŞGUL] T Bot Meşgul*\nŞu anda devam eden bir görevi işliyor. Lütfen tamamlanmasını bekleyin.');
+        return;
+    }
+    // 5. /clear (Yarış durumunu önlemek için isAgentBusy kontrolünden sonra çalıştırılır)
     if (text === '/clear') {
         options.session.messages = [];
         globalGroundingLedger.clear();
@@ -584,11 +600,6 @@ ${grounding.warnings.length ? `• Uyarılar:\n${grounding.warnings.map((w) => `
         const sessionStore = new SessionStore(configDirectory());
         await sessionStore.save(options.session).catch(() => { });
         await sendTelegramMessage(token, chatId, `*[TEMİZLENDİ] Oturum Temizlendi*\n\nMesaj geçmişi sıfırlandı ve bellek boşaltıldı.\n• Öncesi: \`${reclaimResult.beforeMB} MB\`\n• Sonrası: \`${reclaimResult.afterMB} MB\`\n• Geri Kazanılan: \`${reclaimResult.freedMB} MB\``);
-        return;
-    }
-    // Guard against concurrent execution on mutating tasks
-    if (isAgentBusy) {
-        await sendTelegramMessage(token, chatId, '*[MEŞGUL] T Bot Meşgul*\nŞu anda devam eden bir görevi işliyor. Lütfen tamamlanmasını bekleyin.');
         return;
     }
     // 6. /ultracode <görev>
@@ -744,7 +755,14 @@ export async function startTelegramBotBridge(options) {
     if (isRunning) {
         return { ok: true, username: currentBotUsername };
     }
-    syncEnvAllowedChats(options.config);
+    const allowed = syncEnvAllowedChats(options.config);
+    if (allowed.length === 0) {
+        pairingCode = crypto.randomInt(100000, 999999).toString();
+        options.onLog?.(`[Telegram Güvenlik] Yönetici eşleştirmesi için Telegram'dan bota şu komutu gönderin: /pair ${pairingCode}`);
+    }
+    else {
+        pairingCode = null;
+    }
     // Retrieve token securely stored via Windows DPAPI or environment variable
     const token = (await getCustomSecret('telegram_bot_token')) || process.env.TELEGRAM_BOT_TOKEN;
     if (!token || !token.trim()) {
@@ -797,6 +815,7 @@ export function stopTelegramBotBridge() {
     }
     currentOptions = null;
     currentBotUsername = undefined;
+    pairingCode = null;
 }
 /**
  * Returns the current runtime status of the Telegram Bot Gateway Bridge.
