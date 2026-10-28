@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "T Bot 2.0 — Tri-Core Local AI Coding Agent, Autonomous Desktop Agent & Zero-Backend Telegram Bot Gateway with 50%-75% Token Savings and Deterministic Anti-Hallucination",
   "type": "module",
+  "main": "dist/desktop/main.js",
   "bin": {
     "tbot": "./dist/index.js",
     "t-bot": "./dist/index.js",
@@ -29,11 +30,55 @@
     "node": ">=20.3"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "copy:desktop": "node -e \"const fs=require('fs'); fs.mkdirSync('dist/desktop/renderer',{recursive:true}); if(fs.existsSync('src/desktop/preload.cjs')) fs.copyFileSync('src/desktop/preload.cjs','dist/desktop/preload.cjs'); if(fs.existsSync('src/desktop/renderer')) fs.cpSync('src/desktop/renderer','dist/desktop/renderer',{recursive:true});\"",
+    "build": "tsc && npm run copy:desktop",
+    "desktop": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win --x64",
     "start": "node --expose-gc dist/index.js",
     "dev": "tsx --expose-gc src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepare": "node -e \"try { require('node:child_process').execSync('npm run build', { stdio: 'ignore' }); } catch {}\""
+  },
+  "build": {
+    "appId": "com.tabit.tbot.desktop",
+    "productName": "T Bot",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "scripts/**/*",
+      "assets/**/*",
+      "build/icon.*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "scripts/**/*",
+      "**/*.ps1",
+      "**/*.dll"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "T-Bot-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "T Bot",
+      "runAfterFinish": false
+    }
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -42,6 +87,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
     "tsx": "^4.19.0"
   }
 }

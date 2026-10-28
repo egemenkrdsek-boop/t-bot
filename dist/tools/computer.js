@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -102,13 +103,30 @@ export async function closeIdleDesktopDaemon() {
     pendingRequests.clear();
     lineBuffer = '';
 }
+export function getScriptPath() {
+    const defaultPath = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
+    const resPath = process.resourcesPath || '';
+    const candidates = [
+        defaultPath,
+        join(resPath, 'app.asar.unpacked', 'scripts', 'computer.ps1'),
+        join(resPath, 'app', 'scripts', 'computer.ps1'),
+        join(resPath, 'scripts', 'computer.ps1'),
+        join(process.cwd(), 'scripts', 'computer.ps1'),
+    ];
+    for (const candidate of candidates) {
+        if (candidate && existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return defaultPath;
+}
 async function getDesktopDaemon() {
     if (desktopDaemon && !desktopDaemon.killed)
         return desktopDaemon;
     if (daemonLaunching)
         return daemonLaunching;
     daemonLaunching = (async () => {
-        const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
+        const script = getScriptPath();
         const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script, '-Action', 'daemon'], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdout.setEncoding('utf8');
         child.stderr.setEncoding('utf8');
@@ -223,7 +241,7 @@ async function sendDaemonRequest(payload, signal) {
     });
 }
 async function runStandalonePs(request, signal) {
-    const script = fileURLToPath(new URL('../../scripts/computer.ps1', import.meta.url));
+    const script = getScriptPath();
     const TIMEOUT_MS = 15_000;
     return new Promise((resolve, reject) => {
         let settled = false;

@@ -6,6 +6,7 @@ export declare function resetDesktopIdleTimer(): void;
  * Can be invoked by memory-guard or during idle timeouts.
  */
 export declare function closeIdleDesktopDaemon(): Promise<void>;
+export declare function getScriptPath(): string;
 export declare function executeComputerTool(name: string, args: Record<string, unknown>, workspace?: string): Promise<string>;
 export declare function handleComputerTool(name: string, args: Record<string, unknown>, context: {
     workspace: string;

@@ -1,0 +1,30 @@
+appId: com.tabit.tbot.desktop
+productName: T Bot
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - scripts/**/*
+  - assets/**/*
+  - build/icon.*
+  - package.json
+asar: true
+asarUnpack:
+  - scripts/**/*
+  - '**/*.ps1'
+  - '**/*.dll'
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: T-Bot-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: T Bot
+  runAfterFinish: false
