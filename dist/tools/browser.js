@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { redactSecrets } from '../sessions.js';
+import { GUI_WARM_IDLE_MS, guiObservation, MAX_BATCH_STEPS, validateBatchSteps } from './gui-policy.js';
 // A private, disposable profile: never attach to the user's existing browser.
 let context;
 let profile;
@@ -13,7 +14,7 @@ const tabs = new Map();
 let nextId = 1;
 const snapshots = new WeakMap();
 let idleTimer;
-const BROWSER_IDLE_TIMEOUT_MS = 60_000;
+const BROWSER_IDLE_TIMEOUT_MS = GUI_WARM_IDLE_MS;
 let lastBrowserActivityAt = 0;
 let activeBrowserOps = 0;
 // Persistent fallback semantic selector memory for resilient SPA recovery
@@ -34,7 +35,7 @@ export function resetIdleTimer() {
         idleTimer.unref();
     }
 }
-export async function closeIdleBrowser(idleThresholdMs = 180_000) {
+export async function closeIdleBrowser(idleThresholdMs = GUI_WARM_IDLE_MS) {
     if (activeBrowserOps === 0 && Date.now() - lastBrowserActivityAt > idleThresholdMs) {
         if (context || launching) {
             await closeBrowser();
@@ -64,7 +65,12 @@ const selectorProperty = {
 };
 const autoScreenshotProperty = {
     type: 'boolean',
-    description: 'Automatically capture Set-of-Marks screenshot and interactive elements after action; defaults to true.',
+    description: 'Deprecated compatibility alias: true requests a visual Set-of-Marks observation. Default is a cheap page-state observation.',
+};
+const observeProperty = {
+    type: 'string',
+    enum: ['none', 'state', 'visual'],
+    description: 'Post-action observation: state (default) returns URL/title only; visual adds a Set-of-Marks screenshot; none returns the action result only.',
 };
 const headlessProperty = {
     type: 'boolean',
@@ -102,6 +108,7 @@ export const browserToolDefinitions = [
             url: { type: 'string', description: 'Target HTTP or HTTPS URL.' },
             headless: headlessProperty,
             auto_screenshot: autoScreenshotProperty,
+            observe: observeProperty,
         }, ['url']),
     },
     {
@@ -112,11 +119,12 @@ export const browserToolDefinitions = [
             url: { type: 'string', description: 'Target HTTP or HTTPS URL.' },
             headless: headlessProperty,
             auto_screenshot: autoScreenshotProperty,
+            observe: observeProperty,
         }, ['url']),
     },
     {
         name: 'browser_inspect',
-        description: 'Inspect visible page text and up to 200 interactive elements ordered by viewport visibility. Captures semantic metadata for durable selectors.',
+        description: 'Inspect visible page text and up to 120 interactive elements ordered by viewport visibility. Captures semantic metadata for durable selectors.',
         parameters: params({
             tab: tabProperty,
             maxChars: { type: 'integer', minimum: 1000, maximum: 15000, description: 'Maximum output characters; defaults to 6000.' },
@@ -142,6 +150,7 @@ export const browserToolDefinitions = [
             value: { type: 'string', description: 'Text to type into the field.' },
             clear: { type: 'boolean', description: 'Whether to clear existing text before typing; defaults to true.' },
             auto_screenshot: autoScreenshotProperty,
+            observe: observeProperty,
         }, ['value']),
     },
     {
@@ -153,6 +162,7 @@ export const browserToolDefinitions = [
             ref: { type: 'string', description: 'Element ref (e.g. "e1", "1").' },
             value: { type: 'string', description: 'Text to fill into the field.' },
             auto_screenshot: autoScreenshotProperty,
+            observe: observeProperty,
         }, ['value']),
     },
     {
@@ -183,6 +193,7 @@ export const browserToolDefinitions = [
             tab: tabProperty,
             key: { type: 'string', description: 'Key name according to Playwright conventions.' },
             auto_screenshot: autoScreenshotProperty,
+            observe: observeProperty,
         }, ['key']),
     },
     {
@@ -198,6 +209,37 @@ export const browserToolDefinitions = [
             annotate: { type: 'boolean', description: 'Overlay Set-of-Marks (SoM) visual numbered badges over interactive elements; defaults to true.' },
             mask_inputs: { type: 'boolean', description: 'Mask all input and editable fields; defaults to false (password fields are always masked).' },
         }),
+    },
+    {
+        name: 'browser_batch',
+        description: 'Run up to 12 browser steps (navigate, click, fill, type, press, hover, scroll, wait, assert_text) under one approval, then return page state. Stops at the first failed step.',
+        parameters: params({
+            tab: tabProperty,
+            steps: {
+                type: 'array',
+                minItems: 1,
+                maxItems: MAX_BATCH_STEPS,
+                description: 'Ordered steps. Each needs an action; use ref/target for click/type and value for fill/type.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        action: { type: 'string', enum: ['navigate', 'open', 'click', 'fill', 'type', 'press', 'hover', 'scroll', 'wait', 'assert_text'] },
+                        ref: { type: 'string' },
+                        selector: { type: 'string' },
+                        value: { type: 'string' },
+                        key: { type: 'string' },
+                        url: { type: 'string' },
+                        direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'] },
+                        amount: { type: 'integer' },
+                        text: { type: 'string' },
+                        ms: { type: 'integer', minimum: 50, maximum: 5000 },
+                    },
+                    required: ['action'],
+                    additionalProperties: false,
+                },
+            },
+            observe: observeProperty,
+        }, ['steps']),
     },
     {
         name: 'browser_close',
@@ -404,8 +446,8 @@ export async function highlightElementSpotlight(page, locator, ref) {
                 container.remove();
             }, 450);
         }, ref || '').catch(() => { });
-        // Hold for 450ms so user visually registers the neon spotlight & expanding ripple
-        await new Promise((resolve) => setTimeout(resolve, 450));
+        // Hold briefly so a human can register the spotlight; this is not a page wait.
+        await new Promise((resolve) => setTimeout(resolve, 40));
     }
     catch {
         // Gracefully continue if element evaluation fails
@@ -471,7 +513,7 @@ export async function inspectPageElements(page, maxChars = 6000) {
                 }
             }
         }
-        // Query interactive elements up to 200 elements, prioritized by viewport
+        // Query interactive elements up to 120 elements, prioritized by viewport
         const INTERACTIVE_SELECTOR = 'button, a, input, select, textarea, summary, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="combobox"], [contenteditable="true"], [onclick]';
         const allInteractive = Array.from(document.querySelectorAll(INTERACTIVE_SELECTOR));
         const visible = allInteractive.filter(isVisible);
@@ -483,12 +525,13 @@ export async function inspectPageElements(page, maxChars = 6000) {
             else
                 outOfView.push(el);
         }
-        const candidates = inView.concat(outOfView).slice(0, 200);
+        const candidates = inView.concat(outOfView).slice(0, 120);
         const items = candidates.map((el, index) => {
             const htmlEl = el;
             const ref = `e${index + 1}`;
             htmlEl.setAttribute('data-tbot-ref', ref);
             const input = el;
+            const inViewport = isInViewport(htmlEl);
             const sensitive = /password|secret|token|api.?key|card|cvv|cvc|otp|one.?time/i.test([input.type, input.name, input.id, input.autocomplete, htmlEl.getAttribute('aria-label')].join(' '));
             const role = htmlEl.getAttribute('role') || htmlEl.tagName.toLowerCase();
             const ariaLabel = htmlEl.getAttribute('aria-label') || '';
@@ -508,11 +551,11 @@ export async function inspectPageElements(page, maxChars = 6000) {
                 name,
                 placeholder,
                 href,
-                cssPath: getCssPath(htmlEl),
+                cssPath: inViewport ? getCssPath(htmlEl) : '',
                 text: textContent,
                 label,
                 type: input.type || undefined,
-                inViewport: isInViewport(htmlEl),
+                inViewport,
             };
         });
         return { text, items };
@@ -617,6 +660,22 @@ export async function captureAnnotatedScreenshotAndElements(page, workspace) {
 }
 function formatWithObservation(obs, actionResult) {
     return `Screenshot saved: ${obs.screenshotPath}\nSayfa: ${obs.title} (${obs.url})\nGüncel Etkileşimli Öğeler:\n${obs.elementSummary}\n\n${actionResult}`;
+}
+async function observeBrowserResult(page, workspace, args, actionResult) {
+    const mode = guiObservation(args);
+    if (mode === 'none')
+        return actionResult;
+    if (mode === 'visual') {
+        try {
+            const obs = await captureAnnotatedScreenshotAndElements(page, workspace);
+            return formatWithObservation(obs, actionResult);
+        }
+        catch {
+            return actionResult;
+        }
+    }
+    const title = clean(cap(await page.title().catch(() => 'Sayfa'), 200));
+    return `${actionResult}\nPage: ${title} (${displayUrl(page.url?.() || '')})`;
 }
 function setupPageHandlers(page) {
     // Avoid freezing on dialogs without implicitly approving page confirmations.
@@ -1040,7 +1099,6 @@ async function runBrowserTool(name, args, options) {
                 await updateLiveBrowserHud(page, 'Sekmeye geçildi');
                 await checkUserAborted(page);
                 activeTabId = args.tab;
-                await inspectPageElements(page).catch(() => { });
                 return JSON.stringify({ action: 'switch', activeTab: args.tab, url: displayUrl(page.url()), title: clean(await page.title()) });
             }
             // Default: list tabs
@@ -1066,6 +1124,53 @@ async function runBrowserTool(name, args, options) {
         }
         const page = await pageFor(args.tab, { headless: typeof args.headless === 'boolean' ? args.headless : undefined });
         await checkUserAborted(page);
+        if (name === 'browser_batch') {
+            const steps = validateBatchSteps(args.steps, ['navigate', 'open', 'click', 'fill', 'type', 'press', 'hover', 'scroll', 'wait', 'assert_text']);
+            const completed = [];
+            for (const [index, step] of steps.entries()) {
+                await checkUserAborted(page);
+                const action = step.action;
+                try {
+                    if (action === 'wait') {
+                        const ms = Math.min(5000, Math.max(50, Number(step.ms ?? step.duration ?? 500) || 500));
+                        await page.waitForTimeout(ms);
+                        completed.push(`waited ${ms}ms`);
+                        continue;
+                    }
+                    if (action === 'assert_text') {
+                        const text = str(step.text ?? step.value, 'text');
+                        await page.getByText(text, { exact: false }).first().waitFor({ state: 'visible', timeout: 5000 });
+                        completed.push(`text visible: ${text.slice(0, 80)}`);
+                        continue;
+                    }
+                    const toolName = {
+                        navigate: 'browser_navigate',
+                        open: 'browser_open',
+                        click: 'browser_click',
+                        fill: 'browser_fill',
+                        type: 'browser_type',
+                        press: 'browser_press',
+                        hover: 'browser_hover',
+                        scroll: 'browser_scroll',
+                    }[action];
+                    if (!toolName)
+                        throw new Error(`unsupported batch action "${action}"`);
+                    const stepResult = await runBrowserTool(toolName, {
+                        ...step,
+                        tab: args.tab,
+                        auto_screenshot: false,
+                        observe: 'none',
+                    }, options);
+                    completed.push(`${action}: ${stepResult.slice(0, 160).replace(/\s+/g, ' ')}`);
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    throw new Error(`Batch stopped at step ${index + 1} (${action}): ${message}${completed.length ? `\nCompleted: ${completed.join(' | ')}` : ''}`);
+                }
+            }
+            const summary = `Batch completed ${steps.length} step(s).\n${completed.join('\n')}`;
+            return await observeBrowserResult(page, options.workspace, args, summary);
+        }
         if (name === 'browser_close_tab') {
             await page.close();
             return 'Tab closed.';
@@ -1082,7 +1187,7 @@ async function runBrowserTool(name, args, options) {
                 title: clean(cap(await page.title(), 300)),
                 dialogsCaptured: lastDialogHistory.length > 0 ? lastDialogHistory.slice(-3) : undefined,
             });
-            if (args.auto_screenshot !== false) {
+            if (args.auto_screenshot === true) {
                 try {
                     const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
                     return formatWithObservation(obs, result);
@@ -1093,7 +1198,7 @@ async function runBrowserTool(name, args, options) {
             }
             return result;
         }
-        // Inspect: 200 elements, viewport priority, rich semantic tree
+        // Inspect: 120 elements, viewport priority, rich semantic tree
         if (name === 'browser_inspect') {
             await updateLiveBrowserHud(page, 'Öğeler inceleniyor...');
             await checkUserAborted(page);
@@ -1127,16 +1232,7 @@ async function runBrowserTool(name, args, options) {
             await updateLiveBrowserHud(page, 'Hazır');
             await checkUserAborted(page);
             const result = `Clicked element ${ref}.`;
-            if (args.auto_screenshot !== false) {
-                try {
-                    const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-                    return formatWithObservation(obs, result);
-                }
-                catch {
-                    return result;
-                }
-            }
-            return result;
+            return await observeBrowserResult(page, options.workspace, args, result);
         }
         // Type / Fill: Resilient form filling with live spotlight focus
         if (name === 'browser_type' || name === 'browser_fill') {
@@ -1164,16 +1260,7 @@ async function runBrowserTool(name, args, options) {
             await updateLiveBrowserHud(page, 'Hazır');
             await checkUserAborted(page);
             const result = name === 'browser_fill' ? `Filled form element ${ref}.` : `Typed into element ${ref}.`;
-            if (args.auto_screenshot !== false) {
-                try {
-                    const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-                    return formatWithObservation(obs, result);
-                }
-                catch {
-                    return result;
-                }
-            }
-            return result;
+            return await observeBrowserResult(page, options.workspace, args, result);
         }
         // Hover with spotlight
         if (name === 'browser_hover') {
@@ -1190,16 +1277,7 @@ async function runBrowserTool(name, args, options) {
             await updateLiveBrowserHud(page, 'Hazır');
             await checkUserAborted(page);
             const result = `Hovered over element ${ref}.`;
-            if (args.auto_screenshot === true) {
-                try {
-                    const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-                    return formatWithObservation(obs, result);
-                }
-                catch {
-                    return result;
-                }
-            }
-            return result;
+            return await observeBrowserResult(page, options.workspace, args, result);
         }
         // Scroll
         if (name === 'browser_scroll') {
@@ -1237,16 +1315,7 @@ async function runBrowserTool(name, args, options) {
             }
             await updateLiveBrowserHud(page, 'Hazır');
             await checkUserAborted(page);
-            if (args.auto_screenshot !== false) {
-                try {
-                    const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-                    return formatWithObservation(obs, result);
-                }
-                catch {
-                    return result;
-                }
-            }
-            return result;
+            return await observeBrowserResult(page, options.workspace, args, result);
         }
         // Press Key
         if (name === 'browser_press') {
@@ -1257,16 +1326,7 @@ async function runBrowserTool(name, args, options) {
             await updateLiveBrowserHud(page, 'Hazır');
             await checkUserAborted(page);
             const result = `Pressed key "${key}".`;
-            if (args.auto_screenshot !== false) {
-                try {
-                    const obs = await captureAnnotatedScreenshotAndElements(page, options.workspace);
-                    return formatWithObservation(obs, result);
-                }
-                catch {
-                    return result;
-                }
-            }
-            return result;
+            return await observeBrowserResult(page, options.workspace, args, result);
         }
         // Evaluate JavaScript
         if (name === 'browser_evaluate') {

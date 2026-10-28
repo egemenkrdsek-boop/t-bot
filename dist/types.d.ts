@@ -74,6 +74,7 @@ export type AgentEvent = {
     type: 'tool_end';
     call: ToolCall;
     result: string;
+    durationMs?: number;
 } | {
     type: 'usage';
     inputTokens?: number;

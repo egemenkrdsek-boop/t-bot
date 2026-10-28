@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { executeTool, getToolDefinitions, isToolResultOk, READ_ONLY_TOOLS } from './tools/index.js';
 import { artifactHint, storeArtifact } from './tools/artifacts.js';
-import { buildSkillPrompt, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
+import { buildSkillPrompt, DEFAULT_SKILL_KERNEL, resolveSkills, skillRequiresReadOnly, stripSkillCommand } from './skills.js';
 import { pruneToolDefinitions, compressConversationHistory, estimateMessagesTokens, smartTruncateToolOutput, globalTokenTracker, } from './token-optimizer.js';
 import { globalGroundingLedger, auditAssistantClaims, withGroundingLedger } from './grounding.js';
 import { withPendingExportScope } from './ast-validator.js';
@@ -97,6 +97,26 @@ function isReadOnlyTool(name) {
         name === 'file_glob' ||
         name === 'skill_list' ||
         name === 'mcp_catalog');
+}
+/**
+ * GUI observations can run beside file reads, but GUI mutations stay serial.
+ * The tool name alone is not enough for `computer`, whose action decides.
+ */
+function isReadOnlyCall(call) {
+    if (isReadOnlyTool(call.name))
+        return true;
+    if (call.name === 'browser_inspect' || call.name === 'browser_screenshot')
+        return true;
+    const args = call.arguments ?? {};
+    if (call.name === 'browser_tabs') {
+        const action = String(args.action ?? 'list').toLowerCase();
+        return action === 'list';
+    }
+    if (call.name === 'computer') {
+        const action = String(args.action ?? 'screenshot').toLowerCase();
+        return action === 'inspect' || action === 'windows';
+    }
+    return false;
 }
 // Accepts screenshots produced by any browser or computer action.
 export async function screenshotImage(call, result, workspace) {
@@ -192,7 +212,7 @@ function limitImages(messages) {
 function groupToolCallsForHybridExecution(calls) {
     const groups = [];
     for (const call of calls) {
-        const readOnly = isReadOnlyTool(call.name);
+        const readOnly = isReadOnlyCall(call);
         if (readOnly) {
             const lastGroup = groups[groups.length - 1];
             if (lastGroup && lastGroup.parallel) {
@@ -288,7 +308,7 @@ async function runAgentInContext(input, options) {
             const memoryContext = await buildMemoryContext(workspace, input.message);
             const skillPrompt = buildSkillPrompt(options.activeSkills ? options.activeSkills : skills, workspace);
             const repoMap = await getWorkspaceRepoMap(workspace, input.message);
-            const systemSections = [SYSTEM_PROMPT];
+            const systemSections = [SYSTEM_PROMPT, DEFAULT_SKILL_KERNEL];
             if (budget.weak) {
                 systemSections.push('[SMALL MODEL MODE]\nUse exactly one tool call per turn and wait for its result before deciding the next step. Prefer file_outline and small file_read ranges over guessing. Do not attempt a large refactor in one action. If a tool fails, stop and change the approach instead of repeating it.');
             }
@@ -529,6 +549,7 @@ async function runAgentInContext(input, options) {
             }
             // 4. Hybrid Parallel/Serial Tool Execution with Smart Loop Breaker & Self-Healing Hints
             const executeSingleCall = async (call) => {
+                const startedAt = Date.now();
                 emit({ type: 'tool_start', call });
                 let result;
                 const violation = constraintViolation(call, constraints, workspace);
@@ -610,7 +631,7 @@ async function runAgentInContext(input, options) {
                 if (repeatCount >= 3) {
                     result += '\n[DÖNGÜ UYARISI: Aynı aracı aynı argümanlarla tekrar çağırdınız. Farklı bir yaklaşım deneyin veya yanıtınızı sentezleyin.]';
                 }
-                return { call, result, image };
+                return { call, result, image, durationMs: Date.now() - startedAt };
             };
             for (const call of calls) {
                 seenIds.add(call.id);
@@ -622,7 +643,7 @@ async function runAgentInContext(input, options) {
                 if (group.parallel && group.calls.length > 1) {
                     const batchOutputs = await Promise.all(group.calls.map(c => executeSingleCall(c)));
                     for (const out of batchOutputs) {
-                        emit({ type: 'tool_end', call: out.call, result: out.result });
+                        emit({ type: 'tool_end', call: out.call, result: out.result, durationMs: out.durationMs });
                         const toolMessage = {
                             role: 'tool',
                             toolCallId: out.call.id,
@@ -642,7 +663,7 @@ async function runAgentInContext(input, options) {
                 else {
                     for (const c of group.calls) {
                         const out = await executeSingleCall(c);
-                        emit({ type: 'tool_end', call: out.call, result: out.result });
+                        emit({ type: 'tool_end', call: out.call, result: out.result, durationMs: out.durationMs });
                         const toolMessage = {
                             role: 'tool',
                             toolCallId: out.call.id,

@@ -1,5 +1,28 @@
 # Changelog
 
+## 4.1.0
+
+### Default reasoning and token discipline
+
+- Embedded the Ultra J-Space Engine as a hidden built-in skill. A compact `[J-SPACE DEFAULT KERNEL]` is always injected for agentic turns; the full skill text loads only through `/jspace` or an explicit deep-reasoning trigger.
+- Hidden skills are excluded from `/skills` and the desktop skill catalog while remaining available to the model.
+- Removed unconditional `BUILTIN_SKILLS` injection from CLI/TUI and the Telegram bridge. This restores the fast conversational path and avoids sending all built-in skill guidance on every turn.
+
+### GUI fast path
+
+- Browser and computer actions now return lightweight page/window state by default. Set-of-Marks screenshots and UIA trees require `observe: "visual"`, `auto_screenshot: true`, or an explicit inspect/screenshot action.
+- Browser screenshots are no longer taken after every click/type/scroll; the forced 450 ms visual wait is reduced to a 40 ms human-perceptible spotlight hold. Inspect is capped at 120 visible elements and skips CSS-path work for off-screen elements.
+- Computer actions no longer take a second screenshot/UIA round-trip by default; the 220 ms delay is removed unless visual observation is requested.
+- Added `browser_batch` and `computer_batch`: up to 12 validated steps under one approval, one final observation, with an explicit stopping step on failure.
+- Warm sessions now survive normal model/approval latency: browser and desktop keep-alive is 10 minutes instead of 60/90 seconds. `/gui stop`, idle timeout and memory pressure still release them.
+- Pure GUI observations (`browser_inspect`, tab listing, computer inspect/windows) no longer require a separate approval per call; mutations, screenshots and batches keep the approval boundary.
+- Added screenshot retention (40 files / 32 MB) and `durationMs` on tool-end events.
+
+### Verification
+
+- Unit/component tests now cover the J-Space kernel, hidden skill routing, GUI observation defaults, batch validation, screenshot retention and existing 4.0 security gates.
+- No E2E, live provider, real browser/computer or Telegram task was run.
+
 ## 4.0.0
 
 ### Precision and security

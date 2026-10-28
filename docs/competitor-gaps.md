@@ -2,8 +2,14 @@
 
 Bu dosya bağımsız bir rakip denetimi veya sıralama kanıtı değildir. Amaç, kodlama ajanlarında tekrar eden sorunları T Bot'un somut davranışlarıyla eşlemek ve 3.0 kapsamını görünür tutmaktır. Kaynaklar ürünlerin genel kullanım deneyimi ve açık dokümantasyonudur; her iddia sürüm bazında ayrıca doğrulanmalıdır.
 
-| Yaygın sorun | T Bot 4.0 karşılığı | Durum |
+| Yaygın sorun | T Bot 4.1 karşılığı | Durum |
 | --- | --- | --- |
+| Ağır varsayılan reasoning prompt'u | Gizli J-Space skill'i; normal turda kompakt kernel, tam metin isteğe bağlı | Uygulandı |
+| GUI'de her eylemde screenshot/UIA taraması | Varsayılan `state`; görsel gözlem açık istek | Uygulandı |
+| Model/onay gecikmesinde browser/daemon cold start | 10 dakika sıcak oturum | Uygulandı |
+| Form doldurmada çok sayıda model turu/onay | `browser_batch` / `computer_batch`, tek onay | Uygulandı |
+| Gözlem için bile onay istemek | Saf gözlemler onaysız; mutasyon/screenshot/batch onaylı | Uygulandı |
+| Screenshot disk şişmesi | 40 dosya / 32 MB retention | Uygulandı |
 | Uzun oturumda bağlam şişmesi | Model profiline göre yerel bütçe, pencereleme, kanıt özeti | Uygulandı; gerçek model kalitesi ölçülmedi |
 | Büyük araç çıktısının her turda tekrar gönderilmesi | `.tbot/artifacts` + `artifact_read` | Uygulandı |
 | Modelin var olmayan dosya/export uydurması | Repo map, `file_outline`, okuma-sonrası-yazma, grounding | Kısmen; model hatası tümüyle engellenemez |

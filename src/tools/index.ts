@@ -20,6 +20,7 @@ import { checkpointToolDefinitions, handleCheckpointTool } from '../checkpoints.
 import { diagnosticsToolDefinitions, handleDiagnosticsTool } from './diagnostics.js';
 import { capabilitiesAllowed, type Capability } from '../security/capabilities.js';
 import { currentTaintLedger, taintedArgument } from '../security/taint.js';
+import { pruneScreenshots } from './screenshot-store.js';
 
 export interface ToolContext {
   workspace: string;
@@ -490,7 +491,15 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       } catch { /* Path resolution errors are surfaced by the tool handler. */ }
     }
 
-    const isGuiTool = actualCall.name === 'computer' || actualCall.name.startsWith('browser_');
+    const isGuiTool = actualCall.name === 'computer' || actualCall.name === 'computer_batch' ||
+      actualCall.name === 'browser_batch' || actualCall.name.startsWith('browser_');
+    // Observations are read-only from the user's perspective. Requiring an
+    // approval for every inspect is a major source of GUI latency. Explicit
+    // screenshots still use the normal GUI approval boundary.
+    const guiAction = String(actualArgs.action ?? '').toLowerCase();
+    const isGuiObservation = actualCall.name === 'browser_inspect' ||
+      (actualCall.name === 'browser_tabs' && (!guiAction || guiAction === 'list')) ||
+      (actualCall.name === 'computer' && (guiAction === 'inspect' || guiAction === 'windows'));
     // Shell is already approval-gated, but a command that names a credential
     // file deserves an explicit warning in the approval prompt. This is a
     // high-signal heuristic, not a complete parser.
@@ -499,6 +508,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     // GUI access can submit forms, send messages and operate terminals. Default
     // to the same approval boundary as shell; trusted/YOLO callers may approve.
     const requireGuiApproval = process.env.TBOT_REQUIRE_GUI_APPROVAL !== 'false';
+    const guiNeedsApproval = isGuiTool && requireGuiApproval && !isGuiObservation;
     const tainted = taintedArgument(actualArgs);
     const taintSensitive = tainted !== undefined && (
       APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
@@ -512,7 +522,7 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
       return err;
     }
     const isApprovalRequired = remote || APPROVAL_REQUIRED_TOOLS.includes(actualCall.name) ||
-      (isGuiTool && requireGuiApproval) || sensitiveReadPath !== undefined || taintSensitive;
+      guiNeedsApproval || sensitiveReadPath !== undefined || taintSensitive;
 
     if (isApprovalRequired) {
       const description = remote
@@ -620,6 +630,9 @@ export async function executeTool(call: ToolCall, context: ToolContext): Promise
     }
     if (typeof output === 'string' && (output.includes('[ACİL DURDURMA') || output.includes('KULLANICI ACİL DURDURMA'))) {
       triggerGuiKillSwitch(output);
+    }
+    if (isGuiTool) {
+      void pruneScreenshots(context.workspace).catch(() => undefined);
     }
     return output;
   } catch (error) {

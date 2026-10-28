@@ -288,7 +288,6 @@ export async function main(argv: string[]): Promise<void> {
       session,
       workspace,
       getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
-      activeSkills: BUILTIN_SKILLS.map(s => s.id),
       mcpTools,
       onLog: (text: string) => {
         if (!stdin.isTTY) console.error(text);
@@ -312,7 +311,6 @@ export async function main(argv: string[]): Promise<void> {
           session,
           workspace,
           getYolo: () => yolo || getWorkspacePermission(config, workspace) === 'allow',
-          activeSkills: BUILTIN_SKILLS.map(s => s.id),
           mcpTools,
           onLog: (msg) => { if (!stdin.isTTY) console.error(msg); }
         });
@@ -691,7 +689,7 @@ export async function main(argv: string[]): Promise<void> {
             const skill = BUILTIN_SKILLS.find(item => item.id === argument);
             return skill ? `/${skill.id} — ${skill.description}\n${skill.guidance}` : 'Beceri bulunamadı. /skills ile listeyi görün.';
           }
-          return BUILTIN_SKILLS.map(skill => `/${skill.id} — ${skill.description}`).join('\n');
+          return BUILTIN_SKILLS.filter(skill => !skill.hidden).map(skill => `/${skill.id} — ${skill.description}`).join('\n');
         }
 
         if (name === '/effort') {

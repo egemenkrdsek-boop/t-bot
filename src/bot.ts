@@ -28,7 +28,8 @@ export interface TelegramBridgeOptions {
   session: Session;
   workspace: string;
   getYolo: () => boolean;
-  activeSkills: SkillId[];
+  /** Retained for host compatibility; skills are resolved per user message. */
+  activeSkills?: SkillId[];
   onLog?: (text: string) => void;
   mcpTools?: McpConnection[];
 }
@@ -942,7 +943,8 @@ export async function startTelegramBotBridge(options: {
   session: Session;
   workspace: string;
   getYolo: () => boolean;
-  activeSkills: SkillId[];
+  /** Retained for host compatibility; skills are resolved per user message. */
+  activeSkills?: SkillId[];
   onLog?: (text: string) => void;
   mcpTools?: McpConnection[];
 }): Promise<{ ok: boolean; username?: string; error?: string }> {

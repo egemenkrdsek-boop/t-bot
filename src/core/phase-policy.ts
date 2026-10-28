@@ -59,6 +59,8 @@ const WRITE_TOOLS = new Set([
   'skill_create',
   'process_write',
   'process_stop',
+  'computer_batch',
+  'browser_batch',
 ]);
 
 const VERIFICATION_COMMAND = /(?:\b(?:test|tests|typecheck|type check|lint|verify|check|tsc|vitest|jest|pytest)\b)/iu;

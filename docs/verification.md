@@ -242,3 +242,31 @@ Bu sonuçlar gerçek model doğruluğu, tarayıcı/masaüstü güvenilirliği, r
 | Desktop yerel kurulum | `deploy-local.ps1` başarılı; ProductVersion `4.0.0.0`; kurulu `app.asar` manifest hash'iyle eşleşti; uygulama açılmadı |
 | Global CLI kurulumu | `t-bot-cli-4.0.0.tgz` `npm install -g --ignore-scripts` ile kuruldu; `tbot --version` → `T Bot 4.0.0` |
 | Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar üretildi |
+
+## 4.1.0 kaynak ve performans kaydı
+
+28 Ekim 2026'da T Bot 4.1.0 kaynak ağacında aşağıdaki kontroller tamamlandı. Bu kayıt E2E, canlı sağlayıcı, gerçek tarayıcı/masaüstü otomasyonu veya gerçek Telegram görevi değildir.
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `npm test` | **257/257 başarılı**, 0 hata, 0 atlama |
+| `npm run typecheck` | Başarılı |
+| `npm run check:layers` | Başarılı; 74 TypeScript dosyasında katman ihlali yok |
+| `node --check` renderer/preload | Başarılı |
+| `npm run build` | Başarılı |
+| `npm pack --ignore-scripts` | `t-bot-cli-4.1.0.tgz` üretildi |
+| `npm run dist:win` | Windows x64 NSIS yükleyicisi ve manifest üretildi |
+
+4.1 doğrulaması şunları kapsar: kompakt J-Space kernel'inin varlığı ve boyutu, tam skill'in gizli kalması ve yalnızca açık tetikleyiciyle yüklenmesi, built-in skill'lerin varsayılan olarak enjekte edilmemesi, GUI `state/visual/none` varsayılanları, 10 dakikalık sıcak oturum politikası, batch adım sınırı/doğrulaması, screenshot retention ve 4.0'ın güvenlik/tamamlanma testleri.
+
+Bu sonuçlar gerçek GUI gecikmesini, model kalitesini, rakiplere göre token tasarrufunu veya dünya sıralamasını kanıtlamaz. Gerçek browser/computer/Telegram/E2E akışı çalıştırılmadı.
+
+### 4.1 paket kaydı
+
+| Kontrol | Sonuç |
+| --- | --- |
+| `release/T-Bot-Setup-4.1.0.exe` | 128.598.420 byte; SHA256 `d560d2a7f2b7c80559c6b40b6ed7859619e3808c3657ac322d7392f5e5d70e9f` |
+| `app.asar` SHA256 | `6f2b11772366608e3188cf4ff149c8626759030893ac3f3df357e248e555b331` (manifest ile aynı) |
+| Desktop yerel kurulum | Manifest doğrulamalı `deploy-local.ps1`; sürüm ve `app.asar` hash'i kontrol edilir |
+| Global CLI kurulumu | `t-bot-cli-4.1.0.tgz` global kurulur; `tbot --version` → `T Bot 4.1.0` |
+| Yayın/dağıtım | GitHub push/release yapılmadı; yalnızca yerel artefaktlar ve yerel kurulumlar |

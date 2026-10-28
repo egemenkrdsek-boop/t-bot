@@ -466,10 +466,11 @@ function registerIpcHandlers() {
         const resolvedWorkspace = resolve(workspace || getDefaultWorkspace());
         const customSkills = loadCustomSkills(resolvedWorkspace);
         const mcpConnections = await loadConnections().catch(() => ({}));
+        const visibleBuiltinSkills = BUILTIN_SKILLS.filter(skill => !skill.hidden);
         return {
-            builtinSkills: BUILTIN_SKILLS,
+            builtinSkills: visibleBuiltinSkills,
             customSkills,
-            skills: [...BUILTIN_SKILLS, ...customSkills],
+            skills: [...visibleBuiltinSkills, ...customSkills],
             mcpPresets: MCP_PRESETS,
             mcpConnections,
         };
@@ -576,7 +577,6 @@ function registerIpcHandlers() {
             session: bridgeSession,
             workspace: resolvedWorkspace,
             getYolo: () => getWorkspacePermission(config, resolvedWorkspace) === 'allow',
-            activeSkills: BUILTIN_SKILLS.map(skill => skill.id),
             mcpTools: [],
             onLog: text => {
                 if (mainWindow && !mainWindow.isDestroyed()) {

@@ -1,6 +1,6 @@
 # Mimari ve kapsam
 
-T Bot 4.0 aynı yerel ajan çekirdeğini CLI/TUI, Electron masaüstü ve Telegram girişlerinden kullanır. Ayrı bir sunucu backend'i yoktur; dış model, tarayıcı, MCP ve Telegram bağlantıları kullanıcı yapılandırmasına bağlıdır.
+T Bot 4.1, 4.0'ın yerel ajan çekirdeğini CLI/TUI, Electron masaüstü ve Telegram girişlerinden kullanır. Ayrı bir sunucu backend'i yoktur; dış model, tarayıcı, MCP ve Telegram bağlantıları kullanıcı yapılandırmasına bağlıdır.
 
 ```text
 CLI / TUI ─────┐
@@ -23,7 +23,9 @@ Telegram ──────┘                              │
 | Komut yüzeyi | `src/commands.ts` | Komut adları, kullanım, argüman kuralları ve yüzey desteği; CLI/TUI/masaüstü tek kaynak |
 | Ortak host | `src/host-services.ts`, `src/turn-runner.ts` | Görsel sağlayıcı, model kataloğu, API anahtarı doğrulaması ve goal/plan/ultracode/subagent tur dağıtımı |
 | Ajan | `src/agent.ts` | Tur döngüsü, faz disiplini, bağlam montajı, sentez ve hata kurtarma |
+| Skill çekirdeği | `src/skills.ts`, `src/skills/jspace.ts` | Gizli J-Space skill'i, kompakt varsayılan kernel, isteğe bağlı tam metin |
 | Kullanıcı sınırları | `src/constraints.ts` | Açık yol/komut/araç sınırlarının çıkarımı, kalıcılığı ve araç öncesi uygulanması |
+| GUI politikası | `src/tools/gui-policy.ts` | `none/state/visual` gözlem, sıcak oturum süresi, batch sınırı |
 | Bağlam | `src/token-optimizer.ts`, `src/context-window.ts`, `src/context-cache.ts`, `src/tools/artifacts.ts` | Şema budama, pencereleme, kanıt özeti, büyük çıktı artifact'ları |
 | Araçlar | `src/tools/index.ts`, `src/tools/*.ts` | Ad/argüman normalleştirme, onay, risk sınırı, dosya/kabuk/Git/web/tarayıcı/masaüstü/MCP |
 | Doğrulama | `src/tools/verify.ts`, `src/tools/diagnostics.ts`, `src/grounding.ts`, `src/ast-validator.ts` | Proje script'leri, yerel TS tanılaması, sözdizimi ve iddia denetimi |
@@ -43,6 +45,14 @@ Telegram ──────┘                              │
 4. **Act:** yalnızca gerekli araçlar çalışır; yazma öncesi okuma, revizyon ve hassas yol kontrolleri uygulanır.
 5. **Verify:** `project_verify` proje script'lerini onayla çalıştırır; çıktı tipli sonuç olarak ajana ve kullanıcıya döner.
 6. **Report:** nihai metin yalnızca araç kanıtına dayanır. Kanıtsız başarı iddiası grounding denetiminden geçmez.
+
+## GUI gözlem ve eşzamanlılık
+
+- Varsayılan gözlem `state`'tir: browser URL/başlık, desktop pencere durumu. `visual` yalnızca açıkça istenirse Set-of-Marks screenshot/UIA ağacı üretir.
+- Browser ve desktop sıcak oturumları 10 dakika korunur; `/gui stop`, boşta kalma veya bellek baskısı kapatır.
+- `browser_batch` ve `computer_batch` en fazla 12 adımı tek onayla çalıştırır; ilk hatada durur ve tamamlanan adımları raporlar.
+- GUI mutasyonları seri, saf gözlemler ve dosya/terminal işleri paralel çalışabilir. Bu, aynı pencereye eşzamanlı tıklama yarışını önler.
+- Screenshot'lar `.tbot/screenshots` altında 40 dosya / 32 MB ile sınırlandırılır.
 
 ## Bağlam ve token politikası
 

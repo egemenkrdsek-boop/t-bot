@@ -51,7 +51,7 @@ export interface ApprovalRequest {
 export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool_start'; call: ToolCall }
-  | { type: 'tool_end'; call: ToolCall; result: string }
+  | { type: 'tool_end'; call: ToolCall; result: string; durationMs?: number }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number; savedTokens?: number; savingsPercent?: number }
   | { type: 'error'; error: string; code?: 'authentication' }
   | { type: 'status'; message: string };

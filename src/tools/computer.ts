@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 import type { ToolDefinition } from '../types.js';
 import { executeDesktopRequest } from './desktop-request.js';
 import { windowsSystemExecutable } from '../windows-system.js';
+import { GUI_WARM_IDLE_MS, guiObservation, MAX_BATCH_STEPS, validateBatchSteps } from './gui-policy.js';
 
 export const computerToolDefinitions: ToolDefinition[] = [{
   name: 'computer',
-  description: 'Control the local desktop GUI with semantic UI Automation, pinpoint target resolution, on-screen live HUD, and automatic visual verification. Coordinates are absolute physical desktop pixels.',
+  description: 'Control the local desktop GUI with semantic UI Automation. Returns lightweight window state by default; screenshots and UIA trees require an explicit observation. Coordinates are absolute physical desktop pixels.',
   parameters: {
     type: 'object',
     required: ['action'],
@@ -30,7 +31,12 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       },
       auto_screenshot: {
         type: 'boolean',
-        description: 'Return marked screenshot and UI element list after action (default: true).'
+        description: 'Deprecated compatibility alias: true requests a visual screenshot after the action. Default is lightweight window state.'
+      },
+      observe: {
+        type: 'string',
+        enum: ['none', 'state', 'visual'],
+        description: 'Post-action observation: state (default) returns window state; visual adds a screenshot; none returns the action result only.'
       },
       press_enter: {
         type: 'boolean',
@@ -53,6 +59,43 @@ export const computerToolDefinitions: ToolDefinition[] = [{
       delta: { type: 'integer', description: 'Mouse wheel delta, typically 120 (up) or -120 (down).' }
     }
   }
+}, {
+  name: 'computer_batch',
+  description: 'Run up to 12 desktop steps (focus, click, type, key, scroll, wait, move) under one approval, then return one final observation. Stops at the first failed step.',
+  parameters: {
+    type: 'object',
+    required: ['steps'],
+    properties: {
+      observe: {
+        type: 'string',
+        enum: ['none', 'state', 'visual'],
+        description: 'Final observation: state (default) returns window state; visual adds a screenshot; none returns step results only.'
+      },
+      steps: {
+        type: 'array',
+        minItems: 1,
+        maxItems: MAX_BATCH_STEPS,
+        description: 'Ordered desktop actions. Each needs an action; use target/text/key as appropriate.',
+        items: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['focus', 'click', 'type', 'key', 'scroll', 'wait', 'move'] },
+            target: { type: 'string' },
+            handle: { type: 'string' },
+            text: { type: 'string' },
+            key: { type: 'string' },
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            delta: { type: 'integer' },
+            press_enter: { type: 'boolean' },
+            ms: { type: 'integer', minimum: 50, maximum: 5000 },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+      },
+    }
+  }
 }];
 
 // --- Windows Persistent Daemon Architecture ---
@@ -67,7 +110,7 @@ let daemonLaunching: Promise<ChildProcess> | null = null;
 const pendingRequests = new Map<string, PendingRequest>();
 let lineBuffer = '';
 let desktopIdleTimer: NodeJS.Timeout | null = null;
-const DESKTOP_IDLE_TIMEOUT_MS = 90_000;
+const DESKTOP_IDLE_TIMEOUT_MS = GUI_WARM_IDLE_MS;
 let lastDesktopActivityAt = 0;
 
 export function resetDesktopIdleTimer(): void {
@@ -625,7 +668,7 @@ function normalizeComputerArgs(rawArgs: Record<string, unknown>): {
     if (!Number.isNaN(numDelta)) delta = Math.round(numDelta);
   }
 
-  const autoScreenshot = rawArgs.auto_screenshot !== false;
+  const autoScreenshot = guiObservation(rawArgs) === 'visual';
   const press_enter = Boolean(rawArgs.press_enter ?? rawArgs.enter ?? rawArgs.submit);
 
   const waitDurationMs = action === 'wait'
@@ -659,11 +702,46 @@ export async function executeComputerTool(
   return handleComputerTool(name, args, { workspace });
 }
 
+async function handleComputerBatch(
+  args: Record<string, unknown>,
+  context: { workspace: string; signal?: AbortSignal }
+): Promise<string> {
+  const steps = validateBatchSteps(args.steps, ['focus', 'click', 'type', 'key', 'scroll', 'wait', 'move']);
+  const completed: string[] = [];
+  for (const [index, step] of steps.entries()) {
+    context.signal?.throwIfAborted();
+    try {
+      const result = await handleComputerTool('computer', {
+        ...step,
+        auto_screenshot: false,
+        observe: 'none',
+        ...(step.action === 'wait' ? { duration: Math.min(5000, Math.max(50, Number(step.ms ?? step.duration ?? 500) || 500)) } : {}),
+      }, context);
+      const parsed = (() => { try { return JSON.parse(result) as Record<string, unknown>; } catch { return {}; } })();
+      if (parsed.ok === false) throw new Error(String(parsed.error || parsed.warning || 'desktop action reported a warning'));
+      completed.push(`${index + 1}. ${step.action}${step.target ? ` [${String(step.target).slice(0, 80)}]` : ''} ok`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Batch stopped at step ${index + 1} (${step.action}): ${message}${completed.length ? `\nCompleted: ${completed.join(' | ')}` : ''}`);
+    }
+  }
+
+  const mode = guiObservation(args);
+  if (mode === 'none') return `Batch completed ${steps.length} step(s).\n${completed.join('\n')}`;
+  if (mode === 'visual') {
+    const shot = await handleComputerTool('computer', { action: 'screenshot', auto_screenshot: false }, context);
+    return `Batch completed ${steps.length} step(s).\n${completed.join('\n')}\n${shot}`;
+  }
+  const windows = await handleComputerTool('computer', { action: 'windows', auto_screenshot: false }, context);
+  return `Batch completed ${steps.length} step(s).\n${completed.join('\n')}\n${windows}`;
+}
+
 export async function handleComputerTool(
   name: string,
   args: Record<string, unknown>,
   context: { workspace: string; signal?: AbortSignal }
 ): Promise<string> {
+  if (name === 'computer_batch') return await handleComputerBatch(args, context);
   if (name !== 'computer') throw new Error(`Unknown computer tool: ${name}`);
 
   const normalized = normalizeComputerArgs(args);
@@ -698,7 +776,7 @@ export async function handleComputerTool(
     press_enter: normalized.press_enter,
   };
 
-  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {
+  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot === true)) {
     request.action = 'screenshot';
     const directory = join(context.workspace, '.tbot', 'screenshots');
     await mkdir(directory, { recursive: true });
@@ -734,7 +812,7 @@ export async function handleComputerTool(
     });
   }
 
-  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot !== false)) {
+  if (action === 'screenshot' || (action === 'wait' && normalized.auto_screenshot === true)) {
     const shotPath = request.screenshotPath as string;
     const elements = (data.elements as any[]) || [];
     const elementsSummary = formatElementsSummary(elements);
@@ -748,7 +826,7 @@ export async function handleComputerTool(
   }
 
   // Otomatik Gözlem -> Eylem -> Görsel Doğrulama Döngüsü
-  const shouldAutoScreenshot = normalized.auto_screenshot !== false && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move', 'drag'].includes(action);
+  const shouldAutoScreenshot = normalized.auto_screenshot === true && ['focus', 'click', 'type', 'key', 'scroll', 'open', 'move', 'drag'].includes(action);
   if (shouldAutoScreenshot) {
     try {
       await new Promise(r => setTimeout(r, 220));

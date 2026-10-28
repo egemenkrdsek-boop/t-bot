@@ -1,6 +1,6 @@
 {
   "name": "t-bot-cli",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "license": "MIT",
   "description": "Local AI coding agent with CLI, Windows desktop tools and Telegram gateway",
   "type": "module",

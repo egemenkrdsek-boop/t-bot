@@ -4,6 +4,7 @@ import { join, resolve, basename, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { configDirectory } from './config.js';
 import { workspaceStatePath } from './workspace-state.js';
+import { JSPACE_FULL, JSPACE_KERNEL } from './skills/jspace.js';
 export const BUILTIN_SKILLS = [
     {
         id: 'frontenddesign',
@@ -45,7 +46,18 @@ export const BUILTIN_SKILLS = [
         triggers: ['imagegen', 'image generation', 'gorsel olustur', 'gorsel uret', 'gorsel duzenle', 'resim olustur', 'resim uret', 'resim duzenle'],
         scope: 'builtin',
     },
+    {
+        id: 'jspace',
+        title: 'Ultra J-Space Reasoning Engine',
+        description: 'Dört lensli derin akıl yürütme, kanıt disiplini ve sistem orkestrasyonu',
+        guidance: JSPACE_FULL,
+        triggers: ['jspace', 'j-space', 'ultra reasoning', 'deep reasoning', 'complex architecture', 'multi-stage', 'rigorous debugging', 'derin akil yurutme', 'karmasik mimari'],
+        scope: 'builtin',
+        hidden: true,
+    },
 ];
+export { JSPACE_KERNEL };
+export const DEFAULT_SKILL_KERNEL = JSPACE_KERNEL;
 export const SKILLS = BUILTIN_SKILLS;
 function normalize(text) {
     return text
@@ -179,7 +191,7 @@ export function loadCustomSkills(workspace) {
     }
     return Array.from(map.values());
 }
-const explicitBuiltin = /^\s*\/(frontenddesign|backend|codereview|debuganalysis|imagegen)(?=\s|$)/i;
+const explicitBuiltin = /^\s*\/(frontenddesign|backend|codereview|debuganalysis|imagegen|jspace)(?=\s|$)/i;
 const explicitAnySlash = /^\s*\/([a-z0-9_-]+)(?=\s|$)/i;
 export function stripSkillCommand(message, workspace) {
     const trimmed = message.replace(explicitBuiltin, '').trim();
@@ -206,6 +218,7 @@ export function resolveSkills(message, workspace) {
         codereview: /\b(codereview|code review|review (?:the )?code|review (?:this |the )?(?:pr|pull request)|kod incele(?:mesi|me)?|kodu incele|kod (?:gozden gecir|gozden gecirme))\b/.test(normalized),
         debuganalysis: /\b(debuganalysis|debug analysis|debugging|debug|root cause|neden calismiyor|hata analizi|hatayi incele|hata ayikla|sorunu analiz)\b/.test(normalized),
         imagegen: /\b(imagegen|image generation|generate (?:an? |the )?(?:image|illustration|picture)|create (?:an? |the )?(?:image|illustration|picture)|edit (?:an? |the )?(?:image|picture)|gorsel (?:olustur|uret|duzenle)|resim (?:olustur|uret|duzenle))\b/.test(normalized),
+        jspace: /\b(jspace|j-space|ultra reasoning|deep reasoning|complex architecture|multi-stage|rigorous debugging|derin akil yurutme|karmasik mimari)\b/.test(normalized),
     };
     const resolvedBuiltin = BUILTIN_SKILLS.filter(skill => skill.id === builtinCommand || matches[skill.id]);
     const customSkills = loadCustomSkills(workspace);

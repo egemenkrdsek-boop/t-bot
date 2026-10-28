@@ -131,3 +131,12 @@ Yeni patch metadata sürümü 2.2.1; RAM guard ham geçmiş kaybı ve Telegram s
 4.0.0, 3.1.0'ın çalışan çekirdeğini koruyarak sınır modüllerini yeniden yazdı: doğrulama-sonrası-yazma kapısı, checkpoint/undo, diagnostics'in geç yüklenmesi, MCP okuma/yazma yetenek ayrımı, taint, isteğe bağlı kabuk sandbox'ı ve CLI/masaüstü `/checkpoints` + `/undo` parity'si. 248/248 birim/bileşen testi, typecheck, katman denetimi, build ve Windows setup üretimi başarılıdır.
 
 Bu güncelleme aşağıdaki geniş hedefleri **tamamlanmış saymaz**: dünya sıralaması, rakiplere göre %50–75 token tasarrufu, canlı model/browser/computer/Telegram doğruluğu, Windows OS sandbox eşdeğerliği, PTY/genel LSP/eklenti API'si ve tüm prompt-injection biçimlerine karşı kesin koruma. E2E ve gerçek kurulum çalıştırması yapılmadı; yalnızca statik/birim kanıtı ve paket artefaktı vardır.
+
+### 4.1.0 J-Space ve GUI fast path
+
+- Gizli J-Space skill'i ve kompakt varsayılan kernel eklendi; tam skill yalnızca açık tetikleyiciyle yükleniyor.
+- CLI/TUI ve Telegram'da tüm built-in skill'lerin her turda enjekte edilmesi kaldırıldı; fast konuşma yolu yeniden çalışıyor.
+- Browser/desktop eylemleri varsayılan olarak hafif durum gözlemi döndürüyor; screenshot/UIA açık istek gerektiriyor.
+- Browser/desktop sıcak oturumları 10 dakikaya çıkarıldı; `browser_batch` ve `computer_batch` tek onayla en fazla 12 adım çalıştırıyor.
+- Screenshot retention ve tool süresi ölçümü eklendi.
+- 257/257 test, typecheck, katman denetimi ve build başarılı. Gerçek GUI gecikmesi ve model kalitesi bu kayıtta ölçülmedi; E2E yasağı sürüyor.

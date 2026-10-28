@@ -1,15 +1,15 @@
 ![T Bot logosu](assets/tabit.webp)
 
-# T Bot 4.0
+# T Bot 4.1
 
 T Bot, terminalden veya Windows masaüstü uygulamasından kullanılan **yerel** bir yapay zekâ kodlama ajanıdır. Aynı çekirdek; CLI/TUI, Electron masaüstü ve Telegram girişlerinden çalışır. Ayrı bir bulut backend'i yoktur; model çağrıları, tarayıcı, MCP ve Telegram gibi dış bağlantılar kullanıcı tarafından yapılandırılır.
 
-4.0'ın odağı dört başlıktır:
+4.1'in odağı dört başlıktır:
 
-- **Hassas ajan:** doğrulama-sonrası tamamlanma kapısı, gerçek dosya checkpoint/undo, kanıta dayalı nihai yanıt.
-- **Güvenlik sınırı:** isteğe bağlı OS kabuk sandbox'ı, okuma/yazma MCP yetenek ayrımı, taint takibi ve kullanıcı sınırlarının araç katmanında uygulanması.
-- **Token ekonomisi:** büyük araç çıktıları yerel artifact'lara taşınır; bağlam model profiline göre bütçelenir; sağlayıcı `usage` değeri ile yerel tahmin ayrı raporlanır.
-- **Sade arayüz:** OpenCode'un terminal estetiğinden ilham alan, tek vurgu rengi, monospace kod, düşük gürültü ve klavye öncelikli masaüstü/TUI.
+- **J-Space çekirdeği:** dört lensli akıl yürütme, kanıt disiplini ve derin görev planlaması varsayılan; tam skill gizli ve isteğe bağlı.
+- **GUI fast path:** eylem sonrası hafif durum gözlemi, açık görsel doğrulama, sıcak browser/desktop oturumları ve toplu GUI eylemleri.
+- **Token ekonomisi:** skill enjeksiyonu azaltıldı; büyük araç çıktıları yerel artifact'lara taşınır; bağlam model profiline göre bütçelenir.
+- **Güvenlik ve sade arayüz:** isteğe bağlı OS sandbox, checkpoint/undo, tek vurgu rengi, monospace kod ve klavye öncelikli masaüstü/TUI.
 
 ## Kurulum
 
@@ -51,7 +51,7 @@ npm run dist:win
 powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1
 ```
 
-Bu akış `release/T-Bot-Setup-4.0.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler. Manifest ve yükleyiciyi birlikte saklayın. Yayımlama işlemi bu deponun sorumluluğunda değildir.
+Bu akış `release/T-Bot-Setup-4.1.0.exe` ve `release/build-manifest.json` üretir. Kurulum betiği yükleyicinin SHA256 değerini, çıkış kodunu, kurulan uygulamanın sürümünü ve `app.asar` SHA256 değerini denetler. Manifest ve yükleyiciyi birlikte saklayın. Yayımlama işlemi bu deponun sorumluluğunda değildir.
 
 Geliştirme için:
 
@@ -59,16 +59,21 @@ Geliştirme için:
 npm run desktop
 ```
 
-## 4.0 ile gelenler
+## 4.1 ile gelenler
 
 ### Ajan çekirdeği
 
-- Görev sözleşmesi ve üç veya daha fazla adımlı işlerde plan/todo disiplini.
-- `locate → plan → act → verify → report` fazları; her fazda yalnızca uygun araçlar.
-- Nihai yanıt kapısı, doğrulamanın **son yazmadan sonra** çalışmasını ister; önceki bir doğrulama geçişi sonraki değişikliği kapsamaz.
-- “Sadece incele, hiçbir şeyi değiştirme” gibi açık sınırlar görev sözleşmesine yansır; denetim görevi yazma talep etmez.
-- `file_write`/`file_patch` öncesi yerel checkpoint; `/checkpoints` ve `/undo <id|last>` ile geri yükleme. Geri yükleme mevcut dosyayı da checkpoint'ler.
-- Diagnostics TypeScript derleyicisini yalnızca çağrıldığında yükler; CLI açılışına derleyici maliyeti eklemez.
+- Gizli `jspace` skill'i tam Ultra J-Space metnini taşır; normal turlarda yalnızca kompakt `[J-SPACE DEFAULT KERNEL]` gönderilir. `/jspace` veya açık "deep reasoning / complex architecture" tetikleyicisi tam metni yükler.
+- CLI/TUI ve Telegram artık tüm built-in skill'leri her turda göndermez; selamlaşma gibi işler fast path'te kalır.
+- Görev sözleşmesi, doğrulama-sonrası-yazma kapısı ve checkpoint/undo 4.0'dan korunur.
+
+### GUI fast path
+
+- `browser_*` ve `computer` eylemleri varsayılan olarak yalnızca hafif durum döndürür. Screenshot/UIA ağacı için `observe: "visual"`, `auto_screenshot: true` veya açık `inspect`/`screenshot` gerekir.
+- `browser_batch` ve `computer_batch` en fazla 12 doğrulanmış adımı tek onayla çalıştırır; ilk hatada durur.
+- Browser/desktop sıcak oturumları 10 dakika açık kalır; model ve onay gecikmesi artık cold-start'a yol açmaz.
+- Saf gözlemler ayrı onay istemez; GUI mutasyonları, screenshot'lar ve batch'ler onay sınırını korur.
+- Screenshot birikimi 40 dosya / 32 MB ile sınırlandırılır; eylem süreleri tool event'lerinde raporlanır.
 
 ### Token ve bağlam
 
@@ -118,7 +123,7 @@ tbot --bot
 ## Doğrulama ve sınırlar
 
 - Testler birim/bileşen ve kaydedilmiş protokol fixture'larıdır; E2E, canlı sağlayıcı, gerçek tarayıcı veya gerçek Telegram akışı çalıştırılmaz.
-- 4.0 kaynak doğrulaması: test/typecheck/build sonuçları [doğrulama kaydında](docs/verification.md) güncellenir. Aşağıdaki sınırlar değişmez: E2E, canlı sağlayıcı, gerçek tarayıcı ve gerçek Telegram akışı çalıştırılmaz.
+- 4.1 kaynak doğrulaması: test/typecheck/build sonuçları [doğrulama kaydında](docs/verification.md) güncellenir. Aşağıdaki sınırlar değişmez: E2E, canlı sağlayıcı, gerçek tarayıcı ve gerçek Telegram akışı çalıştırılmaz.
 - “Dünya #1” veya rakiplere göre %50–75 tasarruf iddiası bu depoda bağımsız benchmark olmadan kanıtlanmış sayılmaz. Ölçülebilir hedef, aynı fixture setinde 2.2.1'e göre daha az bağlam göndermektir.
 - TypeScript/JavaScript ve JSON kontrolleri tüm diller için doğrulama garantisi değildir.
 - Gizli anahtar redaksiyonu sezgiseldir; bilinmeyen biçimleri yakalama garantisi yoktur.
